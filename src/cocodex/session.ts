@@ -292,6 +292,15 @@ export async function runJsonLineSession(
           if (!pending) throw new Error("Agent task is not awaiting local approval");
           pending(command.approved === true);
           emit({ source: "control", id: command.id, ok: true, taskId, approved: command.approved === true });
+        } else if (command.type === "agent.cancel") {
+          send({
+            version: 1,
+            type: "agent.cancel",
+            requestId: controlRequestId(command.id),
+            taskId: String(command.taskId),
+            reason: String(command.reason ?? "Cancelled by the host user."),
+          });
+          emit({ source: "control", id: command.id, ok: true, taskId: String(command.taskId) });
         } else if (command.type === "presence.update") {
           send({
             version: 1,

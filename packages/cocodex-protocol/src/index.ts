@@ -14,6 +14,7 @@ export {
   clientFrameSchema,
   agentTaskSchema,
   agentTaskFrameSchema,
+  agentCancelFrameSchema,
   websocketAuthTranscript,
   type ChatEvent,
   type ClientFrame,

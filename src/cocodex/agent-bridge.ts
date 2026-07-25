@@ -1,6 +1,7 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
 import {
   agentDispatchSigningTranscript,
+  agentCancelFrameSchema,
   agentRequestSigningTranscript,
   agentTaskFrameSchema,
   publicKeyFingerprint,
@@ -174,6 +175,11 @@ export function attachLocalAgentBridge(
       return;
     }
     const parsed = agentTaskFrameSchema.safeParse(raw);
+    const cancellation = agentCancelFrameSchema.safeParse(raw);
+    if (cancellation.success) {
+      executionControllers.get(cancellation.data.taskId)?.abort();
+      return;
+    }
     if (!parsed.success) return;
     const task = parsed.data.task;
     if (activeTasks.has(task.id) || !verifyTask(task, security)) return;

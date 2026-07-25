@@ -521,6 +521,42 @@ describe("authenticated WSS collaboration", () => {
     expect((await restartedPrivate).messages).toEqual([
       expect.objectContaining({ ciphertext: privateCiphertext }),
     ]);
+    const restartedStephenChat = nextFrame(restartedStephen, "chat.snapshot");
+    restartedStephen.send(JSON.stringify({
+      version: 1, type: "chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+    }));
+    await restartedStephenChat;
+
+    const cancelTaskId = randomUUID();
+    const cancelIssuedAt = new Date().toISOString();
+    const cancelExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    const cancelNonce = randomUUID();
+    const cancelSignature = sign(null, agentRequestSigningTranscript({
+      taskId: cancelTaskId,
+      projectId: project.id,
+      agentId: "kai-codex",
+      prompt: "This request will be cancelled.",
+      nonce: cancelNonce,
+      issuedAt: cancelIssuedAt,
+      expiresAt: cancelExpiresAt,
+    }), stephen.privateKey).toString("base64url");
+    const cancellationAtKai = nextFrame(restartedKai, "agent.cancel", frame => frame.taskId === cancelTaskId);
+    const cancellationResultAtStephen = nextFrame(restartedStephen, "agent.result", frame => frame.taskId === cancelTaskId);
+    restartedStephen.send(JSON.stringify({
+      version: 1, type: "agent.request", requestId: randomUUID(), taskId: cancelTaskId,
+      projectId: project.id, agentId: "kai-codex", prompt: "This request will be cancelled.",
+      nonce: cancelNonce, issuedAt: cancelIssuedAt, expiresAt: cancelExpiresAt, signature: cancelSignature,
+    }));
+    expect((await nextFrame(restartedKai, "agent.task")).task).toMatchObject({ id: cancelTaskId });
+    restartedStephen.send(JSON.stringify({
+      version: 1, type: "agent.cancel", requestId: randomUUID(), taskId: cancelTaskId,
+      reason: "User pressed Stop Agent.",
+    }));
+    expect(await cancellationAtKai).toMatchObject({ taskId: cancelTaskId, reason: "User pressed Stop Agent." });
+    expect(await cancellationResultAtStephen).toMatchObject({
+      taskId: cancelTaskId, final: true, status: "failed",
+      event: { content: "Agent task cancelled: User pressed Stop Agent." },
+    });
 
     const expiringTaskId = randomUUID();
     const expiringIssuedAt = new Date().toISOString();

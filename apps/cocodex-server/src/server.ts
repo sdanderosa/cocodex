@@ -8,7 +8,7 @@ import {
   enrollmentClaimSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
-import { appendAgentResult, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
+import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
 import type { ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
@@ -374,6 +374,33 @@ export function startCoCodexServer(
               requestId,
               projectId: message.projectId,
               members: presence,
+            }));
+            return;
+          }
+          if (message.type === "agent.cancel") {
+            const cancelled = cancelAgentTask(db, deviceId, message.taskId, message.reason);
+            if (cancelled.created) {
+              sendToDevice(cancelled.task.targetDeviceId, {
+                version: 1,
+                type: "agent.cancel",
+                taskId: cancelled.task.id,
+                reason: message.reason,
+              }, true);
+              sendToProject(cancelled.task.projectId, {
+                version: 1,
+                type: "agent.result",
+                taskId: cancelled.task.id,
+                final: true,
+                status: "failed",
+                event: cancelled.event,
+              });
+            }
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "agent.cancelled",
+              requestId,
+              taskId: cancelled.task.id,
+              sequence: cancelled.event.sequence,
             }));
             return;
           }

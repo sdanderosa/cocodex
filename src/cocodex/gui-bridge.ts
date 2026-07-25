@@ -15,6 +15,7 @@ const ALLOWED_COMMANDS = new Set([
   "prompt.update",
   "presence.update",
   "agent.request",
+  "agent.cancel",
   "agent.approval",
   "private.send",
 ]);

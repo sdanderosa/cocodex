@@ -85,6 +85,13 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("agent.cancel"),
+    requestId,
+    taskId: z.uuid(),
+    reason: z.string().trim().min(1).max(512),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("agent.result"),
     requestId,
     taskId: z.uuid(),
@@ -153,6 +160,12 @@ export const agentTaskFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("agent.task"),
   task: agentTaskSchema,
+}).strict();
+export const agentCancelFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("agent.cancel"),
+  taskId: z.uuid(),
+  reason: z.string().trim().min(1).max(512),
 }).strict();
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 

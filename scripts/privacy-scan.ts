@@ -47,6 +47,8 @@ function lineNumber(text: string, index: number): number {
 }
 
 function isAllowedEmail(file: string, email: string): boolean {
+  // Preserve upstream contact details reproduced verbatim for license compliance.
+  if (file === "THIRD_PARTY_NOTICES.md" && email === ["kevin.jahns", "protonmail.com"].join("@")) return true;
   if (file === "scripts/privacy-scan.ts" && email === "a@b.com") return true;
   const domain = email.split("@").at(1)?.toLowerCase() ?? "";
   if (domain === "example.test" || domain === "example.com" || domain === "test.com" || domain.endsWith(".test")) {

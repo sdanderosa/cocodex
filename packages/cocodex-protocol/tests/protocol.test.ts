@@ -78,6 +78,17 @@ describe("CoCodex protocol", () => {
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
     expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
   });
+  test("requires a bounded reason for agent cancellation", () => {
+    const frame = {
+      version: 1 as const,
+      type: "agent.cancel" as const,
+      requestId: crypto.randomUUID(),
+      taskId: crypto.randomUUID(),
+      reason: "Stop this run",
+    };
+    expect(clientFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => clientFrameSchema.parse({ ...frame, reason: " " })).toThrow();
+  });
   test("WebSocket proof binds the server, device, request, and challenge", () => {
     const input = {
       serverFingerprint: "server-a",

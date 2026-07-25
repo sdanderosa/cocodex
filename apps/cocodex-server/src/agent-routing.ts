@@ -166,6 +166,36 @@ export function expireQueuedAgentTasks(db: Database, now = new Date()): Array<{
     return { task: result.task, event: result.event };
   });
 }
+
+export function cancelAgentTask(
+  db: Database,
+  actorDeviceId: string,
+  taskId: string,
+  reason: string,
+  now = new Date(),
+): { task: AgentTask; event: ChatEvent; created: boolean } {
+  const task = taskById(db, taskId);
+  if (!task) throw new Error("Agent task was not found");
+  if (task.requesterDeviceId !== actorDeviceId && task.targetDeviceId !== actorDeviceId) {
+    throw new Error("Only the requester or host device can cancel this task");
+  }
+  requireProjectMembership(db, task.projectId, actorDeviceId);
+  if (task.status === "completed" || task.status === "failed") {
+    throw new Error("Agent task is already final");
+  }
+  const normalizedReason = reason.trim().slice(0, 512) || "Cancelled by a trusted device.";
+  return appendAgentResult(
+    db,
+    task.targetDeviceId,
+    task.id,
+    randomUUID(),
+    `Agent task cancelled: ${normalizedReason}`,
+    true,
+    "failed",
+    now,
+  );
+}
+
 export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date()): AgentTask[] {
   return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
