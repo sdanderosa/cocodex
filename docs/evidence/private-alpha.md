@@ -1,7 +1,8 @@
 # CoCodex private-alpha evidence
 
 - Evidence date: 2026-07-25
-- Implementation commit: `37d344d4`
+- Implementation commits: `37d344d4`, plus running-task recovery fix
+  `72ce0f41`
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
