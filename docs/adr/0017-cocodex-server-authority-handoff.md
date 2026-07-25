@@ -60,7 +60,12 @@ failed import leaves the prepared destination unavailable.
 ## Evidence
 
 `tests/cocodex-server-transfer-process.test.ts` launches real source and
-destination CLI processes, enrolls a client over HTTPS/WSS, creates a project,
-exports and imports the encrypted handoff, proves source retirement, starts the
-destination, accepts the signed code, and reads the surviving project through
-the client WebSocket.
+destination CLI processes, enrolls and approves separate Stephen and Kai
+devices over HTTPS/WSS, makes Stephen the project owner and Kai a member,
+publishes pre-transfer chat and an encrypted private message, then exports and
+imports the encrypted handoff. It proves source retirement and start refusal,
+updates both clients to the destination TLS pin and identity at epoch 2,
+rejects reuse of the old authority certificate, and reconnects both clients to
+read the preserved project, chat, and ciphertext. Kai decrypts the recovered
+message locally; the destination database is checked to contain ciphertext and
+not its plaintext.

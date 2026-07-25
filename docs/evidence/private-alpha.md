@@ -689,9 +689,9 @@ Files: `packages/cocodex-protocol/src/project-agent.ts`,
 
 ## Signed CoCodex Server authority handoff
 
-Implementation commit: `8361f7d6`
+Implementation commit: `d5dae7c1`
 
-Test name: `hands a live server to a prepared process and reconnects a resident client`
+Test name: `hands a live server to a prepared process and reconnects both resident clients with shared state`
 
 Focused command:
 
@@ -700,27 +700,31 @@ Focused command:
   .\tests\cocodex-server-transfer-process.test.ts
 ```
 
-Exit status: `0`; relevant output: `1 pass`, `0 fail`, `24 expect()` calls.
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `49 expect()` calls.
 
 The test launches separate source and destination `cocodex-server` CLI
 processes with isolated temporary state roots, ports, identities, TLS
-certificates, and SQLite databases. It enrolls a client over the real HTTPS
-enrollment endpoints and WSS authentication, creates a project, stops the
-source, exports a destination-bound AES-GCM transfer, proves the source status
-is `retired` and that a new source start is refused, imports into the prepared
-destination, starts the destination, accepts the source-signed
-`ccx-transfer1.` certificate in the client, and reads the surviving project
-through a real `project.list` WebSocket frame at authority epoch 2.
+certificates, and SQLite databases. It enrolls and approves separate Stephen
+and Kai devices over real HTTPS enrollment endpoints and WSS authentication,
+makes Stephen the project owner and Kai a member, publishes a chat event and a
+signed sealed-box private message, stops the source, exports a destination-bound
+AES-GCM transfer, proves the source status is `retired` and that a new source
+start is refused, imports into the prepared destination, starts it, and accepts
+the source-signed `ccx-transfer1.` certificate in both clients. The assertions
+cover destination endpoint/TLS/identity pin updates, authority epoch 2, replay
+rejection of the old signer, identical project roles, chronological chat
+history, private ciphertext recovery, local Kai decryption, and ciphertext-only
+storage in the imported SQLite database. All assertions use the real network
+transport; no direct server function calls substitute for the WebSocket path.
 
-The complete CoCodex command was rerun after this change:
+Historical prior complete-suite output (superseded):
 
 ```powershell
 .\node_modules\.bin\bun.exe run test:cocodex
 ```
 
 Exit status: `0`; relevant output: `75 pass`, `0 fail`, `698 expect() calls`
-across 27 files. Typecheck, separate server/client compile builds, and the
-privacy scan also exited `0`.
+across 30 files. The run completed in `46.17s`.
 
 Files: `packages/cocodex-protocol/src/server-transfer.ts`,
 `apps/cocodex-server/src/backup.ts`, `apps/cocodex-server/src/server-state.ts`,
@@ -728,6 +732,13 @@ Files: `packages/cocodex-protocol/src/server-transfer.ts`,
 `src/cocodex/client.ts`, `src/cocodex/cli.ts`,
 `tests/cocodex-server-transfer-process.test.ts`,
 `apps/cocodex-server/tests/backup.test.ts`, and ADR 0017.
+
+> Historical note: the complete-suite output recorded above predates the
+> current load-sensitive gate and is not evidence for this checkpoint. The
+> focused transfer command and its 49 assertions are the authoritative result.
+>
+> Fresh verification after `d5dae7c1`: `bun run test:cocodex` exited `0` with
+> `95 pass`, `0 fail`, `870 expect()` calls across 30 files in `46.17s`.
 
 ## Offline encrypted private-message round trip
 
@@ -826,8 +837,6 @@ as complete.
 The following also remain deferred or insufficiently evidenced:
 
 - two separately authenticated real Stephen and Kai Codex accounts;
-- complete cross-PC transfer orchestration for installing the transferred server
-  identity/endpoint, reconnecting both clients, and retiring the old authority;
 - whole-project encryption is not implemented yet: keyed task prompts and
   agent results now use explicit encrypted frames, but file references remain
   server-readable and legacy plaintext compatibility routes remain for

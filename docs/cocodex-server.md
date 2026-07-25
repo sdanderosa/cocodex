@@ -98,6 +98,11 @@ identity and certificate match the signed target request. The export/import
 output contains a one-time `ccx-transfer1.` authority certificate for clients.
 Never start the source after it is retired; this is the split-brain fence.
 
+The real-process transfer harness enrolls both Stephen and Kai, preserves their
+project membership, chronological chat, and private ciphertext, updates both
+client endpoint/TLS pins, and reconnects both clients at the next authority
+epoch before checking the retired-source fence.
+
 Never place a passphrase directly in shell history for a real deployment—prefer
 `--passphrase-file` with a protected file. The health endpoint is
 `GET /healthz`; authenticated admin status is `GET /v1/admin/status` with the
