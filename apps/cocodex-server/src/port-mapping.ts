@@ -1,9 +1,10 @@
 import dgram from "node:dgram";
+import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 
 export interface PortMappingResult {
   status: "mapped" | "unavailable" | "failed";
-  method: "upnp" | "nat-pmp" | "none";
+  method: "upnp" | "nat-pmp" | "pcp" | "none";
   message: string;
   gateway?: string;
   internalHost?: string;
@@ -30,6 +31,10 @@ const REQUEST = [
 ].join("\r\n");
 const NAT_PMP_PORT = 5351;
 const NAT_PMP_TIMEOUT_MS = 800;
+const PCP_VERSION = 2;
+const PCP_MAP_OPCODE = 1;
+const PCP_PORT = 5351;
+const PCP_TIMEOUT_MS = 800;
 
 export function localIpv4(): string | undefined {
   for (const entries of Object.values(networkInterfaces())) {
@@ -129,6 +134,73 @@ export function parseNatPmpMappingResponse(response: Uint8Array): { publicPort: 
   return { publicPort: view.getUint16(10), lifetimeSeconds: view.getUint32(12) };
 }
 
+function ipv4MappedAddress(address: string): Buffer {
+  const octets = address.split(".").map(Number);
+  if (octets.length !== 4 || octets.some(value => !Number.isInteger(value) || value < 0 || value > 255)) {
+    throw new Error("Invalid PCP client IPv4 address");
+  }
+  const mapped = Buffer.alloc(16);
+  mapped[10] = 0xff;
+  mapped[11] = 0xff;
+  for (let index = 0; index < 4; index += 1) mapped[12 + index] = octets[index]!;
+  return mapped;
+}
+
+function pcpNonce(value?: Uint8Array): Buffer {
+  const nonce = Buffer.from(value ?? randomBytes(12));
+  if (nonce.byteLength !== 12) throw new Error("PCP mapping nonce must be 12 bytes");
+  return nonce;
+}
+
+/** Encode a PCP RFC 6887 MAP request for a TCP port mapping. */
+export function pcpMappingRequest(
+  port: number,
+  internalHost: string,
+  lifetimeSeconds = 7 * 24 * 60 * 60,
+  nonce?: Uint8Array,
+): Buffer {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid PCP port");
+  const request = Buffer.alloc(60);
+  request.writeUInt8(PCP_VERSION, 0);
+  request.writeUInt8(PCP_MAP_OPCODE, 1);
+  request.writeUInt32BE(Math.max(0, Math.min(0xffffffff, Math.trunc(lifetimeSeconds))), 4);
+  ipv4MappedAddress(internalHost).copy(request, 8);
+  pcpNonce(nonce).copy(request, 24);
+  request.writeUInt8(6, 36); // TCP
+  request.writeUInt16BE(port, 40);
+  request.writeUInt16BE(port, 42);
+  return request;
+}
+
+function formatPcpAddress(value: Uint8Array): string | undefined {
+  if (value.byteLength !== 16) return undefined;
+  const mapped = value.slice(0, 10).every(byte => byte === 0)
+    && value[10] === 0xff && value[11] === 0xff;
+  if (!mapped) return undefined;
+  return [...value.slice(12)].join(".");
+}
+
+export function parsePcpMappingResponse(
+  response: Uint8Array,
+  expectedNonce?: Uint8Array,
+): { publicPort: number; lifetimeSeconds: number; externalAddress?: string } {
+  if (response.byteLength < 60 || response[0] !== PCP_VERSION || response[1] !== (0x80 | PCP_MAP_OPCODE)) {
+    throw new Error("Invalid PCP response");
+  }
+  const view = new DataView(response.buffer, response.byteOffset, response.byteLength);
+  const resultCode = response[2];
+  if (resultCode !== 0) throw new Error(`PCP gateway rejected mapping (code ${resultCode})`);
+  if (expectedNonce && !Buffer.from(response.slice(24, 36)).equals(pcpNonce(expectedNonce))) {
+    throw new Error("PCP response nonce does not match the request");
+  }
+  if (response[36] !== 6) throw new Error("PCP response protocol is not TCP");
+  return {
+    publicPort: view.getUint16(42),
+    lifetimeSeconds: view.getUint32(4),
+    ...(formatPcpAddress(response.slice(44, 60)) ? { externalAddress: formatPcpAddress(response.slice(44, 60)) } : {}),
+  };
+}
+
 function natPmpGateways(internalHost: string): string[] {
   const configured = process.env.COCODEX_NATPMP_GATEWAY?.trim();
   if (configured) return [configured];
@@ -166,6 +238,42 @@ async function tryNatPmpMapping(port: number, internalHost: string): Promise<Por
   return undefined;
 }
 
+async function tryPcpMapping(port: number, internalHost: string): Promise<PortMappingResult | undefined> {
+  for (const gateway of natPmpGateways(internalHost)) {
+    const socket = dgram.createSocket("udp4");
+    const nonce = randomBytes(12);
+    const result = await new Promise<PortMappingResult | undefined>(resolve => {
+      let settled = false;
+      const finish = (value?: PortMappingResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.close();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(), PCP_TIMEOUT_MS);
+      socket.on("error", () => finish());
+      socket.on("message", message => {
+        try {
+          const mapping = parsePcpMappingResponse(message, nonce);
+          finish({
+            status: "mapped",
+            method: "pcp",
+            gateway,
+            internalHost,
+            message: `PCP mapped TCP ${mapping.publicPort} to ${internalHost}:${port}.`,
+          });
+        } catch (error) {
+          finish({ status: "failed", method: "pcp", gateway, internalHost, message: error instanceof Error ? error.message : String(error) });
+        }
+      });
+      socket.bind(0, () => socket.send(pcpMappingRequest(port, internalHost, undefined, nonce), PCP_PORT, gateway, error => { if (error) finish(); }));
+    });
+    if (result) return result;
+  }
+  return undefined;
+}
+
 export async function tryAutomaticPortMapping(port: number): Promise<PortMappingResult> {
   if (process.env.COCODEX_DISABLE_PORT_MAPPING === "1") {
     return { status: "unavailable", method: "none", message: "Automatic port mapping disabled by configuration." };
@@ -179,9 +287,11 @@ export async function tryAutomaticPortMapping(port: number): Promise<PortMapping
     if (!descriptionUrl) {
       const natPmp = await tryNatPmpMapping(port, internalHost);
       if (natPmp) return natPmp;
+      const pcp = await tryPcpMapping(port, internalHost);
+      if (pcp) return pcp;
       return {
         status: "unavailable", method: "none", internalHost,
-        message: "No UPnP gateway responded. Check CGNAT/router settings or forward the TCP port manually.",
+        message: "No UPnP, NAT-PMP, or PCP gateway responded. Check CGNAT/router settings or forward the TCP port manually.",
       };
     }
     const descriptionResponse = await fetch(descriptionUrl, { signal: AbortSignal.timeout(1_500) });
@@ -206,6 +316,8 @@ export async function tryAutomaticPortMapping(port: number): Promise<PortMapping
   } catch (error) {
     const natPmp = await tryNatPmpMapping(port, internalHost);
     if (natPmp) return natPmp;
+    const pcp = await tryPcpMapping(port, internalHost);
+    if (pcp) return pcp;
     return {
       status: "failed", method: "upnp", internalHost,
       message: `Automatic UPnP mapping failed (${error instanceof Error ? error.message : String(error)}). Manual forwarding or CGNAT troubleshooting is required.`,

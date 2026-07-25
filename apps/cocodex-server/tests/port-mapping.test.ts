@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { classifyDirectHosting, controlUrl, natPmpMappingRequest, parseNatPmpMappingResponse, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
+import { classifyDirectHosting, controlUrl, natPmpMappingRequest, parseNatPmpMappingResponse, parsePcpMappingResponse, pcpMappingRequest, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
 
 const previous = process.env.COCODEX_DISABLE_PORT_MAPPING;
 afterEach(() => {
@@ -42,5 +42,32 @@ describe("CoCodex automatic port mapping", () => {
     expect(parseNatPmpMappingResponse(response)).toEqual({ publicPort: 19463, lifetimeSeconds: 3600 });
     response.writeUInt16BE(2, 2);
     expect(() => parseNatPmpMappingResponse(response)).toThrow("rejected mapping");
+  });
+
+  test("encodes and validates PCP TCP MAP packets", () => {
+    const nonce = Buffer.alloc(12, 7);
+    const request = pcpMappingRequest(19463, "192.168.1.42", 3600, nonce);
+    expect(request.length).toBe(60);
+    expect(request[0]).toBe(2);
+    expect(request[1]).toBe(1);
+    expect(request.readUInt32BE(4)).toBe(3600);
+    expect(request.slice(8, 24)).toEqual(Buffer.from("00000000000000000000ffffc0a8012a", "hex"));
+    expect(request.slice(24, 36)).toEqual(nonce);
+    expect(request[36]).toBe(6);
+    expect(request.readUInt16BE(40)).toBe(19463);
+    const response = Buffer.from(request);
+    response[1] = 0x81;
+    response.writeUInt16BE(0, 2);
+    response.writeUInt32BE(19463, 42);
+    response.writeUInt32BE(3600, 4);
+    response.writeUInt16BE(19463, 42);
+    response.writeUInt16BE(0, 40);
+    response.write("00000000000000000000ffffcb007105", 44, "hex");
+    expect(parsePcpMappingResponse(response, nonce)).toEqual({
+      publicPort: 19463,
+      lifetimeSeconds: 3600,
+      externalAddress: "203.0.113.5",
+    });
+    expect(() => parsePcpMappingResponse(response, Buffer.alloc(12, 8))).toThrow("nonce");
   });
 });

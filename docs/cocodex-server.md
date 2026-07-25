@@ -27,7 +27,7 @@ cocodex-server status
 ```
 
 Initialization creates the server identity and TLS certificate, attempts a
-Windows Firewall rule, and tries UPnP followed by NAT-PMP. The JSON output
+Windows Firewall rule, and tries UPnP followed by NAT-PMP and PCP. The JSON output
 includes a one-time admin token, the certificate fingerprint, mapping result,
 and manual-forwarding instructions. If automatic mapping is unavailable, run:
 
