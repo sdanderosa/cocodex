@@ -39,7 +39,7 @@ async function run(): Promise<void> {
       const port = Number(option("--port") ?? "19463");
       saveConfig(paths, createDefaultConfig(paths, publicHost, port));
       createServerIdentity(paths);
-      await createTlsIdentity(paths);
+      await createTlsIdentity(paths, publicHost);
       openDatabase(paths.database).close();
       console.log(JSON.stringify({
         initialized: true,

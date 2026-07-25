@@ -1,24 +1,37 @@
 import { X509Certificate, createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { dirname } from "node:path";
 import selfsigned from "selfsigned";
 import type { ServerPaths } from "./paths";
 
-export async function createTlsIdentity(paths: ServerPaths): Promise<void> {
+export async function createTlsIdentity(paths: ServerPaths, publicHost = "localhost"): Promise<void> {
   if (existsSync(paths.tlsCertificate) || existsSync(paths.tlsPrivateKey)) {
     throw new Error("TLS identity already exists");
   }
+  const advertisedAltName = isIP(publicHost)
+    ? { type: 7 as const, ip: publicHost }
+    : { type: 2 as const, value: publicHost };
   const generated = await selfsigned.generate(
-    [{ name: "commonName", value: "CoCodex Server" }],
+    [{ name: "commonName", value: publicHost }],
     {
       algorithm: "sha256",
       keySize: 2048,
       notAfterDate: new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
       extensions: [
-        { name: "basicConstraints", cA: false },
-        { name: "keyUsage", digitalSignature: true, keyEncipherment: true },
+        { name: "basicConstraints", cA: true },
+        { name: "keyUsage", digitalSignature: true, keyEncipherment: true, keyCertSign: true },
         { name: "extKeyUsage", serverAuth: true },
-        { name: "subjectAltName", altNames: [{ type: 2, value: "localhost" }, { type: 7, ip: "127.0.0.1" }] },
+        {
+          name: "subjectAltName",
+          altNames: [
+            { type: 2, value: "localhost" },
+            { type: 7, ip: "127.0.0.1" },
+            ...(publicHost !== "localhost" && publicHost !== "127.0.0.1"
+              ? [advertisedAltName]
+              : []),
+          ],
+        },
       ],
     },
   );
