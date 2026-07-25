@@ -3,6 +3,10 @@
   "version": "2.7.39",
   "description": "Universal provider proxy for OpenAI Codex & Claude Code — use any LLM with Codex CLI/App/SDK and Claude Code",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "main": "./bin/package-main.mjs",
   "exports": {
     ".": {
@@ -18,6 +22,8 @@
   "files": [
     "bin",
     "src",
+    "apps/cocodex-server",
+    "packages/cocodex-protocol",
     "gui/dist",
     "assets/banner.png",
     "assets/architecture.png",
@@ -36,8 +42,14 @@
     "dev:proxy": "bun run src/cli/index.ts start",
     "dev:gui": "cd gui && bun run dev",
     "start": "bun run src/cli/index.ts start",
+    "cocodex:server": "cd apps/cocodex-server && bun run start",
+    "test:cocodex-server": "cd apps/cocodex-server && bun test",
+    "typecheck:cocodex-server": "cd apps/cocodex-server && bun x tsc --noEmit",
     "test": "bun scripts/test.ts",
+    "test:cocodex": "bun test ./packages/cocodex-protocol/tests/protocol.test.ts ./apps/cocodex-server/tests/enrollment.test.ts ./apps/cocodex-server/tests/boundary.test.ts ./apps/cocodex-server/tests/server.test.ts ./apps/cocodex-server/tests/process.test.ts ./apps/cocodex-server/tests/cli-process.test.ts",
     "typecheck": "bun x tsc --noEmit",
+    "typecheck:cocodex": "bun run --cwd packages/cocodex-protocol typecheck && bun run --cwd apps/cocodex-server typecheck",
+    "build:cocodex-server": "bun run --cwd apps/cocodex-server build",
     "privacy:scan": "bun scripts/privacy-scan.ts",
     "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
     "build:gui": "cd gui && bun install --frozen-lockfile && bun run build && cd .. && bun run prepare:package",
@@ -46,7 +58,7 @@
     "prepublishOnly": "bun run typecheck && bun run build:gui",
     "release": "bun scripts/release.ts",
     "release:watch": "bun scripts/release.ts watch",
-    "prepush": "bun run typecheck && bun run lint:gui && bun run test && bun run privacy:scan && bun run doctor:gui:if-changed",
+    "prepush": "bun run typecheck && bun run typecheck:cocodex && bun run lint:gui && bun run test && bun run test:cocodex && bun run privacy:scan && bun run doctor:gui:if-changed",
     "lint:gui": "cd gui && bun run lint",
     "doctor:gui": "cd gui && bun run doctor",
     "doctor:gui:full": "cd gui && bun run doctor:full",

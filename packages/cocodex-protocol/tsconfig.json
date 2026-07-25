@@ -3,14 +3,10 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "resolveJsonModule": true,
     "types": ["bun"],
     "strict": true,
-    "esModuleInterop": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "tests"]
 }

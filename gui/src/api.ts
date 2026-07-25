@@ -3,18 +3,20 @@ const TOKEN_KEY = "opencodex-api-token";
 let installed = false;
 let promptInFlight: Promise<string | null> | null = null;
 
-function apiPath(input: RequestInfo | URL): string | null {
+function apiUrl(input: RequestInfo | URL): URL | null {
   try {
     const raw = input instanceof Request ? input.url : String(input);
-    return new URL(raw, window.location.href).pathname;
+    return new URL(raw, window.location.href);
   } catch {
     return null;
   }
 }
 
 function needsApiAuth(input: RequestInfo | URL): boolean {
-  const path = apiPath(input);
-  return !!path && (path.startsWith("/api/") || path.startsWith("/v1/"));
+  const url = apiUrl(input);
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return false;
+  if (url.origin !== window.location.origin) return false;
+  return url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/");
 }
 
 function readToken(): string | null {
