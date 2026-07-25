@@ -227,6 +227,28 @@ describe("authoritative agent dependencies", () => {
         inputArtifactIds: ["be8c6278-c10d-44d6-829f-308030cce0cb"],
         envelope: contentEnvelope(project.id, stephen, "task", "82f2266a-16ac-4b83-b70f-f8145e88ae66"),
       }, now)).toThrow("not found in this project");
+      const otherProject = createProject(db, "Other encrypted project", stephen.id, now);
+      expect(shareProjectKeyEnvelope(db, otherProject.id, stephen.id,
+        keyEnvelope(otherProject.id, stephen, stephen.id), now).created).toBeTrue();
+      const otherArtifactId = "f971a036-0989-4eb6-9fba-ddf385b57d13";
+      publishEncryptedArtifact(db, {
+        artifactId: otherArtifactId,
+        projectId: otherProject.id,
+        taskId: null,
+        authorDeviceId: stephen.id,
+        envelope: contentEnvelope(otherProject.id, stephen, "artifact", otherArtifactId),
+      }, now);
+      expect(() => createEncryptedAgentTask(db, identity, {
+        id: "f2c53ee8-ea55-4ba7-9cf8-f9f328bd92a3",
+        projectId: project.id,
+        requesterDeviceId: stephen.id,
+        agentId: "kai-agent",
+        nonce: "B".repeat(32),
+        issuedAt,
+        expiresAt,
+        inputArtifactIds: [otherArtifactId],
+        envelope: contentEnvelope(project.id, stephen, "task", "f2c53ee8-ea55-4ba7-9cf8-f9f328bd92a3"),
+      }, now)).toThrow("not found in this project");
     } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });
