@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServerBackup, restoreServerBackup } from "../src/backup";
+import { createEncryptedServerTransfer, createServerBackup, restoreEncryptedServerTransfer, restoreServerBackup } from "../src/backup";
 import { openDatabase } from "../src/database";
 import { createServerIdentity } from "../src/identity";
 import { serverPaths } from "../src/paths";
@@ -31,6 +31,26 @@ describe("CoCodex Server backups", () => {
       const restoredDb = openDatabase(paths.database);
       expect(restoredDb).toBeDefined();
       restoredDb.close();
+    } finally {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try { rmSync(root, { recursive: true, force: true }); break; }
+        catch (error) { if (attempt === 39) throw error; await Bun.sleep(25); }
+      }
+    }
+  });
+
+  test("encrypts server transfers and rejects wrong passphrases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-transfer-"));
+    try {
+      const paths = serverPaths(root);
+      openDatabase(paths.database).close();
+      const identity = createServerIdentity(paths);
+      const transferPath = join(root, "transfer.json");
+      const transfer = createEncryptedServerTransfer(paths, identity, transferPath, "correct horse battery staple");
+      expect(transfer.ciphertext).not.toContain("CREATE TABLE");
+      expect(() => restoreEncryptedServerTransfer(paths, identity, transferPath, "wrong passphrase")).toThrow("passphrase");
+      const restored = restoreEncryptedServerTransfer(paths, identity, transferPath, "correct horse battery staple");
+      expect(restored.serverEpoch).toBe(1);
     } finally {
       for (let attempt = 0; attempt < 40; attempt += 1) {
         try { rmSync(root, { recursive: true, force: true }); break; }

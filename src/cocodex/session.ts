@@ -184,7 +184,7 @@ export async function runJsonLineSession(
         workspaceRoot: policy.workspaceRoot,
         sandbox: policy.sandbox,
         onUsage,
-        authorizeTask: authorizeAgentTask,
+        authorizeTask: policy.approvalMode === "always" ? authorizeAgentTask : () => true,
       }), {
         localDeviceId: connection.deviceId,
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,

@@ -9,6 +9,7 @@ const policySchema = z.object({
   agentId: z.string().trim().min(1).max(120),
   workspaceRoot: z.string().min(1),
   sandbox: z.enum(["read-only", "workspace-write"]),
+  approvalMode: z.enum(["trusted-device", "always"]).default("trusted-device"),
   trustedRequesterFingerprints: z.record(z.uuid(), z.string().min(16).max(256)),
 }).strict();
 

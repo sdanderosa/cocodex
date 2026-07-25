@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServerBackup, restoreServerBackup } from "./backup";
+import { createEncryptedServerTransfer, createServerBackup, restoreEncryptedServerTransfer, restoreServerBackup } from "./backup";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
@@ -35,6 +35,10 @@ function configureWindowsFirewall(port: number): "created" | "manual-required" |
   return result.exitCode === 0 ? "created" : "manual-required";
 }
 
+function requiredPassphrase(): string {
+  return requiredOption("--passphrase");
+}
+
 function runningPid(paths: ReturnType<typeof serverPaths>): number | undefined {
   if (!existsSync(paths.pid)) return undefined;
   const pid = Number(readFileSync(paths.pid, "utf8").trim());
@@ -59,8 +63,8 @@ Usage:
   cocodex-server status [--state-root PATH]
   cocodex-server backup --output FILE [--state-root PATH]
   cocodex-server restore --input FILE [--state-root PATH]
-  cocodex-server transfer-export --output FILE [--state-root PATH]
-  cocodex-server transfer-import --input FILE [--state-root PATH]
+  cocodex-server transfer-export --output FILE --passphrase PASS [--state-root PATH]
+  cocodex-server transfer-import --input FILE --passphrase PASS [--state-root PATH]
   cocodex-server migrate [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
@@ -182,18 +186,18 @@ async function run(): Promise<void> {
     case "transfer-export": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const backup = createServerBackup(paths, identity, requiredOption("--output"));
-      console.log(JSON.stringify({ transferred: true, direction: "export", serverEpoch: backup.serverEpoch, databaseSha256: backup.databaseSha256 }));
+      const transfer = createEncryptedServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase());
+      console.log(JSON.stringify({ transferred: true, direction: "export", encrypted: true, serverEpoch: transfer.serverEpoch, databaseSha256: transfer.databaseSha256 }));
       return;
     }
     case "transfer-import": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const backup = restoreServerBackup(paths, identity, requiredOption("--input"));
+      const transfer = restoreEncryptedServerTransfer(paths, identity, requiredOption("--input"), requiredPassphrase());
       const db = openDatabase(paths.database);
       const epoch = advanceServerEpoch(db);
       db.close();
-      console.log(JSON.stringify({ transferred: true, direction: "import", previousServerEpoch: backup.serverEpoch, serverEpoch: epoch, databaseSha256: backup.databaseSha256 }));
+      console.log(JSON.stringify({ transferred: true, direction: "import", encrypted: true, previousServerEpoch: transfer.serverEpoch, serverEpoch: epoch, databaseSha256: transfer.databaseSha256 }));
       return;
     }
     case "migrate": {

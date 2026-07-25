@@ -204,12 +204,12 @@ describe("three-process CoCodex private alpha", () => {
     ]);
     await run(clientExe, [
       "configure-agent", "--project", project.id, "--agent", "stephen-agent",
-      "--workspace", stephenWorkspace, "--trust-device", kaiDevice.id,
+      "--workspace", stephenWorkspace, "--approval", "always", "--trust-device", kaiDevice.id,
       "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
     ]);
     await run(clientExe, [
       "configure-agent", "--project", project.id, "--agent", "kai-agent",
-      "--workspace", kaiWorkspace, "--trust-device", stephenDevice.id,
+      "--workspace", kaiWorkspace, "--approval", "always", "--trust-device", stephenDevice.id,
       "--trust-fingerprint", stephenDevice.fingerprint, "--state-root", kaiRoot,
     ]);
 

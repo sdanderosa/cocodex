@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { AgentTask } from "@cocodex/protocol";
 import { CodexAgentAdapter } from "../src/cocodex/codex-agent-adapter";
+import { loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
 
 const task = {
   id: "e3a91e9c-090a-45a6-b919-92ac31149883",
@@ -135,4 +136,21 @@ describe("official Codex local agent adapter", () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
-});
+
+  test("loads legacy trusted-device policies without adding repetitive approvals", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-policy-"));
+    const policyPath = join(root, "policy.json");
+    try {
+      writeFileSync(policyPath, JSON.stringify({
+        version: 1,
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: root,
+        sandbox: "workspace-write",
+        trustedRequesterFingerprints: { [task.requesterDeviceId]: "A".repeat(32) },
+      }));
+      expect(loadLocalAgentPolicy(policyPath).approvalMode).toBe("trusted-device");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });});

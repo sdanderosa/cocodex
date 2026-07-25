@@ -68,12 +68,17 @@ async function run(): Promise<void> {
     }
     case "configure-agent": {
       const trustedDeviceId = required("--trust-device");
+      const approvalMode = option("--approval") ?? "trusted-device";
+      if (approvalMode !== "trusted-device" && approvalMode !== "always") {
+        throw new Error("--approval must be trusted-device or always");
+      }
       const policy = saveLocalAgentPolicy(paths.agentPolicy, {
         version: 1,
         projectId: required("--project"),
         agentId: required("--agent"),
         workspaceRoot: required("--workspace"),
         sandbox: option("--sandbox") === "read-only" ? "read-only" : "workspace-write",
+        approvalMode,
         trustedRequesterFingerprints: {
           [trustedDeviceId]: required("--trust-fingerprint"),
         },
@@ -202,6 +207,7 @@ async function run(): Promise<void> {
             agentId: policy.agentId,
             workspaceRoot: policy.workspaceRoot,
             sandbox: policy.sandbox,
+            authorizeTask: () => true,
           });
           detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
             localDeviceId: connection.deviceId,
@@ -235,7 +241,7 @@ Usage:
   cocodex-client enroll --invite CODE --name NAME [--state-root PATH]
   cocodex-client status [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
-  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--state-root PATH]
+  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
   cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex-client chat-send --project ID --message TEXT [--state-root PATH]

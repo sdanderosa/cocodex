@@ -21,6 +21,7 @@ export interface ClientConnection {
   serverIdentityPublicKeyPem: string;
   deviceId: string;
   displayName: string;
+  serverEpoch: number;
 }
 
 function serverOrigin(invitation: InvitationPayload): string {
@@ -81,7 +82,10 @@ export async function enrollClient(
     devicePublicKeyPem: identity.publicKeyPem,
     messagingPublicKeyPem: identity.messagingPublicKeyPem,
     signature,
-  }) as { device: { id: string }; serverIdentityPublicKeyPem: string };
+  }) as { device: { id: string }; serverIdentityPublicKeyPem: string; serverEpoch: number };
+  if (!Number.isSafeInteger(enrolled.serverEpoch) || enrolled.serverEpoch < 1) {
+    throw new Error("CoCodex Server returned an invalid authority epoch during enrollment");
+  }
   const connection: ClientConnection = {
     version: 1,
     host: invitation.host,
@@ -91,19 +95,25 @@ export async function enrollClient(
     serverIdentityPublicKeyPem: enrolled.serverIdentityPublicKeyPem,
     deviceId: enrolled.device.id,
     displayName: displayName.trim(),
+    serverEpoch: enrolled.serverEpoch,
   };
+  saveClientConnection(paths, connection, "wx");
+  return connection;
+}
+
+function saveClientConnection(paths: ClientPaths, connection: ClientConnection, flag: "w" | "wx" = "w"): void {
   writeFileSync(paths.connection, `${JSON.stringify(connection, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
+    encoding: "utf8", flag, mode: 0o600,
   });
   hardenSecretPath(paths.connection, { required: true });
-  return connection;
 }
 
 export function loadClientConnection(paths: ClientPaths = clientPaths()): ClientConnection {
   hardenSecretPath(paths.connection, { required: true });
-  return JSON.parse(readFileSync(paths.connection, "utf8")) as ClientConnection;
+  const connection = JSON.parse(readFileSync(paths.connection, "utf8")) as ClientConnection;
+  const epoch = connection.serverEpoch ?? 1;
+  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("Invalid CoCodex Server epoch in client connection");
+  return { ...connection, serverEpoch: epoch };
 }
 
 export async function connectAuthenticatedClient(paths: ClientPaths = clientPaths()): Promise<WebSocket> {
@@ -140,6 +150,20 @@ export async function connectAuthenticatedClient(paths: ClientPaths = clientPath
             ).toString("base64url"),
           }));
         } else if (frame.type === "auth.ok") {
+          const remoteEpoch = Number(frame.serverEpoch);
+          if (!Number.isSafeInteger(remoteEpoch) || remoteEpoch < 1) {
+            throw new Error("CoCodex Server returned an invalid authority epoch");
+          }
+          if (remoteEpoch < connection.serverEpoch) {
+            throw new Error(`Rejected stale CoCodex Server epoch ${remoteEpoch}; expected at least ${connection.serverEpoch}`);
+          }
+          if (String(frame.serverIdentityPublicKeyPem) !== connection.serverIdentityPublicKeyPem) {
+            throw new Error("CoCodex Server identity changed unexpectedly");
+          }
+          if (remoteEpoch > connection.serverEpoch) {
+            connection.serverEpoch = remoteEpoch;
+            saveClientConnection(paths, connection);
+          }
           clearTimeout(timeout);
           resolve(socket);
         } else if (frame.type === "auth.error") {
