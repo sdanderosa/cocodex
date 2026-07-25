@@ -10,9 +10,8 @@
   encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
-  lifecycle timeout hardening `0f09345f`, and encrypted project artifacts
-  `ba32d995`. The keyed encrypted-agent prompt/result slice is recorded in
-  the current follow-up implementation commit.
+  lifecycle timeout hardening `0f09345f`, encrypted project artifacts
+  `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
