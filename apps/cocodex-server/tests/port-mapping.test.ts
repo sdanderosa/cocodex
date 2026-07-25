@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { controlUrl, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
+import { classifyDirectHosting, controlUrl, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
 
 const previous = process.env.COCODEX_DISABLE_PORT_MAPPING;
 afterEach(() => {
@@ -21,5 +21,13 @@ describe("CoCodex automatic port mapping", () => {
     await expect(tryAutomaticPortMapping(19463)).resolves.toEqual({
       status: "unavailable", method: "none", message: "Automatic port mapping disabled by configuration.",
     });
+  });
+
+  test("distinguishes ready, manual-forwarding, and likely-CGNAT outcomes", () => {
+    const mapped = { status: "mapped" as const, method: "upnp" as const, message: "mapped" };
+    expect(classifyDirectHosting(mapped, "192.168.1.42").status).toBe("ready");
+    const unavailable = { status: "unavailable" as const, method: "none" as const, message: "none" };
+    expect(classifyDirectHosting(unavailable, "192.168.1.42").status).toBe("likely-cgnat");
+    expect(classifyDirectHosting(unavailable, "8.8.8.8").status).toBe("manual-forwarding-required");
   });
 });

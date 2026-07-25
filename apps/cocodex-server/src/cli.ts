@@ -6,7 +6,7 @@ import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
 import { createServerIdentity, loadServerIdentity } from "./identity";
 import { createInvitation } from "./invitations";
-import { tryAutomaticPortMapping } from "./port-mapping";
+import { classifyDirectHosting, tryAutomaticPortMapping } from "./port-mapping";
 import { registerAgent } from "./agent-routing";
 import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
@@ -64,6 +64,7 @@ Usage:
   cocodex-server stop [--state-root PATH]
   cocodex-server restart [--state-root PATH]
   cocodex-server status [--state-root PATH]
+  cocodex-server network-diagnose [--port PORT] [--state-root PATH]
   cocodex-server backup --output FILE [--state-root PATH]
   cocodex-server restore --input FILE [--state-root PATH]
   cocodex-server transfer-export --output FILE [--passphrase-file FILE] [--state-root PATH]
@@ -91,6 +92,7 @@ async function run(): Promise<void> {
       openDatabase(paths.database).close();
       const firewall = configureWindowsFirewall(port);
       const portMapping = await tryAutomaticPortMapping(port);
+      const networkDiagnostic = classifyDirectHosting(portMapping);
       console.log(JSON.stringify({
         initialized: true,
         stateRoot: paths.root,
@@ -99,6 +101,7 @@ async function run(): Promise<void> {
         serverFingerprint: tlsCertificateFingerprint(paths.tlsCertificate),
         firewall,
         portMapping,
+        networkDiagnostic,
         manualPortForwarding: {
           protocol: "TCP",
           externalPort: port,
@@ -111,6 +114,12 @@ async function run(): Promise<void> {
           ],
         },
       }));
+      return;
+    }
+    case "network-diagnose": {
+      const port = Number(option("--port") ?? (existsSync(paths.config) ? loadConfig(paths).port : "19463"));
+      const mapping = await tryAutomaticPortMapping(port);
+      console.log(JSON.stringify(classifyDirectHosting(mapping), null, 2));
       return;
     }
     case "invite": {

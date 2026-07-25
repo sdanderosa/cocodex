@@ -9,6 +9,13 @@ export interface PortMappingResult {
   internalHost?: string;
 }
 
+export interface DirectHostingDiagnostic {
+  status: "ready" | "manual-forwarding-required" | "likely-cgnat" | "blocked";
+  localAddress?: string;
+  message: string;
+  mapping: PortMappingResult;
+}
+
 const SSDP_ADDRESS = "239.255.255.250";
 const SSDP_PORT = 1900;
 const DISCOVERY_TIMEOUT_MS = 650;
@@ -22,13 +29,37 @@ const REQUEST = [
   "",
 ].join("\r\n");
 
-function localIpv4(): string | undefined {
+export function localIpv4(): string | undefined {
   for (const entries of Object.values(networkInterfaces())) {
     for (const entry of entries ?? []) {
       if (entry.family === "IPv4" && !entry.internal) return entry.address;
     }
   }
   return undefined;
+}
+
+function isCgnatOrPrivate(address: string | undefined): boolean {
+  if (!address) return false;
+  const octets = address.split(".").map(Number);
+  if (octets.length !== 4 || octets.some(value => !Number.isInteger(value) || value < 0 || value > 255)) return false;
+  const [a, b] = octets;
+  return a === 10 || a === 100 && b >= 64 && b <= 127 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
+}
+
+export function classifyDirectHosting(mapping: PortMappingResult, address = localIpv4()): DirectHostingDiagnostic {
+  if (mapping.status === "mapped") {
+    return { status: "ready", localAddress: address, mapping, message: "Direct hosting is ready: the CoCodex port mapping succeeded." };
+  }
+  if (!address) {
+    return { status: "blocked", mapping, message: "No usable local IPv4 address was found. Direct hosting is unavailable until this PC has a LAN connection." };
+  }
+  if (isCgnatOrPrivate(address)) {
+    return { status: "likely-cgnat", localAddress: address, mapping, message: "The PC has a private or carrier-grade address and automatic mapping did not succeed. Your ISP or upstream router may be using CGNAT; ask for a public IPv4 address or forward the port on every upstream router." };
+  }
+  if (mapping.status === "unavailable") {
+    return { status: "manual-forwarding-required", localAddress: address, mapping, message: "No automatic router mapping is available. Forward one TCP port manually and allow it through the firewall." };
+  }
+  return { status: "blocked", localAddress: address, mapping, message: "Automatic mapping failed. Verify the router, firewall, and ISP inbound-port policy, then retry or use manual forwarding." };
 }
 
 function header(value: string, name: string): string | undefined {
