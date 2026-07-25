@@ -74,8 +74,9 @@ disconnect, expiry of queued/running agent tasks, and recipient-key certificate
 binding. Remote agent execution now follows a host-owned policy: cryptographically
 pinned trusted devices run directly by default, while hosts can select an
 `always` mode that displays the complete prompt for an allow-once decision. The
-same WSS path carries bounded mouse-cursor and text-caret presence, and clears
-it on disconnect. Authenticated requester/host cancellation records an
+same WSS path carries bounded mouse-cursor, text-caret/selection, and ephemeral
+typing presence, and clears it on disconnect. Authenticated requester/host
+cancellation records an
 authoritative final task event and aborts the host process. `cocodex-server init` attempts the Windows Firewall rule and prints
 the single-port manual router-forwarding instructions when automatic setup is
 unavailable. Initialization now performs a bounded UPnP discovery and
@@ -87,6 +88,57 @@ The separate server CLI now also exposes `status`, `stop`, `restart`, `migrate`,
 include a SHA-256 database checksum, and are rejected if tampered with or
 presented to a different server identity. The lifecycle test exercises status
 and graceful stop against the real TLS server process.
+
+## Authenticated prompt awareness
+
+Implementation commit: `203dc406`
+
+Test names:
+
+- `CoCodex protocol > bounds presence cursor and caret frames`
+- `CoCodex protocol > strictly validates server presence snapshots, updates, and leaves`
+- `authenticated WSS collaboration > two members share authoritative chat order and recover history by cursor`
+- `authenticated WSS collaboration > encrypted chat subscriptions also carry independent presence awareness`
+
+Command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+17 pass
+0 fail
+129 expect() calls
+Ran 17 tests across 2 files.
+```
+
+The WSS coverage exercises both the legacy and encrypted chat subscription
+routes. It proves that cursor, caret/selection, and typing state are delivered
+without clobbering one another; typing-only updates remain visible; duplicate
+sockets for one device do not clear the surviving device state; and removing a
+project member emits `presence.leave`. The protocol schemas bound coordinates,
+caret offsets, display names, timestamps, member counts, and unknown fields.
+The GUI keeps local channels merged, batches typing updates at 100 ms, clears
+typing after 1.5 seconds of inactivity or blur, resends the cached state after
+reconnect, filters events from an old project, and renders advisory named
+caret/selection/typing status chips. It intentionally does not claim a rich
+inline caret overlay or stable Yjs RelativePosition mapping yet.
+
+Files:
+
+- `packages/cocodex-protocol/src/collaboration.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/session.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `gui/src/styles-cocodex.css`
+- `apps/cocodex-server/tests/collaboration-server.test.ts`
 
 Files:
 
