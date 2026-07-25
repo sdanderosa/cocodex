@@ -330,7 +330,7 @@ export const projectKeyInitializedFrameSchema = z.object({
   requestId,
   projectId,
   keyEpoch: z.literal(1),
-  envelopes: z.array(projectKeyEnvelopeSchema).max(128),
+  envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
   created: z.boolean(),
 }).strict();
 

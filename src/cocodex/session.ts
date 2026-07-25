@@ -29,7 +29,19 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "./project-encryption";
-import { loadProjectKey, loadProjectKeyForEncryption, loadProjectKeyForRotation, loadProjectKeyState, markProjectKeyRotationRequired, removeProjectKey, revokeProjectKey, storeProjectKey } from "./project-key-store";
+import {
+  clearProjectKeyInitialization,
+  loadPendingProjectKeyInitializations,
+  loadProjectKey,
+  loadProjectKeyForEncryption,
+  loadProjectKeyForRotation,
+  loadProjectKeyState,
+  markProjectKeyRotationRequired,
+  removeProjectKey,
+  revokeProjectKey,
+  stageProjectKeyInitialization,
+  storeProjectKey,
+} from "./project-key-store";
 
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
@@ -41,6 +53,27 @@ function controlRequestId(value: unknown): string {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
     ? value
     : randomUUID();
+}
+
+function canonicalProjectKeyEnvelope(value: unknown): string {
+  const envelope = projectKeyEnvelopeSchema.parse(value);
+  return JSON.stringify([
+    envelope.version,
+    envelope.projectId,
+    envelope.keyEpoch,
+    envelope.recipientDeviceId,
+    envelope.senderDeviceId,
+    envelope.sealedProjectKey,
+    envelope.senderPublicKeyPem,
+    envelope.signature,
+  ]);
+}
+
+function sameProjectKeyEnvelopeSet(left: unknown[], right: unknown[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = left.map(canonicalProjectKeyEnvelope).sort();
+  const returned = right.map(canonicalProjectKeyEnvelope).sort();
+  return expected.every((value, index) => value === returned[index]);
 }
 
 const SNAPSHOT_PAGE_SIZE = 500;
@@ -84,9 +117,36 @@ export async function runJsonLineSession(
     projectId: string;
     keyEpoch: 1;
     frame: Record<string, unknown>;
+    commandId: string;
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
+  for (const pending of loadPendingProjectKeyInitializations(paths.projectKeys)) {
+    if (!loadProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch)) {
+      clearProjectKeyInitialization(paths.projectKeys, pending.requestId);
+      emitError({
+        source: "project-encryption",
+        error: `Discarded pending project-key initialization ${pending.requestId} because its local key is missing`,
+      });
+      continue;
+    }
+    const frame = {
+      version: 1 as const,
+      type: "project.key.initialize" as const,
+      requestId: pending.requestId,
+      projectId: pending.projectId,
+      keyEpoch: 1 as const,
+      envelopes: pending.envelopes,
+    } satisfies Record<string, unknown>;
+    pendingProjectKeyInitializations.set(pending.requestId, {
+      projectId: pending.projectId,
+      keyEpoch: 1,
+      frame,
+      // A process restart cannot recover the original GUI id. The durable
+      // request id is the honest correlation id for this replay.
+      commandId: pending.requestId,
+    });
+  }
   const assertLegacyProjectFallbackAllowed = (projectId: string): void => {
     if (loadProjectKeyState(paths.projectKeys, projectId)) {
       throw new Error(`Project ${projectId} requires encrypted content frames`);
@@ -895,15 +955,44 @@ export async function runJsonLineSession(
         const pending = pendingProjectKeyInitializations.get(frame.requestId);
         if (pending) {
           pendingProjectKeyInitializations.delete(frame.requestId);
+          try { clearProjectKeyInitialization(paths.projectKeys, frame.requestId); }
+          catch (error) {
+            emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+          }
           try { removeProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch); }
           catch (error) {
             emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
           }
+          emit({
+            source: "control",
+            id: pending.commandId,
+            ok: false,
+            projectId: pending.projectId,
+            error: String(frame.error ?? "Project key initialization failed"),
+          });
         }
       }
       if (frame.type === "project.chat.snapshot" || frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
         void openEncryptedChatFrame(frame);
         return;
+      }
+      if (frame.type === "project.list.result" && Array.isArray(frame.projects)) {
+        // Project membership is authoritative on the server. Refreshing the
+        // addressed key envelopes after a project-list response recovers a
+        // recipient that was offline during the original initialization.
+        for (const project of frame.projects) {
+          const projectId = project && typeof project === "object"
+            ? String((project as Record<string, unknown>).id ?? "")
+            : "";
+          if (!projectId) continue;
+          projectKeySubscriptions.add(projectId);
+          try {
+            send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
+          } catch {
+            // The reconnect supervisor will retry the subscription after the
+            // socket is ready again.
+          }
+        }
       }
       if (frame.type === "project.prompt.snapshot" || frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
         void openEncryptedPromptFrame(frame);
@@ -986,20 +1075,37 @@ export async function runJsonLineSession(
         const pending = pendingProjectKeyInitializations.get(String(frame.requestId));
         if (pending) {
           pendingProjectKeyInitializations.delete(String(frame.requestId));
-          if (String(frame.projectId) !== pending.projectId || Number(frame.keyEpoch) !== pending.keyEpoch) {
+          const expectedEnvelopes = Array.isArray(pending.frame.envelopes) ? pending.frame.envelopes : [];
+          const returnedEnvelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
+          if (String(frame.projectId) !== pending.projectId || Number(frame.keyEpoch) !== pending.keyEpoch
+            || expectedEnvelopes.length < 1 || !sameProjectKeyEnvelopeSet(expectedEnvelopes, returnedEnvelopes)) {
+            try { clearProjectKeyInitialization(paths.projectKeys, String(frame.requestId)); }
+            catch (error) {
+              emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+            }
             try { removeProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch); }
             catch (error) {
               emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
             }
-            emitError({ source: "project-encryption", error: "Project key initialization acknowledgement did not match the request" });
-          } else {
             emit({
               source: "control",
-              id: frame.requestId,
+              id: pending.commandId,
+              ok: false,
+              projectId: pending.projectId,
+              error: "Project key initialization acknowledgement did not match the request",
+            });
+          } else {
+            try { clearProjectKeyInitialization(paths.projectKeys, String(frame.requestId)); }
+            catch (error) {
+              emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+            }
+            emit({
+              source: "control",
+              id: pending.commandId,
               ok: true,
               projectId: pending.projectId,
               keyEpoch: pending.keyEpoch,
-              sharedRecipients: Array.isArray(frame.envelopes) ? frame.envelopes.length : 0,
+              sharedRecipients: returnedEnvelopes.length,
               created: frame.created === true,
             });
           }
@@ -1038,11 +1144,14 @@ export async function runJsonLineSession(
       emit({ source: "server", frame });
     };
     connected.addEventListener("message", listener);
-    const flushedEvents = await flush();
     for (const pending of pendingProjectKeyInitializations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will retry on its next cycle */ }
     }
+    // Initialization must be on the wire before encrypted outbox frames. A
+    // staged epoch is not usable by the server until this idempotent batch has
+    // committed, and outbox head-of-line blocking would otherwise starve it.
+    const flushedEvents = await flush();
     for (const [projectId, afterSequence] of chatCursors) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
         chatCursors.delete(projectId);
@@ -1240,15 +1349,21 @@ export async function runJsonLineSession(
             keyEpoch: 1 as const,
             envelopes,
           } satisfies Record<string, unknown>;
-          // Stage the local key before the atomic server request. If the
-          // server rejects the batch, the error handler removes this staged
-          // key; if the connection drops after commit, the same request is
-          // replayed on reconnect and remains idempotent.
-          storeProjectKey(paths.projectKeys, projectId, keyEpoch, projectKey);
-          pendingProjectKeyInitializations.set(requestId, { projectId, keyEpoch: 1, frame });
+          // Persist the local key and signed batch together. If the server
+          // rejects the batch, the error handler removes both the durable
+          // intent and staged key; if the connection drops after commit, the
+          // same request is replayed on reconnect and remains idempotent.
+          stageProjectKeyInitialization(paths.projectKeys, {
+            requestId,
+            projectId,
+            keyEpoch: 1,
+            envelopes,
+          }, projectKey);
+          pendingProjectKeyInitializations.set(requestId, { projectId, keyEpoch: 1, frame, commandId: String(command.id ?? requestId) });
           try { send(frame); }
           catch (error) {
             pendingProjectKeyInitializations.delete(requestId);
+            clearProjectKeyInitialization(paths.projectKeys, requestId);
             removeProjectKey(paths.projectKeys, projectId, keyEpoch);
             throw error;
           }

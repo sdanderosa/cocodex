@@ -317,7 +317,7 @@ export function initializeProjectKeyEpoch(
   values: unknown,
   now = new Date(),
 ): ProjectKeyInitializationResult {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initializationId)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initializationId)) {
     throw new Error("Invalid project key initialization ID");
   }
   if (!Array.isArray(values) || values.length < 1 || values.length > 128) {
@@ -360,7 +360,9 @@ export function initializeProjectKeyEpoch(
     );
   }
   const serialized = envelopes.map(envelope => envelopeJson(envelope));
-  const initRotationId = `init:${initializationId}`;
+  // `last_rotation_id` is globally unique in the current SQLite schema, so
+  // scope the idempotency marker by project as well as request id.
+  const initRotationId = `init:${projectId}:${initializationId}`;
   return db.transaction(() => {
     const state = readProjectKeyEpoch(db, projectId);
     if (state) {
@@ -612,6 +614,23 @@ export function listProjectKeyEnvelopes(
       ORDER BY key_epoch ASC
       LIMIT 1
     `).all(projectId, recipientDeviceId, keyEpoch) as KeyEnvelopeRow[];
+  return rows.map(row => parseKeyEnvelope(row.envelopeJson));
+}
+
+/** Return all envelopes currently addressed to an approved device. */
+export function listProjectKeyEnvelopesForDevice(
+  db: Database,
+  deviceId: string,
+): ProjectKeyEnvelope[] {
+  const rows = db.query(`
+    SELECT e.envelope_json AS envelopeJson
+    FROM project_key_envelopes e
+    JOIN project_members pm ON pm.project_id = e.project_id AND pm.device_id = e.recipient_device_id
+    JOIN devices d ON d.id = pm.device_id
+    WHERE e.recipient_device_id = ? AND d.status = 'approved'
+    ORDER BY e.project_id ASC, e.key_epoch ASC
+    LIMIT 4096
+  `).all(deviceId) as KeyEnvelopeRow[];
   return rows.map(row => parseKeyEnvelope(row.envelopeJson));
 }
 

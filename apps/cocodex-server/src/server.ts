@@ -48,6 +48,7 @@ import {
   getProjectKeyEpoch,
   initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
+  listProjectKeyEnvelopesForDevice,
   removeProjectMemberAndInvalidateKeys,
   rotateProjectKeyEpoch,
   shareProjectKeyEnvelope,
@@ -589,6 +590,18 @@ export function startCoCodexServer(
               serverIdentityPublicKeyPem: identity.publicKeyPem,
               serverEpoch: serverEpoch(db),
             }));
+            // Re-deliver every envelope addressed to this device after each
+            // authenticated reconnect. This closes the offline-recipient and
+            // commit-before-broadcast window without exposing other members'
+            // ciphertext or key material.
+            for (const envelope of listProjectKeyEnvelopesForDevice(db, device.id)) {
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "project.key.changed",
+                projectId: envelope.projectId,
+                envelope,
+              }));
+            }
             return;
           }
           if (message.type === "auth.response") throw new Error("Device is already authenticated");
@@ -1051,15 +1064,15 @@ export function startCoCodexServer(
               envelopes: initialized.envelopes,
               created: initialized.created,
             }));
-            if (initialized.created) {
-              for (const envelope of initialized.envelopes) {
-                sendToDevice(envelope.recipientDeviceId, {
-                  version: 1,
-                  type: "project.key.changed",
-                  projectId: message.projectId,
-                  envelope,
-                });
-              }
+            for (const envelope of initialized.envelopes) {
+              // Replay responses deliberately re-send the batch. The owner
+              // may have lost the original broadcast during a reconnect.
+              sendToDevice(envelope.recipientDeviceId, {
+                version: 1,
+                type: "project.key.changed",
+                projectId: message.projectId,
+                envelope,
+              });
             }
             return;
           }

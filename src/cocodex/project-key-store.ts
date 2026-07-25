@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { hardenSecretPath } from "../lib/windows-secret-acl";
-import { PROJECT_KEY_BYTES, PROJECT_KEY_EPOCH_MAX } from "@cocodex/protocol";
+import { PROJECT_KEY_BYTES, PROJECT_KEY_EPOCH_MAX, projectKeyEnvelopeSchema, type ProjectKeyEnvelope } from "@cocodex/protocol";
 
 const STORE_VERSION = 1 as const;
 
@@ -8,6 +8,14 @@ export interface StoredProjectKeyStore {
   version: typeof STORE_VERSION;
   projects: Record<string, Record<string, string>>;
   states?: Record<string, StoredProjectKeyState>;
+  pendingInitializations?: Record<string, StoredProjectKeyInitialization>;
+}
+
+export interface StoredProjectKeyInitialization {
+  requestId: string;
+  projectId: string;
+  keyEpoch: 1;
+  envelopes: ProjectKeyEnvelope[];
 }
 
 /**
@@ -40,6 +48,12 @@ function decodeKey(value: string): Buffer | undefined {
 function validateProjectId(projectId: string): void {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(projectId)) {
     throw new Error("Project key store contains an invalid project ID");
+  }
+}
+
+function validateRequestId(requestId: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+    throw new Error("Project key store contains an invalid initialization ID");
   }
 }
 
@@ -94,6 +108,7 @@ function writeProjectKeyState(
   state: StoredProjectKeyState,
 ): StoredProjectKeyStore {
   return {
+    ...store,
     version: STORE_VERSION,
     projects: store.projects,
     states: {
@@ -124,6 +139,25 @@ function validateProjectKeyState(value: unknown): StoredProjectKeyState {
     revoked: record.revoked,
     ...(revokedAtEpoch === undefined ? {} : { revokedAtEpoch: revokedAtEpoch as number }),
   };
+}
+
+function validatePendingInitialization(value: unknown): StoredProjectKeyInitialization {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Project key store contains invalid pending initialization");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.requestId !== "string") throw new Error("Project key store contains invalid pending initialization");
+  validateRequestId(record.requestId);
+  if (typeof record.projectId !== "string") throw new Error("Project key store contains invalid pending initialization");
+  validateProjectId(record.projectId);
+  if (record.keyEpoch !== 1 || !Array.isArray(record.envelopes) || record.envelopes.length < 1 || record.envelopes.length > 128) {
+    throw new Error("Project key store contains invalid pending initialization");
+  }
+  const envelopes = record.envelopes.map(value => projectKeyEnvelopeSchema.parse(value));
+  if (envelopes.some(envelope => envelope.projectId !== record.projectId || envelope.keyEpoch !== 1)) {
+    throw new Error("Project key store contains invalid pending initialization");
+  }
+  return { requestId: record.requestId, projectId: record.projectId, keyEpoch: 1, envelopes };
 }
 
 function validateStore(value: unknown): StoredProjectKeyStore {
@@ -159,9 +193,23 @@ function validateStore(value: unknown): StoredProjectKeyStore {
       states[projectId] = validateProjectKeyState(rawState);
     }
   }
-  return Object.keys(states).length === 0
-    ? { version: STORE_VERSION, projects }
-    : { version: STORE_VERSION, projects, states };
+  const pendingInitializations: Record<string, StoredProjectKeyInitialization> = {};
+  if (record.pendingInitializations !== undefined) {
+    if (!record.pendingInitializations || typeof record.pendingInitializations !== "object" || Array.isArray(record.pendingInitializations)) {
+      throw new Error("Project key store contains invalid pending initializations");
+    }
+    for (const [requestId, rawInitialization] of Object.entries(record.pendingInitializations as Record<string, unknown>)) {
+      const initialization = validatePendingInitialization(rawInitialization);
+      if (initialization.requestId !== requestId) throw new Error("Project key store contains mismatched pending initialization ID");
+      pendingInitializations[requestId] = initialization;
+    }
+  }
+  return {
+    version: STORE_VERSION,
+    projects,
+    ...(Object.keys(states).length > 0 ? { states } : {}),
+    ...(Object.keys(pendingInitializations).length > 0 ? { pendingInitializations } : {}),
+  };
 }
 
 export function loadProjectKeyStore(path: string): StoredProjectKeyStore {
@@ -215,6 +263,68 @@ export function storeProjectKey(path: string, projectId: string, keyEpoch: numbe
   saveProjectKeyStore(path, writeProjectKeyState({ ...store, projects }, projectId, nextState));
 }
 
+/**
+ * Persist a newly generated key and its signed initialization batch together.
+ * The pending batch is retained until the server acknowledgement is observed,
+ * so a client restart can safely replay the idempotent request.
+ */
+export function stageProjectKeyInitialization(
+  path: string,
+  initialization: StoredProjectKeyInitialization,
+  projectKey: Uint8Array,
+): void {
+  const validated = validatePendingInitialization(initialization);
+  const key = Buffer.from(projectKey);
+  if (key.byteLength !== PROJECT_KEY_BYTES) throw new Error("Project encryption key has an invalid length");
+  const store = loadProjectKeyStore(path);
+  const state = readProjectKeyState(store, validated.projectId) ?? defaultProjectKeyState(undefined);
+  if (state.revoked) throw new Error("Project key access has been revoked");
+  const existingEncoded = store.projects[validated.projectId]?.[String(validated.keyEpoch)];
+  if (existingEncoded !== undefined) {
+    const existing = decodeKey(existingEncoded);
+    if (!existing) throw new Error("Project key store contains an invalid key");
+    if (!existing.equals(key)) throw new Error("Project key epoch already contains a different key");
+  } else if (state.currentEpoch !== null && validated.keyEpoch < state.currentEpoch) {
+    throw new Error(`Project key epoch ${validated.keyEpoch} is stale; current epoch is ${state.currentEpoch}`);
+  }
+  const projects = {
+    ...store.projects,
+    [validated.projectId]: {
+      ...(store.projects[validated.projectId] ?? {}),
+      [String(validated.keyEpoch)]: key.toString("base64url"),
+    },
+  };
+  const nextState: StoredProjectKeyState = {
+    ...state,
+    currentEpoch: Math.max(state.currentEpoch ?? validated.keyEpoch, validated.keyEpoch),
+    rotationRequired: false,
+  };
+  saveProjectKeyStore(path, {
+    ...writeProjectKeyState({ ...store, projects }, validated.projectId, nextState),
+    pendingInitializations: {
+      ...(store.pendingInitializations ?? {}),
+      [validated.requestId]: validated,
+    },
+  });
+}
+
+export function loadPendingProjectKeyInitializations(path: string): StoredProjectKeyInitialization[] {
+  return Object.values(loadProjectKeyStore(path).pendingInitializations ?? {});
+}
+
+export function clearProjectKeyInitialization(path: string, requestId: string): void {
+  validateRequestId(requestId);
+  const store = loadProjectKeyStore(path);
+  if (!store.pendingInitializations?.[requestId]) return;
+  const pendingInitializations = { ...store.pendingInitializations };
+  delete pendingInitializations[requestId];
+  const { pendingInitializations: _discarded, ...withoutPendingInitializations } = store;
+  saveProjectKeyStore(path, {
+    ...withoutPendingInitializations,
+    ...(Object.keys(pendingInitializations).length > 0 ? { pendingInitializations } : {}),
+  });
+}
+
 /** Remove one locally staged key after its server transaction was rejected. */
 export function removeProjectKey(path: string, projectId: string, keyEpoch: number): void {
   validateProjectId(projectId);
@@ -237,7 +347,9 @@ export function removeProjectKey(path: string, projectId: string, keyEpoch: numb
       currentEpoch: Math.max(...Object.keys(nextEpochs).map(Number)),
     };
   }
+  const { states: _discardedStates, ...withoutStates } = store;
   saveProjectKeyStore(path, {
+    ...withoutStates,
     version: STORE_VERSION,
     projects,
     ...(Object.keys(states).length > 0 ? { states } : {}),

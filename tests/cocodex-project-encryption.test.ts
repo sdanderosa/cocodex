@@ -19,6 +19,8 @@ import {
 } from "../src/cocodex/project-encryption";
 import {
   canEncryptProject,
+  clearProjectKeyInitialization,
+  loadPendingProjectKeyInitializations,
   loadProjectKey,
   loadProjectKeyForEncryption,
   loadProjectKeyForRotation,
@@ -29,6 +31,7 @@ import {
   restoreProjectKeyAccess,
   revokeProjectKey,
   rotateProjectKey,
+  stageProjectKeyInitialization,
   storeProjectKey,
 } from "../src/cocodex/project-key-store";
 
@@ -264,6 +267,45 @@ describe("CoCodex project encryption foundation", () => {
       removeProjectKey(path, projectId, 3);
       expect(loadProjectKey(path, projectId, 3)).toBeUndefined();
       expect(loadProjectKeyState(path, projectId)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("persists and clears an atomic initialization intent for crash recovery", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-key-init-"));
+    try {
+      const path = join(root, "project-keys.json");
+      const projectId = randomUUID();
+      const requestId = randomUUID();
+      const recipientDeviceId = randomUUID();
+      const envelope = {
+        version: 1 as const,
+        projectId,
+        keyEpoch: 1,
+        recipientDeviceId,
+        senderDeviceId: randomUUID(),
+        sealedProjectKey: Buffer.alloc(80, 7).toString("base64url"),
+        senderPublicKeyPem: "x".repeat(80),
+        signature: Buffer.alloc(64, 8).toString("base64url"),
+      };
+      const projectKey = createProjectKey();
+      stageProjectKeyInitialization(path, {
+        requestId,
+        projectId,
+        keyEpoch: 1,
+        envelopes: [envelope],
+      }, projectKey);
+      expect(loadPendingProjectKeyInitializations(path)).toEqual([{
+        requestId,
+        projectId,
+        keyEpoch: 1,
+        envelopes: [envelope],
+      }]);
+      expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
+      clearProjectKeyInitialization(path, requestId);
+      expect(loadPendingProjectKeyInitializations(path)).toEqual([]);
+      expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

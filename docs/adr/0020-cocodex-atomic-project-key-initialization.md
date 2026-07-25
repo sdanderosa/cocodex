@@ -26,10 +26,14 @@ replayed after a reconnect without creating a second epoch. The older
 single-envelope share route remains available for compatibility and explicit
 key delivery, but it cannot make a partial batch look like an initialization.
 
-The client stages the generated project key before sending the batch, keeps the
-exact frame in memory until acknowledgement, replays it after a transport
-reconnect, and removes the staged key if the server rejects the transaction or
-returns a mismatched acknowledgement. The key is never sent to the server.
+The client persists the generated project key and exact signed batch as one
+protected local initialization intent before sending it. The intent survives a
+client restart, is replayed before encrypted outbox traffic after reconnect,
+and is removed only after the server rejects the transaction or returns a
+matching envelope set. A mismatched acknowledgement removes the staged key and
+emits a control failure. The key is never sent to the server. Authenticated
+reconnects re-deliver all envelopes addressed to the device, so an offline
+recipient does not depend on the original broadcast.
 
 ## Reuse and licensing
 
@@ -49,6 +53,11 @@ cryptographic primitive is introduced.
   and prevents the server from entering encrypted mode accidentally.
 - Replay uses the original request ID and exact envelope set; changed content
   is rejected as a replay conflict.
+- Initialization markers are scoped by project and request ID because the
+  SQLite rotation marker has a global uniqueness constraint.
+- The server replays addressed envelopes on authentication and on idempotent
+  initialization retries; the client also refreshes keys after project-list
+  recovery.
 - The server still sees routing metadata and pre-key legacy rows. Historical
   plaintext migration, encrypted file references, and ratcheted private
   messaging remain separate release-gate work and are not implied by this ADR.
@@ -61,5 +70,7 @@ cryptographic primitive is introduced.
   complete-member validation, atomic rollback, and idempotent replay.
 - `tests/cocodex-project-encryption-session.test.ts` exercises initialization
   through real TLS/WSS sessions and local decryption.
+- `tests/cocodex-project-encryption.test.ts` proves that a pending signed batch
+  and local key survive a store reload and clear cleanly after acknowledgement.
 - `tests/cocodex-private-alpha-process.test.ts` exercises the batch path in the
   three-process alpha harness.

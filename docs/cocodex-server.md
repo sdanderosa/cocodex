@@ -169,8 +169,11 @@ The first `project.key.initialize` operation is stricter than the compatibility
 `project.key.share` route. It accepts one owner-signed epoch-1 envelope for
 every approved project member and inserts the complete set plus the epoch row in
 one immediate SQLite transaction. The `project.key.initialized` response is
-idempotent by request ID, so a reconnect can safely replay the batch. A failed
-batch leaves no partial key envelopes and does not enable encrypted mode.
+idempotent by a project-scoped request ID, so a reconnect can safely replay the
+batch. The server re-sends the addressed envelope set both on an idempotent
+retry and after every authenticated reconnect, covering recipients that were
+offline during the original broadcast. A failed batch leaves no partial key
+envelopes and does not enable encrypted mode.
 
 This is not yet a whole-project E2EE claim. Legacy `context.*`, `agent.*`, and
 file-reference paths remain server-readable for projects without a key, and

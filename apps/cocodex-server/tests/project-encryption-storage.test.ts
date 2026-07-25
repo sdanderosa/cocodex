@@ -176,6 +176,16 @@ describe("opaque project-encryption server storage", () => {
       ).created).toBeFalse();
       expect(db.query("SELECT COUNT(*) AS count FROM project_key_epochs WHERE project_id = ?")
         .get(project.id)).toEqual({ count: 1 });
+      const secondProject = createProject(db, "Second atomic encrypted project", owner.id);
+      addProjectMember(db, secondProject.id, owner.id, member.id);
+      const secondInitialized = initializeProjectKeyEpoch(
+        db,
+        secondProject.id,
+        owner.id,
+        initializationId,
+        [keyEnvelope(secondProject.id, owner, owner.id), keyEnvelope(secondProject.id, owner, member.id)],
+      );
+      expect(secondInitialized.created).toBeTrue();
       expect(() => initializeProjectKeyEpoch(
         db,
         project.id,

@@ -126,10 +126,15 @@ wrap public keys:
 
 Initialization is one atomic owner-signed batch: the server requires every
 currently approved member, persists all envelopes in one SQLite transaction,
-and acknowledges the request before the client reports success. A temporary
-local key is removed if the batch is rejected; a reconnect replays the same
-request ID idempotently. This prevents a partially shared key from silently
-putting the client into encrypted mode.
+and acknowledges the request before the client reports success. The client
+persists the signed batch and generated key as a protected pending intent, so a
+process restart can replay the same request ID before encrypted outbox traffic.
+The staged key is removed on rejection or any acknowledgement whose envelope
+set does not exactly match the request. Authenticated reconnects and project
+discovery refresh all envelopes addressed to the device, so an offline member
+does not need to repeat enrollment or depend on the original broadcast. This
+prevents a partially shared key from silently putting the client into encrypted
+mode.
 
 Then use `project.key.get` on each member client and use
 `project.context.get`/`project.context.update` for encrypted Final Goal and
