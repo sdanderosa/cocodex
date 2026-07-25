@@ -67,6 +67,7 @@ describe("official Codex local agent adapter", () => {
         agentId: task.agentId,
         workspaceRoot: workspace,
         onUsage: value => usage = value,
+        authorizeTask: () => true,
         resolveRuntime: () => ({
           runtime: { command: "codex", version: "1.2.3", source: "path" },
           failures: [],
@@ -81,7 +82,7 @@ describe("official Codex local agent adapter", () => {
           ]);
         },
       });
-      expect(adapter.authorize(task)).toBeTrue();
+      await expect(adapter.authorize(task)).resolves.toBeTrue();
       const output: string[] = [];
       for await (const chunk of adapter.execute(task)) output.push(chunk);
       expect(output).toEqual(["Inspection complete."]);
@@ -109,17 +110,24 @@ describe("official Codex local agent adapter", () => {
   test("fails closed for an unmapped task or malformed/truncated JSONL", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "cocodex-agent-workspace-"));
     try {
+      const unapproved = new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: workspace,
+      });
+      await expect(unapproved.authorize(task)).resolves.toBeFalse();
       const adapter = new CodexAgentAdapter({
         projectId: task.projectId,
         agentId: task.agentId,
         workspaceRoot: workspace,
+        authorizeTask: () => true,
         resolveRuntime: () => ({
           runtime: { command: "codex", version: "1.2.3", source: "path" },
           failures: [],
         }),
         spawnProcess: () => fakeProcess(() => {}, ['{"type":"turn.completed"']),
       });
-      expect(adapter.authorize({ ...task, agentId: "server-chosen-command" })).toBeFalse();
+      await expect(adapter.authorize({ ...task, agentId: "server-chosen-command" })).resolves.toBeFalse();
       await expect(async () => {
         for await (const _ of adapter.execute(task)) { /* consume */ }
       }).toThrow("truncated JSONL");

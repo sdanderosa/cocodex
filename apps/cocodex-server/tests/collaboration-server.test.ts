@@ -450,6 +450,22 @@ describe("authenticated WSS collaboration", () => {
     expect(kaiPrompt.getText("prompt").toString()).toBe(sharedPromptText);
     expect(sharedPromptText).toContain("Stephen ");
     expect(sharedPromptText).toContain("Kai ");
+
+    const remotePresence = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 },
+    }));
+    const presenceUpdate = await remotePresence;
+    expect(presenceUpdate.displayName).toBe("Stephen");
+    expect(presenceUpdate.cursor).toEqual({ x: 0.42, y: 0.73 });
+    expect(presenceUpdate.caret).toEqual({ anchor: 4, head: 9 });
+    const presenceLeave = nextFrame(reconnectedKai, "presence.leave", frame => frame.deviceId === stephen.id);
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: null, caret: null,
+    }));
+    await presenceLeave;
     await Bun.sleep(1_600);
 
     for (const socket of sockets.splice(0)) socket.close();

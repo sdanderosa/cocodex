@@ -40,15 +40,38 @@ interface PrivateMessage {
   acceptedAt?: string;
 }
 
+interface AgentApproval {
+  id: string;
+  projectId: string;
+  agentId: string;
+  requesterDeviceId: string;
+  prompt: string;
+}
+
+interface PresenceMember {
+  deviceId: string;
+  displayName: string;
+  cursor: { x: number; y: number } | null;
+  caret: { anchor: number; head: number } | null;
+}
+
 interface SessionValue {
   source?: string;
   state?: ConnectionState;
+  approvalState?: "pending" | "resolved";
+  taskId?: string;
+  task?: AgentApproval;
   error?: unknown;
   message?: PrivateMessage;
   frame?: {
     type?: string;
     projectId?: string;
     update?: string;
+    deviceId?: string;
+    displayName?: string;
+    cursor?: { x: number; y: number } | null;
+    caret?: { anchor: number; head: number } | null;
+    members?: PresenceMember[];
     projects?: Project[];
     events?: ChatEvent[];
     event?: ChatEvent;
@@ -113,6 +136,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [projectId, setProjectId] = useState("");
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
+  const [presence, setPresence] = useState<PresenceMember[]>([]);
+  const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
   const [draft, setDraft] = useState("");
   const [sharedPrompt, setSharedPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
@@ -127,6 +152,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const cursor = useRef(0);
   const projectListRequested = useRef(false);
   const subscribedProject = useRef("");
+  const presenceSentAt = useRef(0);
   const promptDoc = useRef<Y.Doc | undefined>(undefined);
   const promptProject = useRef("");
 
@@ -175,6 +201,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setStatus(previous => previous ? { ...previous, state: nextState, running: nextState !== "stopped" } : previous);
       }
       if (event.channel === "error" && value?.error) setNotice(String(value.error));
+      if (value?.source === "agent-approval") {
+        if (value.approvalState === "resolved" && value.taskId) {
+          setAgentApprovals(previous => previous.filter(item => item.id !== value.taskId));
+        } else if (value.approvalState === "pending" && value.task) {
+          const task = value.task;
+          setAgentApprovals(previous => previous.some(item => item.id === task.id)
+            ? previous
+            : [...previous, task]);
+        }
+      }
       if ((frame?.type === "prompt.snapshot" || frame?.type === "prompt.update")
         && frame.projectId && frame.update) {
         try { Y.applyUpdate(ensurePromptDocument(frame.projectId), updateFromBase64(frame.update), "server"); }
@@ -184,6 +220,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
         setProjects(listedProjects);
         setProjectId(previous => previous || listedProjects[0]?.id || "");
+      }
+      if (frame?.type === "presence.snapshot" && Array.isArray(frame.members)) {
+        setPresence(frame.members);
+      } else if (frame?.type === "presence.update" && frame.deviceId && frame.displayName) {
+        setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
+          deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null, caret: frame.caret ?? null,
+        }]);
+      } else if (frame?.type === "presence.leave" && frame.deviceId) {
+        setPresence(previous => previous.filter(member => member.deviceId !== frame.deviceId));
       }
       const incoming: ChatEvent[] = frame?.type === "chat.snapshot"
         ? frame.events ?? []
@@ -247,6 +292,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     if (status?.state !== "connected" || !projectId || subscribedProject.current === projectId) return;
     subscribedProject.current = projectId;
     setChat([]);
+    setPresence([]);
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
@@ -332,6 +378,20 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const decideAgentTask = async (taskId: string, approved: boolean) => {
+    try {
+      await command({ type: "agent.approval", taskId, approved });
+      setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const publishPresence = (cursorValue: { x: number; y: number } | null, caret: { anchor: number; head: number } | null = null) => {
+    if (status?.state !== "connected" || !projectId) return;
+    void command({ type: "presence.update", projectId, cursor: cursorValue, caret });
+  };
+
   return (
     <div className="cocodex-page">
       <header className="cocodex-head">
@@ -348,6 +408,21 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       </header>
 
       {notice && <div className="cocodex-notice" role="status">{notice}</div>}
+      {agentApprovals.map(approval => (
+        <section className="cocodex-agent-approval" role="alert" key={approval.id}>
+          <div>
+            <strong>{t("cocodex.approval.title", { agent: approval.agentId })}</strong>
+            <small>{t("cocodex.approval.requester", { device: approval.requesterDeviceId })}</small>
+            <pre>{approval.prompt}</pre>
+          </div>
+          <div className="cocodex-agent-approval-actions">
+            <button type="button" className="btn btn-danger" onClick={() => void decideAgentTask(approval.id, false)}>
+              {t("cocodex.approval.reject")}</button>
+            <button type="button" className="btn btn-primary" onClick={() => void decideAgentTask(approval.id, true)}>
+              {t("cocodex.approval.approve")}</button>
+          </div>
+        </section>
+      ))}
 
       {!status?.configured ? (
         <form className="card cocodex-enroll" onSubmit={enroll}>
@@ -363,7 +438,23 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           <button className="btn btn-primary" disabled={busy}>{t("cocodex.enroll.action")}</button>
         </form>
       ) : (
-        <div className="cocodex-shell">
+        <div className="cocodex-shell" onMouseMove={event => {
+          if (Date.now() - presenceSentAt.current < 80) return;
+          presenceSentAt.current = Date.now();
+          const rect = event.currentTarget.getBoundingClientRect();
+          publishPresence({
+            x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+            y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+          });
+        }} onMouseLeave={() => publishPresence(null)}>
+          <div className="cocodex-presence-layer" aria-hidden="true">
+            {presence.filter(member => member.deviceId !== status.deviceId && member.cursor).map(member => (
+              <span key={member.deviceId} className="cocodex-presence-cursor"
+                style={{ left: `${(member.cursor?.x ?? 0) * 100}%`, top: `${(member.cursor?.y ?? 0) * 100}%` }}>
+                <i />{member.displayName}
+              </span>
+            ))}
+          </div>
           <aside className="card cocodex-projects">
             <div className="cocodex-section-head">
               <span>{t("cocodex.projects")}</span>
@@ -408,6 +499,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             <label className="cocodex-shared-prompt">
               <span><strong>{t("cocodex.prompt.title")}</strong><small>{t("cocodex.prompt.crdt")}</small></span>
               <textarea className="input" value={sharedPrompt} onChange={event => editSharedPrompt(event.target.value)}
+                onSelect={event => publishPresence(null, { anchor: event.currentTarget.selectionStart, head: event.currentTarget.selectionEnd })}
                 placeholder={t("cocodex.prompt.placeholder")} rows={3} disabled={!status.running || !projectId} />
             </label>
             <div className="cocodex-message-list" aria-live="polite">

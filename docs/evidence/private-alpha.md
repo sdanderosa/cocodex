@@ -57,7 +57,10 @@ The exercised path includes:
 The current hardening suite also covers malformed-frame rejection, loopback GUI
 capability/origin checks, cancellation of in-flight local execution on client
 disconnect, expiry of queued/running agent tasks, and recipient-key certificate
-binding. `cocodex-server init` attempts the Windows Firewall rule and prints
+binding. Remote agent execution now pauses for explicit host-client approval
+with the complete prompt visible before the local Codex process starts. The
+same WSS path carries bounded mouse-cursor and text-caret presence, and clears
+it on disconnect. `cocodex-server init` attempts the Windows Firewall rule and prints
 the single-port manual router-forwarding instructions when automatic setup is
 unavailable. Initialization now performs a bounded UPnP discovery and
 `AddPortMapping` attempt; if no gateway responds or the mapping fails, the JSON
@@ -101,10 +104,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-28 pass
+35 pass
 0 fail
-224 expect() calls
-Ran 28 tests across 18 files.
+268 expect() calls
+Ran 35 tests across 21 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed

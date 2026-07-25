@@ -5,10 +5,18 @@
 .cocodex-kicker { display: inline-flex; align-items: center; gap: 6px; color: #8b5cf6; font-size: var(--text-label); font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: var(--tracking-wide); }
 .cocodex-kicker svg, .cocodex-lock svg { width: 14px; height: 14px; }
 .cocodex-notice { padding: 10px 12px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); color: var(--text); }
+.cocodex-agent-approval { margin-bottom: 14px; padding: 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--border)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--amber) 8%, var(--raised)); }
+.cocodex-agent-approval > div:first-child { min-width: 0; display: grid; gap: 6px; }
+.cocodex-agent-approval small { color: var(--muted); overflow-wrap: anywhere; }
+.cocodex-agent-approval pre { max-height: 180px; margin: 2px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: var(--radius-xs); background: var(--bg); color: var(--text); font: inherit; }
+.cocodex-agent-approval-actions { display: flex; gap: 8px; flex: none; }
 .cocodex-enroll { max-width: 680px; margin: 60px auto; padding: 24px; display: grid; gap: 14px; }
 .cocodex-enroll > svg { width: 32px; height: 32px; color: #8b5cf6; }
 .cocodex-enroll h3 { margin: 0 0 5px; }
-.cocodex-shell { display: grid; grid-template-columns: 220px minmax(380px, 1fr) 290px; gap: 12px; min-height: 670px; }
+.cocodex-shell { position: relative; display: grid; grid-template-columns: 220px minmax(380px, 1fr) 290px; gap: 12px; min-height: 670px; }
+.cocodex-presence-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; }
+.cocodex-presence-cursor { position: absolute; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; background: #7c3aed; color: #fff; font-size: var(--text-caption); box-shadow: 0 2px 8px #0006; transform: translate(5px, 5px); }
+.cocodex-presence-cursor i { width: 7px; height: 7px; background: #fff; clip-path: polygon(0 0, 100% 50%, 0 100%); }
 .cocodex-projects, .cocodex-chat, .cocodex-private { display: flex; flex-direction: column; overflow: hidden; }
 .cocodex-section-head { min-height: 58px; padding: 13px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .cocodex-section-head > div { display: grid; gap: 3px; }
@@ -58,4 +66,5 @@
   .cocodex-private { grid-column: auto; }
   .cocodex-projects { min-height: 260px; }
   .cocodex-chat { min-height: 620px; }
+  .cocodex-agent-approval { flex-direction: column; }
 }

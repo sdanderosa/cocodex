@@ -266,6 +266,12 @@ describe("three-process CoCodex private alpha", () => {
       agentId: "stephen-agent",
       prompt: "inspect Stephen workspace",
     });
+    const stephenApproval = await waitFor(
+      stephen,
+      line => line.source === "agent-approval" && line.approvalState === "pending"
+        && line.task?.agentId === "stephen-agent",
+    );
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: stephenApproval.task.id, approved: true });
     await waitFor(stephen, line => line.source === "local-usage" && line.deviceId === stephenDevice.id);
     await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.final === true
       && line.frame.event?.content?.includes("stephen-account"));
@@ -280,6 +286,12 @@ describe("three-process CoCodex private alpha", () => {
       agentId: "kai-agent",
       prompt: "inspect Kai workspace",
     });
+    const kaiApproval = await waitFor(
+      kai,
+      line => line.source === "agent-approval" && line.approvalState === "pending"
+        && line.task?.agentId === "kai-agent",
+    );
+    kai.send({ id: randomUUID(), type: "agent.approval", taskId: kaiApproval.task.id, approved: true });
     await waitFor(kai, line => line.source === "local-usage" && line.deviceId === kaiDevice.id);
     await waitFor(stephen, line => line.frame?.type === "agent.result" && line.frame.final === true
       && line.frame.event?.content?.includes("kai-account"));

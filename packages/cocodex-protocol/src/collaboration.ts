@@ -2,6 +2,14 @@ import { z } from "zod";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const cursorPosition = z.object({
+  x: z.number().finite().min(0).max(1),
+  y: z.number().finite().min(0).max(1),
+}).strict();
+const textCaret = z.object({
+  anchor: z.number().int().min(0).max(32_768),
+  head: z.number().int().min(0).max(32_768),
+}).strict();
 
 interface WebSocketAuthTranscriptInput {
   serverFingerprint: string;
@@ -90,6 +98,14 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("prompt.subscribe"),
     requestId,
     projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("presence.update"),
+    requestId,
+    projectId,
+    cursor: cursorPosition.nullable(),
+    caret: textCaret.nullable(),
   }).strict(),
   z.object({
     version: z.literal(1),

@@ -47,10 +47,12 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
     expect(bridge.status().state).toBe("connected");
     expect(bridge.command({ type: "project.list" }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.approval", taskId: "task-1", approved: true }).accepted).toBe(true);
     bridge.stop();
     await Bun.sleep(5);
 
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.approval" && value.approved === true)).toBe(true);
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");

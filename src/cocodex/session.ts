@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentTask } from "@cocodex/protocol";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { attachLocalAgentBridge } from "./agent-bridge";
@@ -45,6 +46,7 @@ export async function runJsonLineSession(
   let privateCursor = 0;
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
+  const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
   const send = (frame: unknown) => {
@@ -59,6 +61,31 @@ export async function runJsonLineSession(
     flushChain = flushChain.catch(() => 0).then(() => flushDurableOutbox(socket!, paths));
     return flushChain;
   };
+  const authorizeAgentTask = (task: AgentTask, signal?: AbortSignal): Promise<boolean> => new Promise(resolve => {
+    if (pendingAgentApprovals.has(task.id) || signal?.aborted) return resolve(false);
+    const finish = (approved: boolean) => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      pendingAgentApprovals.delete(task.id);
+      emit({ source: "agent-approval", approvalState: "resolved", taskId: task.id, approved });
+      resolve(approved);
+    };
+    const timeout = setTimeout(() => finish(false), 5 * 60_000);
+    const onAbort = () => finish(false);
+    pendingAgentApprovals.set(task.id, finish);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    emit({
+      source: "agent-approval",
+      approvalState: "pending",
+      task: {
+        id: task.id,
+        projectId: task.projectId,
+        agentId: task.agentId,
+        requesterDeviceId: task.requesterDeviceId,
+        prompt: task.prompt,
+      },
+    });
+  });
   const openPrivateEnvelope = (message: {
     messageId: string;
     senderDeviceId: string;
@@ -157,6 +184,7 @@ export async function runJsonLineSession(
         workspaceRoot: policy.workspaceRoot,
         sandbox: policy.sandbox,
         onUsage,
+        authorizeTask: authorizeAgentTask,
       }), {
         localDeviceId: connection.deviceId,
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
@@ -258,6 +286,22 @@ export async function runJsonLineSession(
             queued: delivered === 0,
             taskId: request.taskId,
           });
+        } else if (command.type === "agent.approval") {
+          const taskId = String(command.taskId);
+          const pending = pendingAgentApprovals.get(taskId);
+          if (!pending) throw new Error("Agent task is not awaiting local approval");
+          pending(command.approved === true);
+          emit({ source: "control", id: command.id, ok: true, taskId, approved: command.approved === true });
+        } else if (command.type === "presence.update") {
+          send({
+            version: 1,
+            type: "presence.update",
+            requestId: controlRequestId(command.id),
+            projectId: String(command.projectId),
+            cursor: command.cursor ?? null,
+            caret: command.caret ?? null,
+          });
+          emit({ source: "control", id: command.id, ok: true });
         } else if (command.type === "device.trust") {
           const deviceId = String(command.deviceId);
           const fingerprint = String(command.fingerprint);
@@ -303,6 +347,7 @@ export async function runJsonLineSession(
       }
     }
   } finally {
+    for (const finish of pendingAgentApprovals.values()) finish(false);
     controller.abort();
     socket?.close();
     lines.close();

@@ -66,6 +66,18 @@ describe("CoCodex protocol", () => {
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
     expect(() => clientFrameSchema.parse({ ...frame, targetDeviceId: crypto.randomUUID() })).toThrow();
   });
+  test("bounds presence cursor and caret frames", () => {
+    const frame = {
+      version: 1 as const,
+      type: "presence.update" as const,
+      requestId: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      cursor: { x: 0.25, y: 0.75 },
+      caret: { anchor: 3, head: 8 },
+    };
+    expect(clientFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
+  });
   test("WebSocket proof binds the server, device, request, and challenge", () => {
     const input = {
       serverFingerprint: "server-a",

@@ -15,7 +15,7 @@ import {
 } from "./agent-journal";
 
 export interface LocalAgentAdapter {
-  authorize(task: AgentTask): boolean | Promise<boolean>;
+  authorize(task: AgentTask, signal?: AbortSignal): boolean | Promise<boolean>;
   execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string>;
 }
 
@@ -133,7 +133,7 @@ async function executeTask(
   security: AgentBridgeSecurity,
   signal: AbortSignal,
 ): Promise<void> {
-  if (!await adapter.authorize(task)) {
+  if (!await adapter.authorize(task, signal)) {
     await sendResult(socket, security, task.id, "Local execution policy rejected this task.", true, "failed");
     return;
   }

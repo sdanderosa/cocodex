@@ -13,7 +13,9 @@ const ALLOWED_COMMANDS = new Set([
   "chat.send",
   "prompt.subscribe",
   "prompt.update",
+  "presence.update",
   "agent.request",
+  "agent.approval",
   "private.send",
 ]);
 

@@ -38,6 +38,7 @@ export interface CodexAgentAdapterOptions {
   sandbox?: "read-only" | "workspace-write";
   timeoutMs?: number;
   onUsage?: (usage: CodexUsage) => void;
+  authorizeTask?: (task: AgentTask, signal?: AbortSignal) => boolean | Promise<boolean>;
   resolveRuntime?: typeof resolveCodexRuntime;
   spawnProcess?: (
     file: string,
@@ -60,13 +61,15 @@ function usageFrom(value: unknown): CodexUsage {
 export class CodexAgentAdapter implements LocalAgentAdapter {
   constructor(private readonly options: CodexAgentAdapterOptions) {}
 
-  authorize(task: AgentTask): boolean {
+  async authorize(task: AgentTask, signal?: AbortSignal): Promise<boolean> {
     if (task.projectId !== this.options.projectId || task.agentId !== this.options.agentId) return false;
     try {
-      return statSync(this.options.workspaceRoot).isDirectory();
+      if (!statSync(this.options.workspaceRoot).isDirectory()) return false;
     } catch {
       return false;
     }
+    if (!this.options.authorizeTask) return false;
+    return this.options.authorizeTask(task, signal);
   }
 
   async *execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string> {

@@ -42,7 +42,16 @@ interface SocketData {
 interface DeviceAuthRow {
   id: string;
   publicKeyPem: string;
+  displayName: string;
   status: "pending" | "approved" | "revoked";
+}
+
+interface PresenceState {
+  deviceId: string;
+  displayName: string;
+  cursor: { x: number; y: number } | null;
+  caret: { anchor: number; head: number } | null;
+  updatedAt: string;
 }
 
 export interface RunningCoCodexServer {
@@ -76,7 +85,7 @@ async function readJsonBody(request: Request): Promise<unknown> {
 
 function deviceForAuthentication(db: Database, deviceId: string): DeviceAuthRow | null {
   return db.query(`
-    SELECT id, public_key_pem AS publicKeyPem, status
+    SELECT id, public_key_pem AS publicKeyPem, display_name AS displayName, status
     FROM devices WHERE id = ?
   `).get(deviceId) as DeviceAuthRow | null;
 }
@@ -88,6 +97,7 @@ export function startCoCodexServer(
 ): RunningCoCodexServer {
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
   const sockets = new Set<ServerWebSocket<SocketData>>();
+  const presenceByProject = new Map<string, Map<string, PresenceState>>();
   let unauthenticatedSocketCount = 0;
   const unauthenticatedByIp = new Map<string, number>();
   const connectionAttemptsByIp = new Map<string, number[]>();
@@ -152,6 +162,18 @@ export function startCoCodexServer(
       } catch {
         socket.data.subscribedPrompts.delete(projectId);
       }
+    }
+  }
+
+  function sendPresence(projectId: string, frame: unknown): void {
+    sendToProject(projectId, frame);
+  }
+
+  function clearPresence(deviceId: string): void {
+    for (const [projectId, members] of presenceByProject) {
+      if (!members.delete(deviceId)) continue;
+      sendPresence(projectId, { version: 1, type: "presence.leave", projectId, deviceId });
+      if (members.size === 0) presenceByProject.delete(projectId);
     }
   }
 
@@ -344,6 +366,38 @@ export function startCoCodexServer(
               projectId: message.projectId,
               events,
             }));
+            const presence = [...(presenceByProject.get(message.projectId)?.values() ?? [])]
+              .filter(member => member.deviceId !== deviceId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "presence.snapshot",
+              requestId,
+              projectId: message.projectId,
+              members: presence,
+            }));
+            return;
+          }
+          if (message.type === "presence.update") {
+            requireProjectMembership(db, message.projectId, deviceId);
+            const member = {
+              deviceId,
+              displayName: currentDevice.displayName,
+              cursor: message.cursor,
+              caret: message.caret,
+              updatedAt: new Date().toISOString(),
+            } satisfies PresenceState;
+            const members = presenceByProject.get(message.projectId) ?? new Map<string, PresenceState>();
+            if (!message.cursor && !message.caret) members.delete(deviceId);
+            else members.set(deviceId, member);
+            if (members.size === 0) presenceByProject.delete(message.projectId);
+            else presenceByProject.set(message.projectId, members);
+            sendPresence(message.projectId, {
+              version: 1,
+              type: message.cursor || message.caret ? "presence.update" : "presence.leave",
+              projectId: message.projectId,
+              ...member,
+            });
+            socket.send(JSON.stringify({ version: 1, type: "presence.accepted", requestId, projectId: message.projectId }));
             return;
           }
           if (message.type === "prompt.subscribe") {
@@ -503,6 +557,7 @@ export function startCoCodexServer(
       },
       close(socket) {
         clearPreAuth(socket);
+        if (socket.data.authenticatedDeviceId) clearPresence(socket.data.authenticatedDeviceId);
         sockets.delete(socket);
       },
     },
