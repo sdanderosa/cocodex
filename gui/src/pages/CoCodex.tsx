@@ -77,12 +77,27 @@ interface AgentTaskView {
   targetDeviceId: string;
   status: AgentTaskStatus;
   dependencies: string[];
+  inputArtifactIds: string[];
   acceptedAt: string;
   startedAt: string | null;
   completedAt: string | null;
   lastActivityAt: string;
   eventCount: number;
   encrypted: boolean;
+}
+
+interface Artifact {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  authorDeviceId: string;
+  type: string;
+  title: string;
+  summary: string;
+  content: string;
+  status: "draft" | "ready" | "accepted" | "rejected" | "superseded" | "integrated";
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface SharedProjectContext {
@@ -164,6 +179,8 @@ interface SessionValue {
     report?: UsageReportView;
     agents?: AgentView[];
     tasks?: AgentTaskView[];
+    artifacts?: Artifact[];
+    artifact?: Artifact;
   };
 }
 
@@ -267,6 +284,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [usageReports, setUsageReports] = useState<UsageReportView[]>([]);
   const [agents, setAgents] = useState<AgentView[]>([]);
   const [tasks, setTasks] = useState<AgentTaskView[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([]);
+  const [artifactTitle, setArtifactTitle] = useState("");
+  const [artifactSummary, setArtifactSummary] = useState("");
+  const [artifactContent, setArtifactContent] = useState("");
   const [agentId, setAgentId] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -378,6 +400,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (frame?.projectId === projectId && frame.type === "agent.task.list.result" && Array.isArray(frame.tasks)) {
         setTasks(frame.tasks);
       }
+      if (frame?.projectId === projectId && frame.type === "artifact.list.result" && Array.isArray(frame.artifacts)) {
+        setArtifacts(frame.artifacts);
+        setSelectedArtifactIds(previous => previous.filter(id => frame.artifacts!.some(artifact => artifact.id === id)));
+      } else if (frame?.projectId === projectId
+        && (frame.type === "artifact.accepted" || frame.type === "artifact.published") && frame.artifact) {
+        setArtifacts(previous => [...previous.filter(item => item.id !== frame.artifact!.id), frame.artifact!]
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
         setProjects(listedProjects);
@@ -461,6 +491,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setUsageReports([]);
     setAgents([]);
     setTasks([]);
+    setArtifacts([]);
+    setSelectedArtifactIds([]);
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
@@ -468,6 +500,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     void command({ type: "usage.get", projectId });
     void command({ type: "agent.list", projectId });
     void command({ type: "agent.task.list", projectId });
+    void command({ type: "artifact.list", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
 
   useEffect(() => {
@@ -545,7 +578,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setDraft("");
     try {
       await command(agentId.trim()
-        ? { type: "agent.request", projectId, agentId: agentId.trim(), prompt: content }
+        ? { type: "agent.request", projectId, agentId: agentId.trim(), prompt: content, inputArtifactIds: selectedArtifactIds }
         : { type: "chat.send", projectId, content });
     } catch (error) {
       setDraft(content);
@@ -576,6 +609,29 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     try {
       await command({ type: "agent.approval", taskId, approved });
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const publishArtifact = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId) return;
+    try {
+      await command({
+        type: "artifact.publish",
+        projectId,
+        taskId: null,
+        artifactType: "handoff",
+        title: artifactTitle.trim(),
+        summary: artifactSummary.trim(),
+        content: artifactContent,
+        status: "ready",
+      });
+      setArtifactTitle("");
+      setArtifactSummary("");
+      setArtifactContent("");
+      setNotice(t("cocodex.artifacts.queued"));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -674,6 +730,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visiblePresence = status?.state === "connected" ? presence : [];
   const visibleAgents = status?.state === "connected" ? agents : [];
   const visibleTasks = status?.state === "connected" ? tasks : [];
+  const visibleArtifacts = status?.state === "connected" ? artifacts : [];
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
 
@@ -953,11 +1010,47 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                       <small>{t("cocodex.tasks.events", { count: task.eventCount })}
                         {task.encrypted ? ` · ${t("cocodex.tasks.encrypted")}` : ""}</small>
                       {task.dependencies.length > 0 && <small>{t("cocodex.tasks.dependencies", { count: task.dependencies.length })}</small>}
+                      {task.inputArtifactIds.length > 0 && <small>{t("cocodex.tasks.artifacts", { count: task.inputArtifactIds.length })}</small>}
                     </article>
                   );
                 })}
                 {!visibleTasks.length && <p className="muted">{t("cocodex.tasks.empty")}</p>}
               </div>
+            </section>
+            <section className="cocodex-agents cocodex-artifacts">
+              <div className="cocodex-section-head">
+                <div><strong>{t("cocodex.artifacts.title")}</strong><small>{t("cocodex.artifacts.subtitle")}</small></div>
+                <IconKey />
+              </div>
+              <div className="cocodex-agent-list">
+                {visibleArtifacts.map(artifact => {
+                  const consumable = artifact.status === "ready" || artifact.status === "accepted" || artifact.status === "integrated";
+                  return (
+                    <label className="cocodex-agent-card cocodex-artifact-card" key={artifact.id}>
+                      <span className="cocodex-artifact-select">
+                        <input type="checkbox" disabled={!consumable || !agentId.trim()}
+                          checked={selectedArtifactIds.includes(artifact.id)}
+                          onChange={event => setSelectedArtifactIds(previous => event.target.checked
+                            ? [...previous, artifact.id]
+                            : previous.filter(id => id !== artifact.id))} />
+                        <strong>{artifact.title}</strong>
+                      </span>
+                      <small>{artifact.summary}</small>
+                      <small>{artifact.type} · {artifact.status}</small>
+                    </label>
+                  );
+                })}
+                {!visibleArtifacts.length && <p className="muted">{t("cocodex.artifacts.empty")}</p>}
+              </div>
+              <form className="cocodex-artifact-form" onSubmit={publishArtifact}>
+                <input className="input" value={artifactTitle} onChange={event => setArtifactTitle(event.target.value)}
+                  placeholder={t("cocodex.artifacts.name")} required maxLength={200} />
+                <input className="input" value={artifactSummary} onChange={event => setArtifactSummary(event.target.value)}
+                  placeholder={t("cocodex.artifacts.summary")} required maxLength={4000} />
+                <textarea className="input" value={artifactContent} onChange={event => setArtifactContent(event.target.value)}
+                  placeholder={t("cocodex.artifacts.content")} required rows={3} />
+                <button className="btn btn-ghost" disabled={status.state !== "connected"}>{t("cocodex.artifacts.publish")}</button>
+              </form>
             </section>
             <div className="cocodex-section-head">
               <div><strong>{t("cocodex.private.title")}</strong><small>{t("cocodex.private.encrypted")}</small></div>

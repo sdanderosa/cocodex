@@ -119,7 +119,8 @@ export function listAgentTasks(
     SELECT t.id, t.project_id AS projectId, t.agent_id AS agentId,
       a.name AS agentName, t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.status,
-      t.dependencies_json AS dependenciesJson, t.accepted_at AS acceptedAt,
+      t.dependencies_json AS dependenciesJson, t.input_artifact_ids_json AS inputArtifactIdsJson,
+      t.accepted_at AS acceptedAt,
       t.completed_at AS completedAt,
       CASE WHEN t.prompt_envelope_json IS NOT NULL THEN 1 ELSE 0 END AS encrypted,
       COALESCE((SELECT MIN(c.accepted_at)
@@ -151,6 +152,7 @@ export function listAgentTasks(
     targetDeviceId: string;
     status: AgentTaskView["status"];
     dependenciesJson: string;
+    inputArtifactIdsJson: string;
     acceptedAt: string;
     startedAt: string | null;
     completedAt: string | null;
@@ -167,6 +169,7 @@ export function listAgentTasks(
     targetDeviceId: row.targetDeviceId,
     status: row.status,
     dependencies: parseDependencies(row.dependenciesJson),
+    inputArtifactIds: parseDependencies(row.inputArtifactIdsJson),
     acceptedAt: row.acceptedAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
@@ -186,6 +189,7 @@ export interface CreateAgentTaskInput {
   issuedAt: string;
   expiresAt: string;
   dependencies?: string[];
+  inputArtifactIds?: string[];
   privateShareMessageId?: string;
   requesterSignature: string;
 }
@@ -244,7 +248,7 @@ function taskById(db: Database, id: string): AgentTask | null {
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id WHERE t.id = ?`).get(id) as TaskRow | null;
   if (!row) return null;
   const { dependenciesJson, ...task } = row;
-  return { ...task, dependencies: parseDependencies(dependenciesJson) };
+  return { ...task, dependencies: parseDependencies(dependenciesJson), inputArtifactIds: [] };
 }
 
 function sameRequest(task: AgentTask, input: CreateAgentTaskInput, dependencies: string[]): boolean {
@@ -264,6 +268,9 @@ export function createAgentTask(
 ): { task: AgentTask; created: boolean } {
   requireProjectMembership(db, input.projectId, input.requesterDeviceId);
   const dependencies = normalizeDependencies(input.dependencies, input.id);
+  if ((input.inputArtifactIds?.length ?? 0) > 0) {
+    throw new Error("Task input artifacts require project encryption");
+  }
   const existing = taskById(db, input.id);
   if (existing) {
     if (!sameRequest(existing, input, dependencies)) throw new Error("Task ID was already used for a different request");
@@ -306,6 +313,7 @@ export function createAgentTask(
     issuedAt: input.issuedAt,
     expiresAt: input.expiresAt,
     dependencies,
+    inputArtifactIds: [],
     privateShareMessageId: input.privateShareMessageId,
   }), createPublicKey(requester.publicKeyPem), Buffer.from(input.requesterSignature, "base64url"));
   if (!requestValid) throw new Error("Invalid agent request signature");
@@ -323,11 +331,12 @@ export function createAgentTask(
     requesterSignature: input.requesterSignature,
     requesterPublicKeyPem: requester.publicKeyPem,
     dependencies,
+    inputArtifactIds: [],
     ...(input.privateShareMessageId ? { privateShareMessageId: input.privateShareMessageId } : {}),
   };
   const serverSignature = sign(null, agentDispatchSigningTranscript(unsigned), identity.privateKeyPem).toString("base64url");
   const { taskId: _signedTaskId, ...dispatch } = unsigned;
-  const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies };
+  const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies, inputArtifactIds: [] };
   db.query(`INSERT INTO agent_tasks (
     id, project_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
     issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json,
@@ -411,7 +420,7 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString(), ...(agentId ? [agentId] : [])) as TaskRow[];
   return rows.map(row => {
     const { dependenciesJson, ...task } = row;
-    return { ...task, dependencies: parseDependencies(dependenciesJson) };
+    return { ...task, dependencies: parseDependencies(dependenciesJson), inputArtifactIds: [] };
   })
     .filter(task => task.dependencies.every(dependencyId => {
       const dependency = db.query("SELECT status FROM agent_tasks WHERE id = ?").get(dependencyId) as { status: string } | null;

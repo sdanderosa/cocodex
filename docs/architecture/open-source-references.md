@@ -89,6 +89,12 @@ reviewed again before release.
   a graph walk that rejects cycles, and included in both plaintext and
   encrypted dispatch verification. A host never executes a task whose signed
   dependency proof does not validate.
+- **Artifact handoffs:** adapt MeshCentral's authoritative route/local
+  execution boundary and OpenHands' typed tool-result concept without copying
+  code. A task names a bounded explicit set of same-project artifact IDs; the
+  server signs and routes their opaque envelopes, while only the trusted local
+  Client verifies, decrypts, and supplies ready artifacts to Codex. Yjs and
+  Automerge are not used for immutable handoff records. See ADR 0022.
 - **Local access profiles:** reuse the installed official Codex runtime's
   supported `--sandbox danger-full-access` mode only after an explicit local
   policy opt-in. The Client owns the policy and emergency stop; the Server

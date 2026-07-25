@@ -415,6 +415,7 @@ describe("CoCodex protocol", () => {
       issuedAt: "2030-01-01T00:00:00.000Z",
       expiresAt: "2030-01-01T00:05:00.000Z",
       dependencies: [],
+      inputArtifactIds: [],
       envelope,
     };
     expect(clientFrameSchema.parse(request)).toEqual(request);
@@ -432,6 +433,8 @@ describe("CoCodex protocol", () => {
       issuedAt: request.issuedAt,
       expiresAt: request.expiresAt,
       dependencies: [],
+      inputArtifactIds: [],
+      inputArtifacts: [],
       requesterSignature: "R".repeat(64),
       requesterPublicKeyPem: signing.publicKey,
       serverSignature: "S".repeat(64),
@@ -599,6 +602,7 @@ describe("CoCodex protocol", () => {
       targetDeviceId: crypto.randomUUID(),
       status: "running" as const,
       dependencies: [],
+      inputArtifactIds: [],
       acceptedAt: "2030-01-01T00:00:00.000Z",
       startedAt: "2030-01-01T00:00:01.000Z",
       completedAt: null,

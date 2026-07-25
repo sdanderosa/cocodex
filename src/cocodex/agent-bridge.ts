@@ -55,10 +55,6 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
   if (!trusted || trusted !== publicKeyFingerprint(task.requesterPublicKeyPem)) return null;
   if ("promptEnvelope" in task) {
     if (!security.decryptTaskPrompt) return null;
-    let prompt: string;
-    try { prompt = await security.decryptTaskPrompt(task); }
-    catch { return null; }
-    if (prompt.length < 1 || prompt.length > 32_768) return null;
     const requestValid = verify(null, agentEncryptedDispatchSigningTranscript({
       taskId: task.id,
       projectId: task.projectId,
@@ -67,6 +63,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
       issuedAt: task.issuedAt,
       expiresAt: task.expiresAt,
       dependencies: task.dependencies,
+      inputArtifactIds: task.inputArtifactIds,
       privateShareMessageId: task.privateShareMessageId,
       requesterDeviceId: task.requesterDeviceId,
       targetDeviceId: task.targetDeviceId,
@@ -79,6 +76,11 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
       envelopeSenderPublicKeyPem: task.promptEnvelope.senderPublicKeyPem,
       envelopeSignature: task.promptEnvelope.signature,
     }), createPublicKey(security.serverPublicKeyPem), Buffer.from(task.serverSignature, "base64url"));
+    if (!requestValid) return null;
+    let prompt: string;
+    try { prompt = await security.decryptTaskPrompt(task); }
+    catch { return null; }
+    if (prompt.length < 1 || Buffer.byteLength(prompt, "utf8") > 300_000) return null;
     return requestValid ? { ...task, prompt } as AgentTask : null;
   }
   const requestValid = verify(null, agentRequestSigningTranscript({
@@ -90,6 +92,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     issuedAt: task.issuedAt,
     expiresAt: task.expiresAt,
     dependencies: task.dependencies,
+    inputArtifactIds: task.inputArtifactIds,
     privateShareMessageId: task.privateShareMessageId,
   }), createPublicKey(task.requesterPublicKeyPem), Buffer.from(task.requesterSignature, "base64url"));
   if (!requestValid) return null;
@@ -102,6 +105,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     issuedAt: task.issuedAt,
     expiresAt: task.expiresAt,
     dependencies: task.dependencies,
+    inputArtifactIds: task.inputArtifactIds,
     privateShareMessageId: task.privateShareMessageId,
     requesterDeviceId: task.requesterDeviceId,
     targetDeviceId: task.targetDeviceId,

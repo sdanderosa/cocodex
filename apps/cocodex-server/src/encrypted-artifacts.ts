@@ -140,3 +140,22 @@ export function listEncryptedArtifacts(db: Database, projectId: string, deviceId
   `).all(projectId) as ArtifactRow[];
   return rows.map(artifactFromRow);
 }
+
+/** Resolve an exact, ordered set of immutable encrypted artifacts for dispatch. */
+export function encryptedArtifactsByIds(
+  db: Database,
+  projectId: string,
+  artifactIds: readonly string[],
+): EncryptedArtifact[] {
+  return artifactIds.map(artifactId => {
+    const row = db.query(`
+      SELECT id, project_id AS projectId, task_id AS taskId, author_device_id AS authorDeviceId,
+        envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
+      FROM project_artifacts WHERE id = ?
+    `).get(artifactId) as ArtifactRow | null;
+    if (!row || row.projectId !== projectId) {
+      throw new Error("Task input artifact was not found in this project");
+    }
+    return artifactFromRow(row);
+  });
+}

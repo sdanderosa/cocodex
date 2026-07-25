@@ -1257,6 +1257,7 @@ export function startCoCodexServer(
               issuedAt: message.issuedAt,
               expiresAt: message.expiresAt,
               dependencies: message.dependencies,
+              inputArtifactIds: message.inputArtifactIds,
               privateShareMessageId: message.privateShareMessageId,
               requesterSignature: message.signature,
             });
@@ -1285,6 +1286,7 @@ export function startCoCodexServer(
               issuedAt: message.issuedAt,
               expiresAt: message.expiresAt,
               dependencies: message.dependencies,
+              inputArtifactIds: message.inputArtifactIds,
               privateShareMessageId: message.privateShareMessageId,
               envelope: message.envelope,
             });

@@ -13,6 +13,7 @@ import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { shareProjectKeyEnvelope } from "../src/project-encryption-storage";
+import { publishEncryptedArtifact } from "../src/encrypted-artifacts";
 
 function device(db: ReturnType<typeof openDatabase>, name: string, now: Date) {
   const pair = generateKeyPairSync("ed25519", { publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });
@@ -38,15 +39,15 @@ function keyEnvelope(projectId: string, sender: ReturnType<typeof device>, recip
   return { ...unsigned, signature: sign(null, projectKeyEnvelopeSigningTranscript(unsigned), sender.privateKey).toString("base64url") };
 }
 
-function contentEnvelope(projectId: string, sender: ReturnType<typeof device>, recordType: "task" | "agent-response", recordId: string) {
+function contentEnvelope(projectId: string, sender: ReturnType<typeof device>, recordType: "task" | "agent-response" | "artifact", recordId: string) {
   const unsigned = {
     version: 1 as const,
     projectId,
     keyEpoch: 1,
     recordType,
     recordId,
-    nonce: Buffer.alloc(24, recordType === "task" ? 4 : 5).toString("base64url"),
-    ciphertext: Buffer.alloc(96, recordType === "task" ? 6 : 7).toString("base64url"),
+    nonce: Buffer.alloc(24, recordType === "task" ? 4 : recordType === "artifact" ? 8 : 5).toString("base64url"),
+    ciphertext: Buffer.alloc(96, recordType === "task" ? 6 : recordType === "artifact" ? 9 : 7).toString("base64url"),
     senderDeviceId: sender.id,
     senderPublicKeyPem: sender.publicKey,
   };
@@ -161,6 +162,14 @@ describe("authoritative agent dependencies", () => {
       expect(shareProjectKeyEnvelope(db, project.id, stephen.id, keyEnvelope(project.id, stephen, kai.id), now).created).toBeTrue();
 
       const taskId = "8661361f-ce2f-4bec-88fd-c4fb32f49704";
+      const artifactId = "4ed06694-3b43-423f-98b7-3df728f3ad67";
+      const artifact = publishEncryptedArtifact(db, {
+        artifactId,
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: stephen.id,
+        envelope: contentEnvelope(project.id, stephen, "artifact", artifactId),
+      }, now).artifact;
       const issuedAt = now.toISOString();
       const expiresAt = new Date(now.getTime() + 60_000).toISOString();
       const promptEnvelope = contentEnvelope(project.id, stephen, "task", taskId);
@@ -173,10 +182,13 @@ describe("authoritative agent dependencies", () => {
         issuedAt,
         expiresAt,
         dependencies: [],
+        inputArtifactIds: [artifactId, artifactId],
         envelope: promptEnvelope,
       }, now);
       expect(created.created).toBeTrue();
       expect(created.task.prompt).toBe("[encrypted]");
+      expect(created.task.inputArtifactIds).toEqual([artifactId]);
+      expect(created.task.inputArtifacts).toEqual([artifact]);
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([created.task]);
       db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([]);
@@ -204,6 +216,17 @@ describe("authoritative agent dependencies", () => {
       expect(storedResult.envelopeJson).not.toContain("agent result plaintext");
       expect(db.query("SELECT COUNT(*) AS count FROM project_chat_events WHERE task_id = ?").get(taskId))
         .toEqual({ count: 1 });
+      expect(() => createEncryptedAgentTask(db, identity, {
+        id: "82f2266a-16ac-4b83-b70f-f8145e88ae66",
+        projectId: project.id,
+        requesterDeviceId: stephen.id,
+        agentId: "kai-agent",
+        nonce: "A".repeat(32),
+        issuedAt,
+        expiresAt,
+        inputArtifactIds: ["be8c6278-c10d-44d6-829f-308030cce0cb"],
+        envelope: contentEnvelope(project.id, stephen, "task", "82f2266a-16ac-4b83-b70f-f8145e88ae66"),
+      }, now)).toThrow("not found in this project");
     } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });

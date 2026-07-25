@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { projectContentEnvelopeSchema } from "./project-encryption";
+import { encryptedArtifactSchema } from "./project-artifact";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -8,6 +9,7 @@ const eventId = z.uuid();
 const deviceId = z.uuid();
 const agentId = z.string().trim().min(1).max(120);
 const dependencies = z.array(z.uuid()).max(16).default([]);
+const inputArtifactIds = z.array(z.uuid()).max(16).default([]);
 const taskLifetime = {
   nonce: z.string().min(32).max(128),
   issuedAt: z.iso.datetime(),
@@ -24,6 +26,7 @@ export const encryptedAgentRequestFrameSchema = z.object({
   agentId,
   ...taskLifetime,
   dependencies,
+  inputArtifactIds,
   privateShareMessageId: z.uuid().optional(),
   envelope: projectContentEnvelopeSchema,
 }).strict();
@@ -49,6 +52,8 @@ export const encryptedAgentTaskSchema = z.object({
   promptEnvelope: projectContentEnvelopeSchema,
   ...taskLifetime,
   dependencies,
+  inputArtifactIds,
+  inputArtifacts: z.array(encryptedArtifactSchema).max(16).default([]),
   privateShareMessageId: z.uuid().optional(),
   requesterSignature: z.string().min(64).max(256),
   requesterPublicKeyPem: z.string().min(64).max(2048),

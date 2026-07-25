@@ -324,4 +324,9 @@ ALTER TABLE project_key_epochs ADD COLUMN rotation_required INTEGER NOT NULL DEF
 ALTER TABLE agent_tasks ADD COLUMN private_share_message_id TEXT;
 CREATE INDEX agent_tasks_private_share ON agent_tasks(private_share_message_id);`,
   },
+  {
+    version: 20,
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN input_artifact_ids_json TEXT NOT NULL DEFAULT '[]';`,
+  },
 ];

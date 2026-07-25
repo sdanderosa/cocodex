@@ -428,6 +428,24 @@ describe("three-process CoCodex private alpha", () => {
     expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).toContain(privateCanary);
     traceCheckpoint("private message explicitly shared with agent");
 
+    const artifactCanary = "ARTIFACT-HANDOFF-CANARY-4pV7s";
+    const artifactId = randomUUID();
+    const artifactPublish = randomUUID();
+    kai.send({
+      id: artifactPublish,
+      type: "artifact.publish",
+      artifactId,
+      projectId: project.id,
+      taskId: null,
+      artifactType: "handoff",
+      title: "Kai handoff",
+      summary: "Explicit input for Stephen's agent",
+      content: artifactCanary,
+      status: "ready",
+    });
+    await waitFor(kai, line => line.frame?.type === "artifact.accepted"
+      && line.frame.requestId === artifactPublish && line.frame.artifact?.id === artifactId);
+
     const encryptedStephenPrompt = "encrypted Stephen prompt never stored in server plaintext";
     const encryptedStephenRequest = randomUUID();
     kai.send({
@@ -436,6 +454,7 @@ describe("three-process CoCodex private alpha", () => {
       projectId: project.id,
       agentId: "stephen-agent",
       prompt: encryptedStephenPrompt,
+      inputArtifactIds: [artifactId],
     });
     const encryptedStephenControl = await waitFor(kai, line => line.source === "control"
       && line.id === encryptedStephenRequest && line.ok === true && line.encrypted === true);
@@ -443,8 +462,11 @@ describe("three-process CoCodex private alpha", () => {
       && line.approvalState === "pending" && line.task?.id === encryptedStephenControl.taskId);
     stephen.send({ id: randomUUID(), type: "agent.approval", taskId: encryptedStephenApproval.task.id, approved: true });
     await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.taskId === encryptedStephenControl.taskId
-      && line.frame.final === true && line.frame.event?.content?.includes(encryptedStephenPrompt));
-    expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).toContain(encryptedStephenPrompt);
+      && line.frame.final === true && line.frame.event?.content?.includes(artifactCanary));
+    const stephenExecution = readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8");
+    expect(stephenExecution).toContain(encryptedStephenPrompt);
+    expect(stephenExecution).toContain(artifactCanary);
+    traceCheckpoint("encrypted artifact consumed by Stephen agent");
 
     const encryptedKaiPrompt = "encrypted Kai prompt never stored in server plaintext";
     const encryptedKaiRequest = randomUUID();

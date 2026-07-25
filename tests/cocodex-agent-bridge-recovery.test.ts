@@ -99,13 +99,14 @@ function signedTask(
       status,
       acceptedAt: issuedAt,
       dependencies,
+      inputArtifactIds: [],
     },
     requesterFingerprint: publicKeyFingerprint(requester.publicKey),
     serverPublicKeyPem: server.publicKey,
   };
 }
 
-function signedEncryptedTask(localDeviceId: string): {
+function signedEncryptedTask(localDeviceId: string, inputArtifactIds: string[] = []): {
   task: any;
   requesterFingerprint: string;
   serverPublicKeyPem: string;
@@ -144,6 +145,7 @@ function signedEncryptedTask(localDeviceId: string): {
     issuedAt,
     expiresAt,
     dependencies: [],
+    inputArtifactIds,
     requesterDeviceId,
     targetDeviceId: localDeviceId,
     envelopeProjectId: projectId,
@@ -170,6 +172,8 @@ function signedEncryptedTask(localDeviceId: string): {
       issuedAt,
       expiresAt,
       dependencies: [],
+      inputArtifactIds,
+      inputArtifacts: [],
       requesterSignature: promptEnvelope.signature,
       requesterPublicKeyPem: requester.publicKey,
       serverSignature,
@@ -182,6 +186,40 @@ function signedEncryptedTask(localDeviceId: string): {
 }
 
 describe("CoCodex local agent crash recovery", () => {
+  test("rejects encrypted dispatch when an artifact input ID is substituted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-artifact-binding-"));
+    const localDeviceId = randomUUID();
+    const fixture = signedEncryptedTask(localDeviceId, [randomUUID()]);
+    const socket = new AcknowledgingSocket();
+    let executeCount = 0;
+    let decryptCount = 0;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute() { executeCount += 1; yield "must not run"; },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([[fixture.task.requesterDeviceId, fixture.requesterFingerprint]]),
+      decryptTaskPrompt: async () => { decryptCount += 1; return "bound artifact prompt"; },
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({
+          version: 1,
+          type: "project.agent.task",
+          task: { ...fixture.task, inputArtifactIds: [randomUUID()] },
+        }),
+      }));
+      await Bun.sleep(30);
+      expect(executeCount).toBe(0);
+      expect(decryptCount).toBe(0);
+      expect(socket.sent.some(frame => frame.type === "project.agent.result")).toBeFalse();
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("verifies plaintext dependency IDs in both signed task transcripts", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-dependency-"));
     const journalPath = join(root, "agent-journal.json");
