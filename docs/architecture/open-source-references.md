@@ -44,7 +44,8 @@ reviewed again before release.
   envelopes for the single-device private alpha. Keep the server
   ciphertext-only. The current implementation adds strict canonical ciphertext
   bounds, transactional replay-index insertion, a durable client cursor and
-  bounded receipt set, and an active authorization-revocation sweep. The
+  bounded receipt/deferred-ciphertext sets, retry after trust/key recovery,
+  self-sent delivery accounting, and an active authorization-revocation sweep. The
   evaluated official Apache-2.0 Matrix bindings are not silently substituted
   until a supported Bun/package persistence path exists. Do not claim forward
   secrecy, rotation, or full multi-device messaging; do not invent a cipher or
@@ -81,7 +82,11 @@ reviewed again before release.
   the local Codex adapter; encrypted cancellation is completed by the host.
   Legacy agent frames remain only for projects without a key. See ADR 0016.
 - **Agent events:** reuse OpenCodex and official Codex runtime behavior;
-  borrow only typed event and isolation concepts from OpenHands.
+  borrow only typed event and isolation concepts from OpenHands. Server task
+  dependencies are canonicalized before signing/idempotency checks, bounded by
+  a graph walk that rejects cycles, and included in both plaintext and
+  encrypted dispatch verification. A host never executes a task whose signed
+  dependency proof does not validate.
 - **Local access profiles:** reuse the installed official Codex runtime's
   supported `--sandbox danger-full-access` mode only after an explicit local
   policy opt-in. The Client owns the policy and emergency stop; the Server

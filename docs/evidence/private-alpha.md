@@ -934,3 +934,60 @@ The Matrix binding audit is recorded in ADR 0022. The evaluated packages were
 Apache-2.0 references only and were removed from `package.json`/`bun.lock`
 because the Bun durable-store and packaged native-runtime gates were not met.
 The alpha therefore makes no forward-secrecy, ratchet, or multi-device claim.
+
+## Dependency-bound agent dispatch and private delivery retry checkpoint
+
+Implementation commit: `c55c1ac5`
+
+The local plaintext-agent verifier now includes the complete dependency list in
+both requester and server dispatch transcripts. Server task creation
+canonicalizes duplicate dependency IDs, makes replay idempotent under that
+canonical form, and rejects dependency cycles with a bounded graph walk. The
+encrypted task path applies the same checks. Private delivery now acknowledges
+only successfully opened or self-authored messages; an unknown sender or
+decryption failure advances the server cursor while retaining the ciphertext in
+the protected, bounded local mailbox for retry after trust/key recovery. The
+client also processes `private.accepted` frames so self-sent messages are
+durably accounted for without waiting for a later snapshot.
+
+Focused verification:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0` for every command. Relevant output: typecheck passed;
+agent-routing `3 pass`, bridge recovery `6 pass`, mailbox `4 pass`; combined
+protocol/private-alpha verification `27 pass`, `0 fail`, `164 expect()` calls.
+The alpha test used one real compiled server and two resident isolated client
+processes, exercised server restart and offline queues, and verified private
+mailbox recovery across both directions. The tests also cover duplicate
+dependency replay, cycle rejection, signed dependency verification, bounded
+deferred ciphertext, and deferred-message removal after a successful receipt.
+
+Files: `apps/cocodex-server/src/agent-routing.ts`,
+`apps/cocodex-server/src/encrypted-agent-routing.ts`,
+`src/cocodex/agent-bridge.ts`, `src/cocodex/private-mailbox.ts`,
+`src/cocodex/session.ts`, and their focused server/client tests.
+
+The serialized full-suite rerun after this checkpoint was also attempted:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex -- --max-concurrency=1
+```
+
+It exited `1` after `92 pass`, `2 fail`, `799 expect()` calls. The failures are
+the known Windows load-sensitive `cocodex-agent-safety-cli` 20-second timeout
+and one intermittent private-alpha mailbox timing failure. The private-alpha
+test then passed twice when run alone (each run `1 pass`, `0 fail`, `48
+expect()` calls), and the focused combined command above passed. The complete
+existing-suite gate therefore remains open and is not claimed as green.

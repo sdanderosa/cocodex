@@ -62,8 +62,9 @@ libsignal source is copied.
 This is sufficient for the required private-alpha message flow and its
 ciphertext-only persistence test. The implementation now also bounds and
 canonicalizes ciphertext, commits the replay index transactionally, persists a
-bounded mailbox cursor/receipt set, serializes delivery, and closes active
-sockets after revocation. Sealed boxes do not provide forward secrecy after a
+bounded mailbox cursor/receipt/deferred-ciphertext set, retries messages after
+trust/key recovery, accounts for self-sent accepted frames, serializes delivery,
+and closes active sockets after revocation. Sealed boxes do not provide forward secrecy after a
 recipient-key compromise, message-key rotation, or multi-device session
 management. A later migration must satisfy ADR 0022, select a maintained
 Apache-2.0 Matrix crypto state-machine binding (or another compatible reviewed
@@ -80,3 +81,5 @@ path as single-device private-alpha messaging.
 - `apps/cocodex-server/tests/collaboration-server.test.ts` covers real WSS
   delivery, replay rejection, ciphertext-only SQLite persistence, and recovery
   by cursor.
+- `tests/cocodex-private-mailbox.test.ts` covers bounded deferred ciphertext,
+  retry-state persistence, and receipt removal after successful opening.
