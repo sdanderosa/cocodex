@@ -459,9 +459,29 @@ describe("three-process CoCodex private alpha", () => {
     const offlineK = randomUUID();
     stephen.send({ id: offlineS, type: "chat.send", projectId: project.id, content: "Stephen offline queued" });
     kai.send({ id: offlineK, type: "chat.send", projectId: project.id, content: "Kai offline queued" });
+    const offlinePrivateS = "Kai private while the server is offline";
+    const offlinePrivateK = "Stephen private while the server is offline";
+    const offlinePrivateRequestS = randomUUID();
+    const offlinePrivateRequestK = randomUUID();
+    kai.send({
+      id: offlinePrivateRequestS,
+      type: "private.send",
+      recipientDeviceId: stephenDevice.id,
+      recipientKeyCertificate: stephenKeyCertificate,
+      text: offlinePrivateS,
+    });
+    stephen.send({
+      id: offlinePrivateRequestK,
+      type: "private.send",
+      recipientDeviceId: kaiDevice.id,
+      recipientKeyCertificate: kaiKeyCertificate,
+      text: offlinePrivateK,
+    });
     await Promise.all([
       waitFor(stephen, line => line.source === "control" && line.id === offlineS && line.queued === true),
       waitFor(kai, line => line.source === "control" && line.id === offlineK && line.queued === true),
+      waitFor(kai, line => line.source === "control" && line.id === offlinePrivateRequestS && line.queued === true),
+      waitFor(stephen, line => line.source === "control" && line.id === offlinePrivateRequestK && line.queued === true),
     ]);
 
     traceCheckpoint("offline queues accepted");
@@ -470,6 +490,10 @@ describe("three-process CoCodex private alpha", () => {
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "connected" && line.flushedEvents >= 1),
       waitFor(kai, line => line.source === "session" && line.state === "connected" && line.flushedEvents >= 1),
+    ]);
+    await Promise.all([
+      waitFor(stephen, line => line.source === "private" && line.message?.text === offlinePrivateS),
+      waitFor(kai, line => line.source === "private" && line.message?.text === offlinePrivateK),
     ]);
     expect(stephen.process.pid).toBe(stephenPid);
     expect(kai.process.pid).toBe(kaiPid);
