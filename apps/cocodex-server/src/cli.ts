@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createEncryptedServerTransfer, createServerBackup, restoreEncryptedServerTransfer, restoreServerBackup } from "./backup";
+import { randomUUID } from "node:crypto";
+import {
+  createEncryptedAuthorityServerTransfer,
+  createEncryptedServerTransfer,
+  createServerBackup,
+  restoreEncryptedAuthorityServerTransfer,
+  restoreEncryptedServerTransfer,
+  restoreServerBackup,
+} from "./backup";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
@@ -12,7 +20,8 @@ import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
-import { advanceServerEpoch } from "./server-state";
+import { initializeServerAuthority, prepareServerAuthority, requireActiveServerAuthority, serverAuthorityStatus } from "./server-state";
+import { encodeServerAuthorityCertificate, serverTransferTargetSchema, type ServerTransferTarget } from "@cocodex/protocol";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -42,6 +51,11 @@ function requiredPassphrase(): string {
   return value;
 }
 
+function transferTarget(inputPath: string): ServerTransferTarget {
+  try { return serverTransferTargetSchema.parse(JSON.parse(readFileSync(inputPath, "utf8"))); }
+  catch { throw new Error("Invalid CoCodex transfer target request"); }
+}
+
 function runningPid(paths: ReturnType<typeof serverPaths>): number | undefined {
   if (!existsSync(paths.pid)) return undefined;
   const pid = Number(readFileSync(paths.pid, "utf8").trim());
@@ -68,6 +82,8 @@ Usage:
   cocodex-server backup --output FILE [--state-root PATH]
   cocodex-server restore --input FILE [--state-root PATH]
   cocodex-server transfer-export --output FILE [--passphrase-file FILE] [--state-root PATH]
+  cocodex-server transfer-prepare --public-host HOST --port PORT --output FILE [--state-root PATH]
+  cocodex-server transfer-export --target-request FILE --output FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server transfer-import --input FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server migrate [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
@@ -88,12 +104,15 @@ async function run(): Promise<void> {
       const port = Number(option("--port") ?? "19463");
       const adminToken = randomToken();
       saveConfig(paths, createDefaultConfig(paths, publicHost, port, adminToken));
-      createServerIdentity(paths);
+      const identity = createServerIdentity(paths);
       await createTlsIdentity(paths, publicHost);
       openDatabase(paths.database).close();
       const firewall = configureWindowsFirewall(port);
       const portMapping = await tryAutomaticPortMapping(port);
       const networkDiagnostic = classifyDirectHosting(portMapping);
+      const db = openDatabase(paths.database);
+      initializeServerAuthority(db, identity.fingerprint, "active");
+      db.close();
       console.log(JSON.stringify({
         initialized: true,
         stateRoot: paths.root,
@@ -118,6 +137,34 @@ async function run(): Promise<void> {
       }));
       return;
     }
+    case "transfer-prepare": {
+      if (existsSync(paths.config)) throw new Error("Destination server state already exists; choose a new state root");
+      const publicHost = requiredOption("--public-host");
+      const port = Number(requiredOption("--port"));
+      const output = requiredOption("--output");
+      const adminToken = randomToken();
+      saveConfig(paths, createDefaultConfig(paths, publicHost, port, adminToken));
+      const identity = createServerIdentity(paths);
+      await createTlsIdentity(paths, publicHost);
+      const db = openDatabase(paths.database);
+      prepareServerAuthority(db, identity.fingerprint);
+      db.close();
+      const target: ServerTransferTarget = {
+        version: 1,
+        requestId: randomUUID(),
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        targetHost: publicHost.trim(),
+        targetPort: port,
+        targetIdentityPublicKeyPem: identity.publicKeyPem,
+        targetIdentityFingerprint: identity.fingerprint,
+        targetTlsCertificatePem: readFileSync(paths.tlsCertificate, "utf8"),
+        targetTlsFingerprint: tlsCertificateFingerprint(paths.tlsCertificate),
+      };
+      writeFileSync(output, `${JSON.stringify(target, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      console.log(JSON.stringify({ prepared: true, stateRoot: paths.root, targetRequest: output, target, adminToken }, null, 2));
+      return;
+    }
     case "network-diagnose": {
       const port = Number(option("--port") ?? (existsSync(paths.config) ? loadConfig(paths).port : "19463"));
       const mapping = await tryAutomaticPortMapping(port);
@@ -139,6 +186,12 @@ async function run(): Promise<void> {
     }
     case "status": {
       const config = existsSync(paths.config) ? loadConfig(paths) : undefined;
+      let authority: string | null = null;
+      if (config && existsSync(paths.database)) {
+        const db = openDatabase(paths.database);
+        try { authority = serverAuthorityStatus(db); }
+        finally { db.close(); }
+      }
       console.log(JSON.stringify({
         initialized: Boolean(config),
         stateRoot: paths.root,
@@ -146,6 +199,7 @@ async function run(): Promise<void> {
         pid: runningPid(paths) ?? null,
         publicHost: config?.publicHost ?? null,
         port: config?.port ?? null,
+        authority,
         serverFingerprint: config && existsSync(config.tlsCertificate)
           ? tlsCertificateFingerprint(config.tlsCertificate) : null,
       }));
@@ -200,18 +254,40 @@ async function run(): Promise<void> {
     case "transfer-export": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const transfer = createEncryptedServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase());
-      console.log(JSON.stringify({ transferred: true, direction: "export", encrypted: true, serverEpoch: transfer.serverEpoch, databaseSha256: transfer.databaseSha256 }));
+      const targetRequestPath = option("--target-request");
+      if (!targetRequestPath) {
+        const transfer = createEncryptedServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase());
+        console.log(JSON.stringify({ transferred: true, direction: "export", encrypted: true, legacyIdentityBound: true, serverEpoch: transfer.serverEpoch, databaseSha256: transfer.databaseSha256 }));
+        return;
+      }
+      const transfer = createEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase(), transferTarget(targetRequestPath));
+      console.log(JSON.stringify({
+        transferred: true,
+        direction: "export",
+        encrypted: true,
+        authorityHandoff: true,
+        sourceServerEpoch: transfer.sourceServerEpoch,
+        targetServerEpoch: transfer.authorityCertificate.serverEpoch,
+        targetHost: transfer.target.targetHost,
+        targetPort: transfer.target.targetPort,
+        authorityCode: encodeServerAuthorityCertificate(transfer.authorityCertificate),
+        databaseSha256: transfer.databaseSha256,
+      }));
       return;
     }
     case "transfer-import": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const transfer = restoreEncryptedServerTransfer(paths, identity, requiredOption("--input"), requiredPassphrase());
-      const db = openDatabase(paths.database);
-      const epoch = advanceServerEpoch(db);
-      db.close();
-      console.log(JSON.stringify({ transferred: true, direction: "import", encrypted: true, previousServerEpoch: transfer.serverEpoch, serverEpoch: epoch, databaseSha256: transfer.databaseSha256 }));
+      const transfer = restoreEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--input"), requiredPassphrase());
+      console.log(JSON.stringify({
+        transferred: true,
+        direction: "import",
+        encrypted: true,
+        authorityHandoff: true,
+        serverEpoch: transfer.transfer.authorityCertificate.serverEpoch,
+        authorityCode: transfer.authorityCode,
+        databaseSha256: transfer.transfer.databaseSha256,
+      }));
       return;
     }
     case "migrate": {
@@ -278,6 +354,7 @@ async function run(): Promise<void> {
       const config = loadConfig(paths);
       const identity = loadServerIdentity(paths);
       const db = openDatabase(paths.database);
+      requireActiveServerAuthority(db);
       if (existsSync(paths.pid)) {
         const existingPid = Number(readFileSync(paths.pid, "utf8").trim());
         let running = Number.isInteger(existingPid) && existingPid > 0;

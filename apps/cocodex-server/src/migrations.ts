@@ -307,4 +307,10 @@ ALTER TABLE project_chat_events ADD COLUMN final INTEGER NOT NULL DEFAULT 0 CHEC
 ALTER TABLE project_chat_events ADD COLUMN status TEXT NOT NULL DEFAULT 'chat';
 CREATE INDEX project_chat_events_task ON project_chat_events(task_id, sequence);`,
   },
+  {
+    version: 17,
+    sql: `
+INSERT OR IGNORE INTO server_state (key, value) VALUES ('authority_status', 'active');
+INSERT OR IGNORE INTO server_state (key, value) VALUES ('identity_fingerprint', '');`,
+  },
 ];

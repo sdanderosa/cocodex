@@ -1,10 +1,15 @@
-import { randomBytes, randomUUID, sign } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomUUID, sign, verify, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import {
   agentRequestSigningTranscript,
   decodeInvitation,
   enrollmentSigningTranscript,
   websocketAuthTranscript,
+  canonicalEd25519PublicKey,
+  decodeServerAuthorityCertificate,
+  publicKeyFingerprint,
+  serverAuthorityCertificateSigningTranscript,
   type InvitationPayload,
 } from "@cocodex/protocol";
 import { loadOrCreateClientIdentity } from "./identity";
@@ -111,12 +116,64 @@ function saveClientConnection(paths: ClientPaths, connection: ClientConnection, 
   hardenSecretPath(paths.connection, { required: true });
 }
 
+function certificateFingerprint(certificatePem: string): string {
+  const certificate = new X509Certificate(certificatePem);
+  return createHash("sha256").update(certificate.raw).digest("hex").toUpperCase().match(/.{1,4}/g)?.join("-") ?? "";
+}
+
 export function loadClientConnection(paths: ClientPaths = clientPaths()): ClientConnection {
   hardenSecretPath(paths.connection, { required: true });
   const connection = JSON.parse(readFileSync(paths.connection, "utf8")) as ClientConnection;
   const epoch = connection.serverEpoch ?? 1;
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("Invalid CoCodex Server epoch in client connection");
   return { ...connection, serverEpoch: epoch };
+}
+
+/** Accept a source-signed authority handoff and atomically retarget this client. */
+export function acceptServerAuthorityTransfer(
+  code: string,
+  paths: ClientPaths = clientPaths(),
+): ClientConnection {
+  const current = loadClientConnection(paths);
+  const certificate = decodeServerAuthorityCertificate(code.trim());
+  const sourceKey = canonicalEd25519PublicKey(certificate.sourceIdentityPublicKeyPem);
+  if (sourceKey !== canonicalEd25519PublicKey(current.serverIdentityPublicKeyPem)
+    || publicKeyFingerprint(sourceKey) !== certificate.sourceIdentityFingerprint) {
+    throw new Error("Server-transfer certificate is not signed by the currently trusted server");
+  }
+  const targetKey = canonicalEd25519PublicKey(certificate.targetIdentityPublicKeyPem);
+  if (publicKeyFingerprint(targetKey) !== certificate.targetIdentityFingerprint) {
+    throw new Error("Server-transfer target identity fingerprint is invalid");
+  }
+  const targetTlsFingerprint = certificateFingerprint(certificate.targetTlsCertificatePem);
+  if (targetTlsFingerprint !== certificate.targetTlsFingerprint) {
+    throw new Error("Server-transfer target TLS fingerprint is invalid");
+  }
+  const { signature: _signature, ...unsigned } = certificate;
+  if (!verify(null, serverAuthorityCertificateSigningTranscript(unsigned), createPublicKey(sourceKey), Buffer.from(certificate.signature, "base64url"))) {
+    throw new Error("Server-transfer certificate signature is invalid");
+  }
+  if (certificate.serverEpoch <= current.serverEpoch) {
+    throw new Error("Server-transfer certificate is not newer than the current authority");
+  }
+  try {
+    const targetCertificate = new X509Certificate(certificate.targetTlsCertificatePem);
+    const matchedHost = isIP(certificate.targetHost)
+      ? targetCertificate.checkIP(certificate.targetHost)
+      : targetCertificate.checkHost(certificate.targetHost);
+    if (!matchedHost) throw new Error("certificate name mismatch");
+  } catch { throw new Error("Server-transfer TLS certificate does not cover the target host"); }
+  const next: ClientConnection = {
+    ...current,
+    host: certificate.targetHost,
+    port: certificate.targetPort,
+    serverFingerprint: certificate.targetTlsFingerprint,
+    serverCertificatePem: certificate.targetTlsCertificatePem,
+    serverIdentityPublicKeyPem: targetKey,
+    serverEpoch: certificate.serverEpoch,
+  };
+  saveClientConnection(paths, next);
+  return next;
 }
 
 export type ClientWebSocketFactory = (url: string, options: unknown) => WebSocket;

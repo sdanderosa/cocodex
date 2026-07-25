@@ -15,13 +15,26 @@ import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
 import { decodeInvitation, enrollmentSigningTranscript } from "@cocodex/protocol";
 
 const temporaryRoots: string[] = [];
-const runningServers: Array<{ stop: (force?: boolean) => void }> = [];
+const runningServers: Array<{ stop: (force?: boolean) => Promise<void> }> = [];
 const openDatabases: Database[] = [];
 
-afterEach(() => {
-  for (const server of runningServers.splice(0)) server.stop(true);
-  for (const database of openDatabases.splice(0)) database.close();
-  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await Promise.all(runningServers.splice(0).map(server => server.stop(true)));
+  for (const database of new Set(openDatabases.splice(0))) database.close();
+  for (const root of temporaryRoots.splice(0)) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        await Bun.sleep(100);
+      }
+    }
+    if (lastError) throw lastError;
+  }
 });
 
 function temporaryRoot(): string {

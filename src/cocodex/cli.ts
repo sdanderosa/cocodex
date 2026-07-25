@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync } from "node:fs";
 import {
+  acceptServerAuthorityTransfer,
   connectAuthenticatedClient,
   enrollClient,
   loadClientConnection,
@@ -61,6 +62,13 @@ async function run(): Promise<void> {
     case "status":
       console.log(JSON.stringify(loadClientConnection(paths), null, 2));
       return;
+    case "accept-transfer": {
+      const codePath = option("--code-file");
+      const code = codePath ? readFileSync(codePath, "utf8") : required("--code");
+      const connection = acceptServerAuthorityTransfer(code, paths);
+      console.log(JSON.stringify({ accepted: true, host: connection.host, port: connection.port, serverEpoch: connection.serverEpoch, serverFingerprint: connection.serverFingerprint }));
+      return;
+    }
     case "identity-card": {
       const connection = loadClientConnection(paths);
       console.log(createDeviceKeyCertificate(connection.deviceId, loadOrCreateClientIdentity(paths)));
@@ -240,6 +248,8 @@ async function run(): Promise<void> {
 Usage:
   cocodex-client enroll --invite CODE --name NAME [--state-root PATH]
   cocodex-client status [--state-root PATH]
+  cocodex-client accept-transfer --code CODE [--state-root PATH]
+  cocodex-client accept-transfer --code-file FILE [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]

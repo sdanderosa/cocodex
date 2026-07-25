@@ -29,6 +29,9 @@ reviewed again before release.
 ## Selected private-alpha approach
 
 - **Networking:** one forwarded TLS/WSS server port; manual forwarding first.
+- **Authority handoff:** use a destination-bound, source-signed transfer
+  certificate and monotonically increasing epoch; never run two writable server
+  authorities for the same project state.
 - **Execution boundary:** independently adapt MeshCentral's server-routes /
   local-agent-executes pattern.
 - **Device identity:** independently adapt Syncthing's cryptographic

@@ -180,7 +180,7 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("artifacts built");
     await run(serverExe, [
       "init", "--public-host", "127.0.0.1", "--port", String(port), "--state-root", serverRoot,
-    ]);
+    ], { COCODEX_DISABLE_PORT_MAPPING: "1" });
 
     const startServer = () => startResident(serverExe, ["start", "--state-root", serverRoot]);
     let server = startServer();

@@ -1,20 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { decodeInvitation } from "@cocodex/protocol";
+import { createEncryptedAuthorityServerTransfer, restoreEncryptedAuthorityServerTransfer } from "../apps/cocodex-server/src/backup";
 import { createDefaultConfig } from "../apps/cocodex-server/src/config";
 import { openDatabase } from "../apps/cocodex-server/src/database";
 import { approveDevice } from "../apps/cocodex-server/src/enrollment";
 import { createServerIdentity } from "../apps/cocodex-server/src/identity";
 import { createInvitation } from "../apps/cocodex-server/src/invitations";
 import { serverPaths } from "../apps/cocodex-server/src/paths";
+import { initializeServerAuthority } from "../apps/cocodex-server/src/server-state";
 import { startCoCodexServer } from "../apps/cocodex-server/src/server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../apps/cocodex-server/src/tls";
 import {
   connectAuthenticatedClient,
   enrollClient,
+  acceptServerAuthorityTransfer,
   loadClientConnection,
   maintainAuthenticatedClient,
 } from "../src/cocodex/client";
@@ -154,4 +157,65 @@ describe("CoCodex Client direct enrollment", () => {
     expect(wrongRow.consumedAt).toBeNull();
 
   }, 15_000);
+
+  test("accepts a source-signed server transfer and persists the new endpoint and TLS pin", async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "cocodex-client-transfer-source-"));
+    const destinationRoot = mkdtempSync(join(tmpdir(), "cocodex-client-transfer-destination-"));
+    const clientRoot = mkdtempSync(join(tmpdir(), "cocodex-client-transfer-device-"));
+    roots.push(sourceRoot, destinationRoot, clientRoot);
+    const sourcePaths = serverPaths(sourceRoot);
+    const sourceIdentity = createServerIdentity(sourcePaths);
+    await createTlsIdentity(sourcePaths, "127.0.0.1");
+    const sourceDb = openDatabase(sourcePaths.database);
+    initializeServerAuthority(sourceDb, sourceIdentity.fingerprint, "active");
+    sourceDb.close();
+
+    const destinationPaths = serverPaths(destinationRoot);
+    const destinationIdentity = createServerIdentity(destinationPaths);
+    await createTlsIdentity(destinationPaths, "localhost");
+    const destinationDb = openDatabase(destinationPaths.database);
+    initializeServerAuthority(destinationDb, destinationIdentity.fingerprint, "prepared");
+    destinationDb.close();
+    const target = {
+      version: 1 as const,
+      requestId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      targetHost: "localhost",
+      targetPort: 19464,
+      targetIdentityPublicKeyPem: destinationIdentity.publicKeyPem,
+      targetIdentityFingerprint: destinationIdentity.fingerprint,
+      targetTlsCertificatePem: readFileSync(destinationPaths.tlsCertificate, "utf8"),
+      targetTlsFingerprint: tlsCertificateFingerprint(destinationPaths.tlsCertificate),
+    };
+    const transfer = createEncryptedAuthorityServerTransfer(
+      sourcePaths, sourceIdentity, join(sourceRoot, "authority-transfer.json"),
+      "correct horse battery staple", target,
+    );
+    const restored = restoreEncryptedAuthorityServerTransfer(
+      destinationPaths, destinationIdentity, join(sourceRoot, "authority-transfer.json"),
+      "correct horse battery staple",
+    );
+    expect(transfer.authorityCertificate.serverEpoch).toBe(2);
+
+    const paths = clientPaths(clientRoot);
+    loadOrCreateClientIdentity(paths);
+    writeFileSync(paths.connection, JSON.stringify({
+      version: 1,
+      host: "127.0.0.1",
+      port: 19463,
+      serverFingerprint: tlsCertificateFingerprint(sourcePaths.tlsCertificate),
+      serverCertificatePem: readFileSync(sourcePaths.tlsCertificate, "utf8"),
+      serverIdentityPublicKeyPem: sourceIdentity.publicKeyPem,
+      deviceId: crypto.randomUUID(),
+      displayName: "Kai",
+      serverEpoch: 1,
+    }));
+    const accepted = acceptServerAuthorityTransfer(restored.authorityCode, paths);
+    expect(accepted.host).toBe("localhost");
+    expect(accepted.port).toBe(19464);
+    expect(accepted.serverEpoch).toBe(2);
+    expect(accepted.serverIdentityPublicKeyPem).toBe(destinationIdentity.publicKeyPem);
+    await expect(Promise.resolve().then(() => acceptServerAuthorityTransfer(restored.authorityCode, paths))).rejects.toThrow("not signed");
+  });
 });

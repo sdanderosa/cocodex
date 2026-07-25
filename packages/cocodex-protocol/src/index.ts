@@ -130,3 +130,16 @@ export {
   type EncryptedAgentTaskFrame,
   type EncryptedAgentResultEvent,
 } from "./project-agent";
+export {
+  serverTransferTargetSchema,
+  serverAuthorityCertificateSchema,
+  encryptedServerTransferSchema,
+  serverTransferTargetSigningTranscript,
+  serverAuthorityCertificateSigningTranscript,
+  encryptedServerTransferSigningTranscript,
+  encodeServerAuthorityCertificate,
+  decodeServerAuthorityCertificate,
+  type ServerTransferTarget,
+  type ServerAuthorityCertificate,
+  type EncryptedServerAuthorityTransfer,
+} from "./server-transfer";

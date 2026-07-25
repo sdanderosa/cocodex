@@ -31,7 +31,7 @@ import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encr
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
-import { serverEpoch } from "./server-state";
+import { initializeServerAuthority, requireActiveServerAuthority, serverEpoch, serverIdentityFingerprint } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
 import { getSharedProjectContext, updateSharedProjectContext } from "./shared-context";
 import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./usage";
@@ -130,6 +130,12 @@ export function startCoCodexServer(
   db: Database,
   identity: ServerIdentity,
 ): RunningCoCodexServer {
+  const recordedIdentity = serverIdentityFingerprint(db);
+  if (recordedIdentity && recordedIdentity !== identity.fingerprint) {
+    throw new Error("CoCodex Server identity does not match the active database authority");
+  }
+  if (!recordedIdentity) initializeServerAuthority(db, identity.fingerprint, "active");
+  requireActiveServerAuthority(db);
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const presenceByProject = new Map<string, Map<string, PresenceState>>();

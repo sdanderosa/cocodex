@@ -70,14 +70,35 @@ checked on every authenticated connection and project operation.
 ```powershell
 cocodex-server backup --output backup.json
 cocodex-server restore --input backup.json
-COCODEX_TRANSFER_PASSPHRASE='use-a-secret-file' cocodex-server transfer-export --output transfer.json
-COCODEX_TRANSFER_PASSPHRASE='use-a-secret-file' cocodex-server transfer-import --input transfer.json
 cocodex-server migrate
 ```
 
-Transfer exports are signed and encrypted with an operator passphrase. Import
-advances the server epoch; clients reject a stale authority. Never place a
-passphrase directly in shell history for a real deployment—prefer
+The legacy `transfer-export`/`transfer-import` pair is an encrypted,
+identity-bound snapshot for restoring the same server state. For a real
+authority handoff to a new machine, prepare the destination first:
+
+```powershell
+cocodex-server transfer-prepare --public-host NEW_PUBLIC_HOST --port 19463 `
+  --output target-request.json --state-root C:\CoCodex\new-server
+
+cocodex-server stop
+cocodex-server transfer-export --target-request target-request.json `
+  --output authority-transfer.json --passphrase-file transfer-passphrase.txt
+
+cocodex-server transfer-import --input authority-transfer.json `
+  --passphrase-file transfer-passphrase.txt --state-root C:\CoCodex\new-server
+cocodex-server start --state-root C:\CoCodex\new-server
+```
+
+`transfer-prepare` creates a distinct destination identity, TLS certificate,
+and a prepared database. The source signs the destination identity, endpoint,
+TLS pin, and next server epoch inside an encrypted AES-GCM snapshot, then
+retires its own authority. The destination accepts the snapshot only when its
+identity and certificate match the signed target request. The export/import
+output contains a one-time `ccx-transfer1.` authority certificate for clients.
+Never start the source after it is retired; this is the split-brain fence.
+
+Never place a passphrase directly in shell history for a real deployment—prefer
 `--passphrase-file` with a protected file. The health endpoint is
 `GET /healthz`; authenticated admin status is `GET /v1/admin/status` with the
 initialization token.

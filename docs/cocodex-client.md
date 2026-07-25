@@ -44,6 +44,23 @@ possession of its Ed25519 device key during the WSS handshake and is remembered
 for reconnects. A display name, IP address, or copied bearer value is not an
 identity.
 
+## Accepting a server authority handoff
+
+When a server owner moves the authoritative database to a prepared destination,
+the source prints a signed `ccx-transfer1.` certificate. Paste it into the
+resident client before reconnecting to the new endpoint:
+
+```powershell
+cocodex-client accept-transfer --code 'ccx-transfer1....'
+cocodex-client connect --json-lines
+```
+
+The client verifies the source identity it already trusts, the destination
+identity and TLS certificate, the signature, and a strictly newer server epoch
+before atomically replacing its endpoint. Replaying the certificate, using a
+stale epoch, or presenting a certificate from another server is rejected. The
+device key and enrollment record do not change, so approval is not repeated.
+
 ## Shared work
 
 The client subscribes to project chat, prompt revisions, presence, and the
