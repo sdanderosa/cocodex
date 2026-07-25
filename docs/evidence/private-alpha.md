@@ -9,7 +9,8 @@
   reports `b2c124f9`, encrypted project chat/key lifecycle `02d24e16`,
   encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
-  `943388d4`.
+  `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
+  lifecycle timeout hardening `0f09345f`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -386,13 +387,15 @@ Focused command and evidence:
   .\tests\cocodex-gui-bridge.test.ts
 ```
 
-Exit status: `0`; relevant output: `33 pass`, `0 fail`, `233 expect() calls`.
+Exit status: `0`; relevant output: `33 pass`, `0 fail`, `239 expect() calls`.
 The session test creates a real Yjs document, encrypts its binary update, and
 applies the decrypted update on the receiving client. The WSS test also proves
 that the stored prompt envelope contains ciphertext but neither the update
 bytes nor prompt text. The encrypted-session teardown uses bounded Windows
 cleanup retries so concurrent test files do not turn a passed assertion into a
-spurious `EBUSY` failure.
+spurious `EBUSY` failure. The same session test stops and restarts the real
+TLS/WSS server, then recovers encrypted chat, prompt, and context snapshots
+from SQLite on both clients.
 
 Full CoCodex command:
 
@@ -400,7 +403,7 @@ Full CoCodex command:
 .\node_modules\.bin\bun.exe run test:cocodex
 ```
 
-Exit status: `0`; relevant output: `67 pass`, `0 fail`, `575 expect() calls`.
+Exit status: `0`; relevant output: `68 pass`, `0 fail`, `594 expect() calls`.
 
 ## Official Codex runtime smoke
 
@@ -454,7 +457,7 @@ The following also remain deferred or insufficiently evidenced:
   shared chat, and shared prompt updates are encrypted only through their
   explicit new frames. Automatic post-removal rotation orchestration and
   revocation UI are still incomplete.
-- NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
+- robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
   document, but it does not yet provide a full Hocuspocus deployment or
