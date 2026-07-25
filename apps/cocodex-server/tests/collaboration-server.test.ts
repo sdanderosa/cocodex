@@ -813,6 +813,125 @@ describe("authenticated WSS collaboration", () => {
     });
   }, 15_000);
 
+  test("paginates 501 chat and private events over the real WSS cursor protocol", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-collaboration-pagination-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Pagination", stephen.id);
+    addProjectMember(db, project.id, stephen.id, kai.id);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false);
+    const kaiSocket = await connect(server.port, kai, fingerprint, false);
+    for (let index = 0; index < 501; index += 1) {
+      const requestId = randomUUID();
+      const accepted = nextFrame(stephenSocket, "chat.accepted", frame => frame.requestId === requestId);
+      stephenSocket.send(JSON.stringify({
+        version: 1,
+        type: "chat.send",
+        requestId,
+        projectId: project.id,
+        eventId: randomUUID(),
+        content: `pagination chat ${index}`,
+        clientCreatedAt: new Date().toISOString(),
+      }));
+      await accepted;
+    }
+    expect((db.query("SELECT COUNT(*) AS count FROM chat_events WHERE project_id = ?").get(project.id) as { count: number }).count)
+      .toBe(501);
+
+    for (let index = 0; index < 501; index += 1) {
+      const requestId = randomUUID();
+      const messageId = randomUUID();
+      const clientCreatedAt = new Date().toISOString();
+      const ciphertext = await sealSignedPrivateMessage({
+        messageId,
+        senderDeviceId: stephen.id,
+        recipientDeviceId: kai.id,
+        text: `pagination private ${index}`,
+        clientCreatedAt,
+      }, stephen.privateKey, stephen.publicKey, kai.messagingPublicKey);
+      const accepted = nextFrame(stephenSocket, "private.accepted", frame => frame.requestId === requestId);
+      stephenSocket.send(JSON.stringify({
+        version: 1,
+        type: "private.send",
+        requestId,
+        messageId,
+        recipientDeviceId: kai.id,
+        ciphertext,
+        clientCreatedAt,
+      }));
+      await accepted;
+    }
+    expect((db.query("SELECT COUNT(*) AS count FROM private_messages WHERE recipient_device_id = ?").get(kai.id) as { count: number }).count)
+      .toBe(501);
+
+    kaiSocket.close();
+    const reconnectedKai = await connect(server.port, kai, fingerprint, false);
+    const firstChatRequest = randomUUID();
+    const firstChat = nextFrame(reconnectedKai, "chat.snapshot", frame => frame.requestId === firstChatRequest);
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "chat.subscribe",
+      requestId: firstChatRequest,
+      projectId: project.id,
+      afterSequence: 0,
+    }));
+    const firstChatFrame = await firstChat;
+    const firstChatEvents = firstChatFrame.events as Array<Record<string, unknown>>;
+    expect(firstChatEvents).toHaveLength(500);
+    expect(firstChatEvents[0]).toMatchObject({ sequence: 1, content: "pagination chat 0" });
+    expect(firstChatEvents.at(-1)).toMatchObject({ sequence: 500, content: "pagination chat 499" });
+
+    const secondChatRequest = randomUUID();
+    const secondChat = nextFrame(reconnectedKai, "chat.snapshot", frame => frame.requestId === secondChatRequest);
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "chat.subscribe",
+      requestId: secondChatRequest,
+      projectId: project.id,
+      afterSequence: 500,
+    }));
+    const secondChatFrame = await secondChat;
+    expect(secondChatFrame.events).toEqual([expect.objectContaining({ sequence: 501, content: "pagination chat 500" })]);
+
+    const firstPrivateRequest = randomUUID();
+    const firstPrivate = nextFrame(reconnectedKai, "private.snapshot", frame => frame.requestId === firstPrivateRequest);
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "private.subscribe",
+      requestId: firstPrivateRequest,
+      afterSequence: 0,
+    }));
+    const firstPrivateFrame = await firstPrivate;
+    const firstPrivateMessages = firstPrivateFrame.messages as Array<Record<string, unknown>>;
+    expect(firstPrivateMessages).toHaveLength(500);
+    expect(firstPrivateMessages[0]).toMatchObject({ sequence: 1 });
+    expect(firstPrivateMessages.at(-1)).toMatchObject({ sequence: 500 });
+
+    const secondPrivateRequest = randomUUID();
+    const secondPrivate = nextFrame(reconnectedKai, "private.snapshot", frame => frame.requestId === secondPrivateRequest);
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "private.subscribe",
+      requestId: secondPrivateRequest,
+      afterSequence: 500,
+    }));
+    const secondPrivateFrame = await secondPrivate;
+    expect(secondPrivateFrame.messages).toEqual([expect.objectContaining({ sequence: 501 })]);
+  });
+
   test("encrypted chat subscriptions also carry independent presence awareness", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-encrypted-presence-"));
     roots.push(root);
