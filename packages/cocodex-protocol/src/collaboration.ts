@@ -87,6 +87,20 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("prompt.subscribe"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("prompt.update"),
+    requestId,
+    projectId,
+    updateId: z.uuid(),
+    update: z.string().min(4).max(256_000),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("private.subscribe"),
     requestId,
     afterSequence: z.number().int().nonnegative(),

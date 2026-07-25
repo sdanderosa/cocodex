@@ -16,7 +16,7 @@ import {
 
 export interface LocalAgentAdapter {
   authorize(task: AgentTask): boolean | Promise<boolean>;
-  execute(task: AgentTask): AsyncIterable<string>;
+  execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string>;
 }
 
 export interface AgentBridgeSecurity {
@@ -31,7 +31,8 @@ function verifyTask(task: AgentTask, security: AgentBridgeSecurity): boolean {
   if (task.targetDeviceId !== security.localDeviceId
     || (task.status !== "queued" && task.status !== "running")) return false;
   const now = (security.now ?? (() => new Date()))().getTime();
-  if (Date.parse(task.expiresAt) <= now || Date.parse(task.issuedAt) > now + 60_000) return false;
+  if ((task.status === "queued" && Date.parse(task.expiresAt) <= now)
+    || Date.parse(task.issuedAt) > now + 60_000) return false;
   const trusted = security.trustedRequesterFingerprints.get(task.requesterDeviceId);
   if (!trusted || trusted !== publicKeyFingerprint(task.requesterPublicKeyPem)) return false;
   const requestValid = verify(null, agentRequestSigningTranscript({
@@ -130,6 +131,7 @@ async function executeTask(
   adapter: LocalAgentAdapter,
   task: AgentTask,
   security: AgentBridgeSecurity,
+  signal: AbortSignal,
 ): Promise<void> {
   if (!await adapter.authorize(task)) {
     await sendResult(socket, security, task.id, "Local execution policy rejected this task.", true, "failed");
@@ -137,14 +139,16 @@ async function executeTask(
   }
   try {
     let pending: string | undefined;
-    for await (const output of adapter.execute(task)) {
+    for await (const output of adapter.execute(task, signal)) {
       for (const chunk of chunks(output)) {
         if (pending !== undefined) await sendResult(socket, security, task.id, pending, false, "running");
         pending = chunk;
       }
     }
+    if (signal.aborted) return;
     await sendResult(socket, security, task.id, pending ?? "Task completed without textual output.", true, "completed");
   } catch {
+    if (signal.aborted) return;
     try {
       await sendResult(socket, security, task.id, "Local agent execution failed. Review the host client logs.", true, "failed");
     } catch {
@@ -157,8 +161,9 @@ export function attachLocalAgentBridge(
   socket: WebSocket,
   adapter: LocalAgentAdapter,
   security: AgentBridgeSecurity,
-): () => void {
+): () => Promise<void> {
   const activeTasks = new Set<string>();
+  const executionControllers = new Map<string, AbortController>();
   const MAX_LOCAL_AGENT_QUEUE = 8;
   let executionChain = Promise.resolve();
   const listener = (event: MessageEvent) => {
@@ -172,6 +177,8 @@ export function attachLocalAgentBridge(
     if (!parsed.success) return;
     const task = parsed.data.task;
     if (activeTasks.has(task.id) || !verifyTask(task, security)) return;
+    const executionController = new AbortController();
+    executionControllers.set(task.id, executionController);
     if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
       activeTasks.add(task.id);
       const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
@@ -183,7 +190,10 @@ export function attachLocalAgentBridge(
           : journalState === "new"
             ? sendResult(socket, security, task.id, "Local execution queue is full.", true, "failed")
             : undefined)
-        .finally(() => activeTasks.delete(task.id));
+        .finally(() => {
+          executionControllers.delete(task.id);
+          activeTasks.delete(task.id);
+        });
       return;
     }
     activeTasks.add(task.id);
@@ -193,8 +203,13 @@ export function attachLocalAgentBridge(
       .catch(() => undefined)
       .then(() => mustRecover
         ? recoverTask(socket, security, task.id)
-        : journalState === "new" ? executeTask(socket, adapter, task, security) : undefined)
-      .finally(() => activeTasks.delete(task.id));
+        : journalState === "new"
+          ? executeTask(socket, adapter, task, security, executionController.signal)
+          : undefined)
+      .finally(() => {
+        executionControllers.delete(task.id);
+        activeTasks.delete(task.id);
+      });
   };
   socket.addEventListener("message", listener);
   socket.send(JSON.stringify({
@@ -202,5 +217,9 @@ export function attachLocalAgentBridge(
     type: "agent.ready",
     requestId: randomUUID(),
   }));
-  return () => socket.removeEventListener("message", listener);
+  return async () => {
+    socket.removeEventListener("message", listener);
+    for (const controller of executionControllers.values()) controller.abort();
+    await executionChain.catch(() => undefined);
+  };
 }

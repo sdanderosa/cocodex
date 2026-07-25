@@ -8,7 +8,7 @@ import {
   enrollmentClaimSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
-import { appendAgentResult, createAgentTask, pendingAgentTasks } from "./agent-routing";
+import { appendAgentResult, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
 import type { ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
@@ -20,6 +20,7 @@ import {
 } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
 import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
+import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -34,6 +35,7 @@ interface SocketData {
   preAuthCounted: boolean;
   remoteAddress: string;
   subscribedProjects: Set<string>;
+  subscribedPrompts: Set<string>;
   agentReady: boolean;
 }
 
@@ -134,6 +136,25 @@ export function startCoCodexServer(
     }
   }
 
+  function sendToPrompt(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedPrompts.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedPrompts.delete(projectId);
+      }
+    }
+  }
+
   const server = Bun.serve<SocketData>({
     hostname: config.hostname,
     port: config.port,
@@ -216,6 +237,7 @@ export function startCoCodexServer(
           preAuthCounted: true,
           remoteAddress,
           subscribedProjects: new Set(),
+          subscribedPrompts: new Set(),
           agentReady: false,
         };
         if (bunServer.upgrade(request, { data })) return;
@@ -281,6 +303,16 @@ export function startCoCodexServer(
             socket.close(1008, "Device authorization was revoked");
             return;
           }
+          for (const expired of expireQueuedAgentTasks(db)) {
+            sendToProject(expired.task.projectId, {
+              version: 1,
+              type: "agent.result",
+              taskId: expired.task.id,
+              final: true,
+              status: "failed",
+              event: expired.event,
+            });
+          }
           if (message.type === "agent.ready") {
             socket.data.agentReady = true;
             for (const task of pendingAgentTasks(db, deviceId)) {
@@ -312,6 +344,41 @@ export function startCoCodexServer(
               projectId: message.projectId,
               events,
             }));
+            return;
+          }
+          if (message.type === "prompt.subscribe") {
+            requireProjectMembership(db, message.projectId, deviceId);
+            socket.data.subscribedPrompts.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "prompt.snapshot",
+              requestId,
+              projectId: message.projectId,
+              update: sharedPromptSnapshot(db, message.projectId, deviceId),
+            }));
+            return;
+          }
+          if (message.type === "prompt.update") {
+            const applied = applySharedPromptUpdate(
+              db, message.projectId, deviceId, message.updateId, message.update,
+            );
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "prompt.accepted",
+              requestId,
+              projectId: message.projectId,
+              updateId: message.updateId,
+            }));
+            if (applied.created) {
+              sendToPrompt(message.projectId, {
+                version: 1,
+                type: "prompt.update",
+                projectId: message.projectId,
+                updateId: message.updateId,
+                senderDeviceId: deviceId,
+                update: message.update,
+              });
+            }
             return;
           }
           if (message.type === "private.subscribe") {

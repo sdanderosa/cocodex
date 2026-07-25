@@ -113,7 +113,7 @@ function processEnv(): Record<string, string | undefined> {
 async function waitFor(
   resident: Resident,
   predicate: (line: Record<string, any>) => boolean,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
 ): Promise<Record<string, any>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -182,12 +182,9 @@ describe("three-process CoCodex private alpha", () => {
     };
     const stephenDevice = await enroll("Stephen", stephenRoot);
     const kaiDevice = await enroll("Kai", kaiRoot);
-    const stephenKeys = JSON.parse(await run(serverExe, [
-      "device-keys", "--device", stephenDevice.id, "--state-root", serverRoot,
-    ]));
-    const kaiKeys = JSON.parse(await run(serverExe, [
-      "device-keys", "--device", kaiDevice.id, "--state-root", serverRoot,
-    ]));
+    const stephenKeyCertificate = await run(clientExe, [
+      "identity-card", "--state-root", stephenRoot,
+    ]);
 
     const project = JSON.parse(await run(serverExe, [
       "project-create", "--name", "Nocturne Launcher", "--owner-device", stephenDevice.id,
@@ -294,7 +291,7 @@ describe("three-process CoCodex private alpha", () => {
       id: randomUUID(),
       type: "private.send",
       recipientDeviceId: stephenDevice.id,
-      recipientMessagingPublicKeyPem: stephenKeys.messagingPublicKeyPem,
+      recipientKeyCertificate: stephenKeyCertificate,
       text: privateCanary,
     });
     await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);

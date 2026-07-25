@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { enrollClient, loadClientConnection } from "./client";
 import { clientPaths, type ClientPaths } from "./paths";
@@ -10,6 +11,8 @@ const ALLOWED_COMMANDS = new Set([
   "device.trust",
   "chat.subscribe",
   "chat.send",
+  "prompt.subscribe",
+  "prompt.update",
   "agent.request",
   "private.send",
 ]);
@@ -58,15 +61,24 @@ function withoutPrivateCiphertext(value: unknown): unknown {
 
 export class CoCodexGuiBridge {
   private input?: PassThrough;
+  private readonly capability = randomBytes(32).toString("base64url");
   private running = false;
   private state: CoCodexGuiStatus["state"] = "stopped";
   private sequence = 0;
   private readonly events: CoCodexGuiEvent[] = [];
-
   constructor(
     private readonly paths: ClientPaths = clientPaths(),
     private readonly runner: SessionRunner = runJsonLineSession,
   ) {}
+
+  issueCapability(): string { return this.capability; }
+
+  acceptsCapability(value: string | null): boolean {
+    if (!value) return false;
+    const actual = Buffer.from(value);
+    const expected = Buffer.from(this.capability);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
 
   status(): CoCodexGuiStatus {
     const configured = existsSync(this.paths.connection);

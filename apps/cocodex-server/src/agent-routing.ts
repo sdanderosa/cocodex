@@ -1,4 +1,4 @@
-import { createPublicKey, sign, verify } from "node:crypto";
+import { createPublicKey, randomUUID, sign, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   agentDispatchSigningTranscript,
@@ -101,8 +101,9 @@ export function createAgentTask(
     .get(input.requesterDeviceId) as DeviceKeyRow | null;
   if (!requester || requester.status !== "approved") throw new Error("Requester device is not approved");
   const pending = db.query(`SELECT COUNT(*) AS count FROM agent_tasks
-    WHERE requester_device_id = ? AND status IN ('queued', 'running')`)
-    .get(input.requesterDeviceId) as { count: number };
+    WHERE requester_device_id = ?
+      AND (status = 'running' OR (status = 'queued' AND expires_at > ?))`)
+    .get(input.requesterDeviceId, now.toISOString()) as { count: number };
   if (pending.count >= MAX_PENDING_TASKS_PER_REQUESTER) {
     throw new Error("Requester has too many pending agent tasks");
   }
@@ -144,6 +145,27 @@ export function createAgentTask(
   return { task, created: true };
 }
 
+export function expireQueuedAgentTasks(db: Database, now = new Date()): Array<{
+  task: AgentTask;
+  event: ChatEvent;
+}> {
+  const expired = db.query(`SELECT id, target_device_id AS targetDeviceId
+    FROM agent_tasks WHERE status = 'queued' AND expires_at <= ?
+    ORDER BY accepted_at, id`).all(now.toISOString()) as Array<{ id: string; targetDeviceId: string }>;
+  return expired.map(item => {
+    const result = appendAgentResult(
+      db,
+      item.targetDeviceId,
+      item.id,
+      randomUUID(),
+      "Agent request expired before the host client accepted it.",
+      true,
+      "failed",
+      now,
+    );
+    return { task: result.task, event: result.event };
+  });
+}
 export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date()): AgentTask[] {
   return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
@@ -151,7 +173,8 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
     t.status, t.accepted_at AS acceptedAt
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
-    WHERE t.target_device_id = ? AND t.status IN ('queued', 'running') AND t.expires_at > ?
+    WHERE t.target_device_id = ?
+      AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
 }
 

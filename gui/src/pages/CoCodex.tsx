@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import * as Y from "yjs";
 import { useT, type TFn, type TKey } from "../i18n";
 import { IconBot, IconKey, IconLock, IconRefresh, IconServer } from "../icons";
 import "../styles-cocodex.css";
@@ -46,6 +47,8 @@ interface SessionValue {
   message?: PrivateMessage;
   frame?: {
     type?: string;
+    projectId?: string;
+    update?: string;
     projects?: Project[];
     events?: ChatEvent[];
     event?: ChatEvent;
@@ -65,6 +68,23 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+const capabilityPromises = new Map<string, Promise<string>>();
+function capabilityFor(apiBase: string): Promise<string> {
+  let pending = capabilityPromises.get(apiBase);
+  if (!pending) {
+    pending = apiJson<{ capability: string }>(`${apiBase}/api/cocodex/capability`)
+      .then(value => value.capability);
+    capabilityPromises.set(apiBase, pending);
+  }
+  return pending;
+}
+
+async function cocodexApiJson<T>(apiBase: string, url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("X-CoCodex-Capability", await capabilityFor(apiBase));
+  return apiJson<T>(url, { ...init, headers });
+}
+
 const STATE_TKEY: Record<ConnectionState, TKey> = {
   "not-configured": "cocodex.state.enrollment",
   stopped: "cocodex.state.disconnected",
@@ -75,6 +95,17 @@ const STATE_TKEY: Record<ConnectionState, TKey> = {
 
 function stateLabel(t: TFn, state: ConnectionState): string { return t(STATE_TKEY[state]); }
 
+function updateToBase64(update: Uint8Array): string {
+  let binary = "";
+  for (const byte of update) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function updateFromBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
 export default function CoCodex({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [status, setStatus] = useState<Status>();
@@ -83,6 +114,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [sharedPrompt, setSharedPrompt] = useState("");
   const [agentId, setAgentId] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -95,17 +127,40 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const cursor = useRef(0);
   const projectListRequested = useRef(false);
   const subscribedProject = useRef("");
+  const promptDoc = useRef<Y.Doc | undefined>(undefined);
+  const promptProject = useRef("");
 
   const command = useCallback((body: Record<string, unknown>) =>
-    apiJson(`${apiBase}/api/cocodex/command`, {
+    cocodexApiJson(apiBase, `${apiBase}/api/cocodex/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }), [apiBase]);
 
+  const ensurePromptDocument = useCallback((nextProjectId: string): Y.Doc => {
+    if (promptDoc.current && promptProject.current === nextProjectId) return promptDoc.current;
+    promptDoc.current?.destroy();
+    const document = new Y.Doc();
+    const text = document.getText("prompt");
+    text.observe(() => setSharedPrompt(text.toString()));
+    document.on("update", (update, origin) => {
+      if (origin === "server" || !promptProject.current) return;
+      void command({
+        type: "prompt.update",
+        projectId: promptProject.current,
+        updateId: crypto.randomUUID(),
+        update: updateToBase64(update),
+      }).catch(error => setNotice(error instanceof Error ? error.message : String(error)));
+    });
+    promptDoc.current = document;
+    promptProject.current = nextProjectId;
+    setSharedPrompt("");
+    return document;
+  }, [command]);
+
   const loadStatus = useCallback(async () => {
     try {
-      setStatus(await apiJson<Status>(`${apiBase}/api/cocodex/status`));
+      setStatus(await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/status`));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -120,6 +175,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setStatus(previous => previous ? { ...previous, state: nextState, running: nextState !== "stopped" } : previous);
       }
       if (event.channel === "error" && value?.error) setNotice(String(value.error));
+      if ((frame?.type === "prompt.snapshot" || frame?.type === "prompt.update")
+        && frame.projectId && frame.update) {
+        try { Y.applyUpdate(ensurePromptDocument(frame.projectId), updateFromBase64(frame.update), "server"); }
+        catch { setNotice(t("cocodex.prompt.invalid")); }
+      }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
         setProjects(listedProjects);
@@ -144,7 +204,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           : [...previous, privateMessage]);
       }
     }
-  }, []);
+  }, [ensurePromptDocument, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -156,8 +216,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     let cancelled = false;
     const poll = async () => {
       try {
-        const result = await apiJson<{ events: BridgeEvent[]; latestEventSequence: number }>(
-          `${apiBase}/api/cocodex/events?after=${cursor.current}`,
+        const result = await cocodexApiJson<{ events: BridgeEvent[]; latestEventSequence: number }>(
+          apiBase, `${apiBase}/api/cocodex/events?after=${cursor.current}`,
         );
         if (cancelled) return;
         applyEvents(result.events);
@@ -187,15 +247,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     if (status?.state !== "connected" || !projectId || subscribedProject.current === projectId) return;
     subscribedProject.current = projectId;
     setChat([]);
+    ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
-  }, [status?.state, projectId, command]);
+    void command({ type: "prompt.subscribe", projectId });
+  }, [status?.state, projectId, command, ensurePromptDocument]);
 
   const enroll = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setNotice("");
     try {
-      const next = await apiJson<Status>(`${apiBase}/api/cocodex/enroll`, {
+      const next = await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/enroll`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ invite, displayName }),
@@ -214,7 +276,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setBusy(true);
     setNotice("");
     try {
-      const next = await apiJson<Status>(`${apiBase}/api/cocodex/session`, {
+      const next = await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: status?.running ? "stop" : "start" }),
@@ -225,6 +287,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const editSharedPrompt = (value: string) => {
+    if (!projectId) return;
+    const text = ensurePromptDocument(projectId).getText("prompt");
+    text.doc?.transact(() => {
+      text.delete(0, text.length);
+      text.insert(0, value);
+    });
   };
 
   const sendPrompt = async (event: FormEvent) => {
@@ -252,7 +323,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       await command({
         type: "private.send",
         recipientDeviceId: recipientDeviceId.trim(),
-        recipientMessagingPublicKeyPem: recipientKey.trim(),
+        recipientKeyCertificate: recipientKey.trim(),
         text,
       });
     } catch (error) {
@@ -334,6 +405,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </div>
               <span className="cocodex-lock"><IconLock /> {t("cocodex.chat.transport")}</span>
             </div>
+            <label className="cocodex-shared-prompt">
+              <span><strong>{t("cocodex.prompt.title")}</strong><small>{t("cocodex.prompt.crdt")}</small></span>
+              <textarea className="input" value={sharedPrompt} onChange={event => editSharedPrompt(event.target.value)}
+                placeholder={t("cocodex.prompt.placeholder")} rows={3} disabled={!status.running || !projectId} />
+            </label>
             <div className="cocodex-message-list" aria-live="polite">
               {chat.map(message => (
                 <article key={message.eventId} className={message.senderDeviceId === status.deviceId ? "mine" : ""}>

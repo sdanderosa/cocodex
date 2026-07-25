@@ -4,17 +4,25 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { decodeInvitation, enrollmentSigningTranscript } from "@cocodex/protocol";
-import { approveDevice, createEnrollmentChallenge, enrollDevice, listDevices } from "../src/enrollment";
+import { approveDevice, createEnrollmentChallenge, enrollDevice, listDevices, revokeDevice } from "../src/enrollment";
 import { openDatabase } from "../src/database";
 import { createInvitation } from "../src/invitations";
 
 const roots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const root of roots.splice(0)) {
     const absolute = resolve(root);
     if (!absolute.startsWith(resolve(tmpdir()))) throw new Error(`Refusing to remove non-temporary path: ${absolute}`);
-    rmSync(absolute, { recursive: true, force: true });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        rmSync(absolute, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if (attempt === 19) throw error;
+        await Bun.sleep(25);
+      }
+    }
   }
 });
 
@@ -73,6 +81,9 @@ describe("device enrollment persistence", () => {
     expect(() => enrollDevice(db, request, new Date("2027-01-01T00:02:00.000Z"))).toThrow("already used");
     expect(approveDevice(db, device.fingerprint, new Date("2027-01-01T00:03:00.000Z"))).toBeTrue();
     expect(listDevices(db)[0]?.status).toBe("approved");
+    expect(revokeDevice(db, device.fingerprint, new Date("2027-01-01T00:04:00.000Z"))).toBeTrue();
+    expect(listDevices(db)[0]?.status).toBe("revoked");
+    expect(revokeDevice(db, device.fingerprint, new Date("2027-01-01T00:05:00.000Z"))).toBeFalse();
     db.close();
   });
 });

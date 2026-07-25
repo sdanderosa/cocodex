@@ -122,4 +122,22 @@ CREATE INDEX private_messages_recipient_sequence
 CREATE INDEX private_messages_sender_sequence
   ON private_messages(sender_device_id, sequence);`,
   },
+  {
+    version: 4,
+    sql: `
+CREATE TABLE shared_prompt_documents (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  yjs_state BLOB NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE shared_prompt_updates (
+  update_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id),
+  update_blob BLOB NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX shared_prompt_updates_project_time
+  ON shared_prompt_updates(project_id, accepted_at);`,
+  },
 ];

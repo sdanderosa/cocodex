@@ -69,7 +69,8 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
     }
   }
 
-  async *execute(task: AgentTask): AsyncIterable<string> {
+  async *execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string> {
+    if (signal?.aborted) throw new Error("Local agent execution was cancelled");
     const runtime = (this.options.resolveRuntime ?? resolveCodexRuntime)({
       discoverAlternatives: false,
     }).runtime;
@@ -96,6 +97,9 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       },
     ) as ChildProcessWithoutNullStreams;
 
+    const abort = () => child.kill();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
     const exited = new Promise<number | null>((resolve, reject) => {
       child.once("error", reject);
       child.once("close", resolve);
@@ -146,6 +150,7 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       if (exitCode !== 0 || !sawTerminal) throw new Error("Codex did not complete successfully");
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       if (child.exitCode === null) child.kill();
     }
   }

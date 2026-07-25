@@ -31,7 +31,10 @@ class AcknowledgingSocket extends EventTarget {
   }
 }
 
-function signedRunningTask(localDeviceId: string): {
+function signedTask(
+  localDeviceId: string,
+  status: "queued" | "running" = "running",
+): {
   task: AgentTask;
   requesterFingerprint: string;
   serverPublicKeyPem: string;
@@ -47,8 +50,8 @@ function signedRunningTask(localDeviceId: string): {
   const taskId = randomUUID();
   const projectId = randomUUID();
   const requesterDeviceId = randomUUID();
-  const issuedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const issuedAt = new Date(Date.now() - (status === "running" ? 120_000 : 0)).toISOString();
+  const expiresAt = new Date(Date.now() + (status === "running" ? -60_000 : 60_000)).toISOString();
   const nonce = randomUUID();
   const request = {
     taskId,
@@ -90,7 +93,7 @@ function signedRunningTask(localDeviceId: string): {
       requesterSignature,
       requesterPublicKeyPem: requester.publicKey,
       serverSignature,
-      status: "running",
+      status,
       acceptedAt: issuedAt,
     },
     requesterFingerprint: publicKeyFingerprint(requester.publicKey),
@@ -103,7 +106,7 @@ describe("CoCodex local agent crash recovery", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-recovery-"));
     const journalPath = join(root, "agent-journal.json");
     const localDeviceId = randomUUID();
-    const fixture = signedRunningTask(localDeviceId);
+    const fixture = signedTask(localDeviceId);
     const socket = new AcknowledgingSocket();
     let executeCount = 0;
     const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
@@ -142,7 +145,47 @@ describe("CoCodex local agent crash recovery", () => {
       expect(beginAgentTask(journalPath, fixture.task.id)).toBe("finished");
       expect(pendingAgentResults(journalPath, fixture.task.id)).toEqual([]);
     } finally {
-      detach();
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("aborts and awaits active local execution when the bridge disconnects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-cancel-"));
+    const journalPath = join(root, "agent-journal.json");
+    const localDeviceId = randomUUID();
+    const fixture = signedTask(localDeviceId, "queued");
+    const socket = new AcknowledgingSocket();
+    let started = false;
+    let aborted = false;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute(_task, signal) {
+        started = true;
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve();
+          else signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        aborted = Boolean(signal?.aborted);
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([
+        [fixture.task.requesterDeviceId, fixture.requesterFingerprint],
+      ]),
+      journalPath,
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "agent.task", task: fixture.task }),
+      }));
+      for (let attempt = 0; attempt < 100 && !started; attempt += 1) await Bun.sleep(5);
+      expect(started).toBeTrue();
+      await detach();
+      expect(aborted).toBeTrue();
+      expect(beginAgentTask(journalPath, fixture.task.id)).toBe("started");
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

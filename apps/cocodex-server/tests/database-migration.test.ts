@@ -10,6 +10,7 @@ describe("CoCodex database migrations", () => {
   test("preserves legacy unsigned agent tables while installing signed task schema", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-migration-"));
     const path = join(root, "server.sqlite3");
+    let migrated: Database | undefined;
     try {
       const legacy = new Database(path, { create: true });
       legacy.exec("PRAGMA foreign_keys = ON");
@@ -39,24 +40,28 @@ describe("CoCodex database migrations", () => {
       legacy.query("INSERT INTO schema_migrations VALUES (1, ?)").run(new Date().toISOString());
       legacy.close();
 
-      const migrated = openDatabase(path);
+      migrated = openDatabase(path);
       expect(migrated.query(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_agent_tasks_v1'",
       ).get()).not.toBeNull();
       const columns = migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>;
       expect(columns.map(column => column.name)).toContain("requester_signature");
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+      migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
+      migrated = undefined;
     } finally {
+      migrated?.close();
+      migrated = undefined;
       Bun.gc(true);
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
         try {
           rmSync(root, { recursive: true, force: true });
           break;
         } catch (error) {
-          if (attempt === 19) throw error;
-          await Bun.sleep(25);
+          if (attempt === 59) throw error;
+          await Bun.sleep(50);
         }
       }
     }

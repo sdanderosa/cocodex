@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
-import { approveDevice, devicePublicKeys, listDevices } from "./enrollment";
+import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
 import { createServerIdentity, loadServerIdentity } from "./identity";
 import { createInvitation } from "./invitations";
 import { registerAgent } from "./agent-routing";
@@ -22,6 +22,16 @@ function requiredOption(name: string): string {
   return value;
 }
 
+function configureWindowsFirewall(port: number): "created" | "manual-required" | "not-windows" {
+  if (process.platform !== "win32") return "not-windows";
+  const result = Bun.spawnSync([
+    "netsh", "advfirewall", "firewall", "add", "rule",
+    `name=CoCodex Server TCP ${port}`, "dir=in", "action=allow", "protocol=TCP",
+    `localport=${port}`,
+  ], { stdout: "ignore", stderr: "ignore" });
+  return result.exitCode === 0 ? "created" : "manual-required";
+}
+
 function usage(): void {
   console.log(`CoCodex Server
 
@@ -32,6 +42,7 @@ Usage:
   cocodex-server devices [--state-root PATH]
   cocodex-server device-keys --device ID [--state-root PATH]
   cocodex-server approve --fingerprint FINGERPRINT [--state-root PATH]
+  cocodex-server revoke --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
   cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
   cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--state-root PATH]`);
@@ -47,12 +58,25 @@ async function run(): Promise<void> {
       createServerIdentity(paths);
       await createTlsIdentity(paths, publicHost);
       openDatabase(paths.database).close();
+      const firewall = configureWindowsFirewall(port);
       console.log(JSON.stringify({
         initialized: true,
         stateRoot: paths.root,
         publicHost,
         port,
         serverFingerprint: tlsCertificateFingerprint(paths.tlsCertificate),
+        firewall,
+        manualPortForwarding: {
+          protocol: "TCP",
+          externalPort: port,
+          internalPort: port,
+          internalHost: "This PC's LAN IPv4 address",
+          steps: [
+            `Forward one TCP port from your router's public address to this PC: ${port} -> ${port}.`,
+            `Allow inbound TCP ${port} in Windows Firewall (the server attempted this automatically).`,
+            "Use the public hostname or address in the generated invitation; do not expose any other port.",
+          ],
+        },
       }));
       return;
     }
@@ -87,6 +111,14 @@ async function run(): Promise<void> {
       db.close();
       if (!approved) throw new Error("No pending device matched that fingerprint");
       console.log(JSON.stringify({ approved: true }));
+      return;
+    }
+    case "revoke": {
+      const db = openDatabase(paths.database);
+      const revoked = revokeDevice(db, requiredOption("--fingerprint"));
+      db.close();
+      if (!revoked) throw new Error("No approved device matched that fingerprint");
+      console.log(JSON.stringify({ revoked: true }));
       return;
     }
     case "project-create": {

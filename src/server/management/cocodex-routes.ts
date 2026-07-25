@@ -1,5 +1,5 @@
 import { getCoCodexGuiBridge } from "../../cocodex/gui-bridge";
-import { jsonResponse } from "../auth-cors";
+import { isSameOriginAsRequest, jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
 
 function routeError(ctx: ManagementContext, error: unknown, status = 400): Response {
@@ -15,6 +15,18 @@ export async function handleCoCodexRoutes(ctx: ManagementContext): Promise<Respo
   const { req, url, config } = ctx;
   if (!url.pathname.startsWith("/api/cocodex/")) return null;
   const bridge = getCoCodexGuiBridge();
+  const origin = req.headers.get("Origin");
+  const sameOriginBrowser = origin
+    ? isSameOriginAsRequest(req, origin)
+    : req.headers.get("Sec-Fetch-Site") === "same-origin";
+  if (url.pathname === "/api/cocodex/capability" && req.method === "GET") {
+    if (!sameOriginBrowser) return routeError(ctx, new Error("Same-origin browser request required"), 403);
+    return jsonResponse({ capability: bridge.issueCapability() }, 200, req, config);
+  }
+  if ((origin && !isSameOriginAsRequest(req, origin))
+    || !bridge.acceptsCapability(req.headers.get("X-CoCodex-Capability"))) {
+    return routeError(ctx, new Error("CoCodex GUI capability required"), 403);
+  }
   try {
     if (url.pathname === "/api/cocodex/status" && req.method === "GET") {
       return jsonResponse(bridge.status(), 200, req, config);

@@ -39,6 +39,9 @@ describe("CoCodex GUI bridge", () => {
       }
     };
     const bridge = new CoCodexGuiBridge(paths, runner);
+    const capability = bridge.issueCapability();
+    expect(bridge.acceptsCapability(capability)).toBeTrue();
+    expect(bridge.acceptsCapability("wrong-capability")).toBeFalse();
 
     expect(bridge.start().configured).toBe(true);
     await Bun.sleep(5);

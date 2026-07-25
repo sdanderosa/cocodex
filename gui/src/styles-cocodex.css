@@ -29,7 +29,10 @@
 .cocodex-project-list small, .cocodex-device small, .cocodex-device span { color: var(--muted); font-size: var(--text-caption); }
 .cocodex-device { border-top: 1px solid var(--border); padding: 14px; }
 .cocodex-device code { font-size: var(--text-caption); color: var(--muted); }
-.cocodex-lock { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: var(--text-caption); }
+.cocodex-shared-prompt { padding: 10px 12px; display: grid; gap: 7px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, #7c3aed 7%, var(--raised)); }
+.cocodex-shared-prompt > span { display: flex; justify-content: space-between; gap: 12px; }
+.cocodex-shared-prompt small { color: var(--muted); }
+.cocodex-shared-prompt textarea { resize: vertical; min-height: 68px; }.cocodex-lock { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: var(--text-caption); }
 .cocodex-message-list { flex: 1; overflow-y: auto; padding: 16px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
 .cocodex-message-list article { max-width: 82%; margin: 0 0 12px; padding: 10px 12px; border-radius: 4px var(--radius) var(--radius) var(--radius); background: var(--raised); }
 .cocodex-message-list article.mine { margin-left: auto; border-radius: var(--radius) 4px var(--radius) var(--radius); background: color-mix(in srgb, #7c3aed 18%, var(--raised)); }

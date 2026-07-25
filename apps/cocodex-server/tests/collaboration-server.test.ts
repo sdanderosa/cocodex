@@ -363,7 +363,7 @@ describe("authenticated WSS collaboration", () => {
 
     const stephenTaskId = randomUUID();
     const stephenIssuedAt = new Date().toISOString();
-    const stephenExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    const stephenExpiresAt = new Date(Date.now() + 1_500).toISOString();
     const stephenNonce = randomUUID();
     const stephenSignature = sign(null, agentRequestSigningTranscript({
       taskId: stephenTaskId,
@@ -409,6 +409,7 @@ describe("authenticated WSS collaboration", () => {
       final: false,
       status: "running",
     });
+    await Bun.sleep(1_600);
 
     for (const socket of sockets.splice(0)) socket.close();
     await Bun.sleep(25);
@@ -456,5 +457,47 @@ describe("authenticated WSS collaboration", () => {
     expect((await restartedPrivate).messages).toEqual([
       expect.objectContaining({ ciphertext: privateCiphertext }),
     ]);
+
+    const expiringTaskId = randomUUID();
+    const expiringIssuedAt = new Date().toISOString();
+    const expiringExpiresAt = new Date(Date.now() + 250).toISOString();
+    const expiringNonce = randomUUID();
+    const expiringSignature = sign(null, agentRequestSigningTranscript({
+      taskId: expiringTaskId,
+      projectId: project.id,
+      agentId: "kai-codex",
+      prompt: "This request should expire before execution.",
+      nonce: expiringNonce,
+      issuedAt: expiringIssuedAt,
+      expiresAt: expiringExpiresAt,
+    }), stephen.privateKey).toString("base64url");
+    const expiringAtKai = nextFrame(restartedKai, "agent.task");
+    restartedStephen.send(JSON.stringify({
+      version: 1,
+      type: "agent.request",
+      requestId: randomUUID(),
+      taskId: expiringTaskId,
+      projectId: project.id,
+      agentId: "kai-codex",
+      prompt: "This request should expire before execution.",
+      nonce: expiringNonce,
+      issuedAt: expiringIssuedAt,
+      expiresAt: expiringExpiresAt,
+      signature: expiringSignature,
+    }));
+    expect((await expiringAtKai).task).toMatchObject({ id: expiringTaskId, status: "queued" });
+    await Bun.sleep(300);
+    const expiredAtKai = nextFrame(restartedKai, "agent.result", frame => frame.taskId === expiringTaskId);
+    restartedStephen.send(JSON.stringify({
+      version: 1,
+      type: "project.list",
+      requestId: randomUUID(),
+    }));
+    expect(await expiredAtKai).toMatchObject({
+      taskId: expiringTaskId,
+      final: true,
+      status: "failed",
+      event: { content: "Agent request expired before the host client accepted it." },
+    });
   }, 15_000);
 });

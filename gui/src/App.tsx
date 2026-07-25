@@ -187,7 +187,7 @@ export default function App() {
   const brand = (
     <div className="brand">
       <span className="brand-logo" role="img" aria-label={t("app.logoAria")} />
-      <span className="name">CoCodex</span>
+      <span className="name">{t("nav.cocodex")}</span>
       <span className="ver">v{displayedVersion}</span>
     </div>
   );

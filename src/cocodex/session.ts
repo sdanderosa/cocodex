@@ -5,7 +5,7 @@ import { attachLocalAgentBridge } from "./agent-bridge";
 import { loadLocalAgentPolicy } from "./agent-policy";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
-import { loadOrCreateClientIdentity } from "./identity";
+import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
@@ -14,6 +14,13 @@ import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
   type: string;
+}
+
+function controlRequestId(value: unknown): string {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : randomUUID();
 }
 
 const SNAPSHOT_PAGE_SIZE = 500;
@@ -34,6 +41,7 @@ export async function runJsonLineSession(
   const identity = loadOrCreateClientIdentity(paths);
   const controller = new AbortController();
   const chatCursors = new Map<string, number>();
+  const promptSubscriptions = new Set<string>();
   let privateCursor = 0;
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
@@ -86,7 +94,9 @@ export async function runJsonLineSession(
   const session = maintainAuthenticatedClient(paths, async connected => {
     socket = connected;
     const listener = (event: MessageEvent) => {
-      const frame = JSON.parse(String(event.data)) as Record<string, any>;
+      let frame: Record<string, any>;
+      try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
+      catch { return; }
       if (frame.type === "chat.snapshot") {
         const events = Array.isArray(frame.events) ? frame.events : [];
         const latest = events.at(-1)?.sequence;
@@ -129,8 +139,11 @@ export async function runJsonLineSession(
     for (const [projectId, afterSequence] of chatCursors) {
       send({ version: 1, type: "chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
     }
+    for (const projectId of promptSubscriptions) {
+      send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
+    }
     send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
-    let detachAgent: (() => void) | undefined;
+    let detachAgent: (() => void | Promise<void>) | undefined;
     if (existsSync(paths.agentPolicy)) {
       const policy = loadLocalAgentPolicy(paths.agentPolicy);
       const onUsage = (usage: CodexUsage) => emit({
@@ -152,9 +165,9 @@ export async function runJsonLineSession(
       });
     }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
-    return () => {
+    return async () => {
       connected.removeEventListener("message", listener);
-      detachAgent?.();
+      await detachAgent?.();
       if (socket === connected) socket = undefined;
       emit({ source: "session", state: "disconnected", deviceId: connection.deviceId });
     };
@@ -181,7 +194,7 @@ export async function runJsonLineSession(
           break;
         }
         if (command.type === "project.list") {
-          send({ version: 1, type: "project.list", requestId: command.id ?? randomUUID() });
+          send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
         } else if (command.type === "chat.subscribe") {
           const projectId = String(command.projectId);
           const afterSequence = Number(command.afterSequence ?? chatCursors.get(projectId) ?? 0);
@@ -189,16 +202,37 @@ export async function runJsonLineSession(
           send({
             version: 1,
             type: "chat.subscribe",
-            requestId: command.id ?? randomUUID(),
+            requestId: controlRequestId(command.id),
             projectId,
             afterSequence,
           });
+        } else if (command.type === "prompt.subscribe") {
+          const projectId = String(command.projectId);
+          promptSubscriptions.add(projectId);
+          send({
+            version: 1,
+            type: "prompt.subscribe",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
+        } else if (command.type === "prompt.update") {
+          const updateId = String(command.updateId ?? randomUUID());
+          enqueueDurableEvent(paths, {
+            version: 1,
+            type: "prompt.update",
+            requestId: controlRequestId(command.id),
+            projectId: String(command.projectId),
+            updateId,
+            update: String(command.update),
+          });
+          const delivered = await flush();
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, updateId });
         } else if (command.type === "chat.send") {
           const eventId = String(command.eventId ?? randomUUID());
           enqueueDurableEvent(paths, {
             version: 1,
             type: "chat.send",
-            requestId: command.id ?? randomUUID(),
+            requestId: controlRequestId(command.id),
             projectId: String(command.projectId),
             eventId,
             content: String(command.content),
@@ -233,17 +267,22 @@ export async function runJsonLineSession(
           const messageId = String(command.messageId ?? randomUUID());
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
           const recipientDeviceId = String(command.recipientDeviceId);
+          const certificate = verifyDeviceKeyCertificate(String(command.recipientKeyCertificate), recipientDeviceId);
+          const trustedFingerprint = loadTrustedDevices(paths.trustedDevices)[recipientDeviceId];
+          if (!trustedFingerprint || trustedFingerprint !== certificate.fingerprint) {
+            throw new Error("Recipient device key certificate does not match the trusted fingerprint");
+          }
           const ciphertext = await sealSignedPrivateMessage({
             messageId,
             senderDeviceId: connection.deviceId,
             recipientDeviceId,
             text: String(command.text),
             clientCreatedAt,
-          }, identity.privateKeyPem, identity.publicKeyPem, String(command.recipientMessagingPublicKeyPem));
+          }, identity.privateKeyPem, identity.publicKeyPem, certificate.messagingPublicKeyPem);
           enqueueDurableEvent(paths, {
             version: 1,
             type: "private.send",
-            requestId: command.id ?? randomUUID(),
+            requestId: controlRequestId(command.id),
             messageId,
             recipientDeviceId,
             ciphertext,

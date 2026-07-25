@@ -11,11 +11,11 @@ import { attachLocalAgentBridge } from "./agent-bridge";
 import { CodexAgentAdapter } from "./codex-agent-adapter";
 import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
 import { clientPaths } from "./paths";
-import { loadOrCreateClientIdentity } from "./identity";
+import { createDeviceKeyCertificate, loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import { runJsonLineSession } from "./session";
-import { trustDevice } from "./trusted-devices";
+import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -61,6 +61,11 @@ async function run(): Promise<void> {
     case "status":
       console.log(JSON.stringify(loadClientConnection(paths), null, 2));
       return;
+    case "identity-card": {
+      const connection = loadClientConnection(paths);
+      console.log(createDeviceKeyCertificate(connection.deviceId, loadOrCreateClientIdentity(paths)));
+      return;
+    }
     case "configure-agent": {
       const trustedDeviceId = required("--trust-device");
       const policy = saveLocalAgentPolicy(paths.agentPolicy, {
@@ -81,6 +86,13 @@ async function run(): Promise<void> {
       const connection = loadClientConnection(paths);
       const identity = loadOrCreateClientIdentity(paths);
       const recipientDeviceId = required("--recipient-device");
+      const certificate = verifyDeviceKeyCertificate(
+        readFileSync(required("--recipient-card"), "utf8"),
+        recipientDeviceId,
+      );
+      if (loadTrustedDevices(paths.trustedDevices)[recipientDeviceId] !== certificate.fingerprint) {
+        throw new Error("Recipient device key certificate does not match the trusted fingerprint");
+      }
       const messageId = crypto.randomUUID();
       const clientCreatedAt = new Date().toISOString();
       const ciphertext = await sealSignedPrivateMessage({
@@ -89,7 +101,7 @@ async function run(): Promise<void> {
         recipientDeviceId,
         text: required("--message"),
         clientCreatedAt,
-      }, identity.privateKeyPem, identity.publicKeyPem, readFileSync(required("--recipient-key"), "utf8"));
+      }, identity.privateKeyPem, identity.publicKeyPem, certificate.messagingPublicKeyPem);
       enqueueDurableEvent(paths, {
         version: 1, type: "private.send", requestId: crypto.randomUUID(), messageId,
         recipientDeviceId, ciphertext, clientCreatedAt,
@@ -182,7 +194,7 @@ async function run(): Promise<void> {
       const connection = loadClientConnection(paths);
       await maintainAuthenticatedClient(paths, async socket => {
         const flushedEvents = await flushDurableOutbox(socket, paths);
-        let detachAgentBridge: (() => void) | undefined;
+        let detachAgentBridge: (() => void | Promise<void>) | undefined;
         if (existsSync(paths.agentPolicy)) {
           const policy = loadLocalAgentPolicy(paths.agentPolicy);
           const adapter = new CodexAgentAdapter({
@@ -222,8 +234,9 @@ async function run(): Promise<void> {
 Usage:
   cocodex-client enroll --invite CODE --name NAME [--state-root PATH]
   cocodex-client status [--state-root PATH]
+  cocodex-client identity-card [--state-root PATH]
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--state-root PATH]
-  cocodex-client private-send --recipient-device ID --recipient-key PEM_PATH --message TEXT [--state-root PATH]
+  cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
   cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex-client chat-send --project ID --message TEXT [--state-root PATH]
   cocodex-client request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]

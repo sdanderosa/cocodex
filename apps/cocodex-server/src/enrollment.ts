@@ -187,6 +187,20 @@ export function approveDevice(db: Database, fingerprint: string, now = new Date(
   return result.changes === 1;
 }
 
+export function revokeDevice(db: Database, fingerprint: string, now = new Date()): boolean {
+  const result = db.query(`
+    UPDATE devices
+    SET status = 'revoked', revoked_at = ?
+    WHERE fingerprint = ? AND status = 'approved'
+  `).run(now.toISOString(), fingerprint);
+  if (result.changes === 1) {
+    db.query(`
+      INSERT INTO audit_events (event_type, subject_id, occurred_at, details_json)
+      SELECT 'device.revoked', id, ?, '{}' FROM devices WHERE fingerprint = ?
+    `).run(now.toISOString(), fingerprint);
+  }
+  return result.changes === 1;
+}
 export function listDevices(db: Database): DeviceRecord[] {
   return db.query(`
     SELECT id, fingerprint, display_name AS displayName, status

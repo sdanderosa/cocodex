@@ -37,12 +37,13 @@ management listener.
 ### Explicit private-message trust
 
 Private alpha uses libsodium sealed boxes plus an Ed25519-signed inner
-envelope. The client addresses a recipient by device ID, resolves that
-device's enrollment-bound Ed25519 and X25519 public keys through the pinned,
-authenticated server, and rejects the response unless the Ed25519 key matches
-the independently pinned local fingerprint. The recipient likewise rejects an
-inner sender key whose fingerprint is not in the dedicated trusted-device
-list.
+envelope. The sender explicitly enters the recipient device ID, independently
+verified Ed25519 fingerprint, and an Ed25519-signed device key certificate
+that binds the recipient device ID to its X25519 messaging key. The local
+client persists the fingerprint in its protected trusted-device list and
+rejects certificates whose signer does not match it. The collaboration server
+cannot choose or substitute the recipient key. The recipient likewise rejects
+an inner sender key whose fingerprint is not in that dedicated trust list.
 
 This narrow design provides ciphertext-only server storage and authenticated
 single-device delivery. It does not claim Double Ratchet forward secrecy,

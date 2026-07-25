@@ -4,7 +4,7 @@ import { clientFrameSchema, type ClientFrame } from "@cocodex/protocol";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "private.send" | "agent.request" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "private.send" | "agent.request" | "prompt.update" }>;
 
 interface OutboxFile {
   version: 1;
@@ -18,7 +18,8 @@ function parseOutbox(path: string): OutboxFile {
   if (value.version !== 1 || !Array.isArray(value.events)) throw new Error("Invalid CoCodex outbox");
   const events = value.events.map(event => {
     const frame = clientFrameSchema.parse(event);
-    if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request") {
+    if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request"
+      && frame.type !== "prompt.update") {
       throw new Error("Unsupported durable CoCodex event");
     }
     return frame;
@@ -47,8 +48,9 @@ export function queuedEvents(paths: ClientPaths): DurableFrame[] {
 
 export function enqueueDurableEvent(paths: ClientPaths, value: unknown): DurableFrame {
   const frame = clientFrameSchema.parse(value);
-  if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request") {
-    throw new Error("Only chat, private-message, and agent requests can be queued durably");
+  if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request"
+      && frame.type !== "prompt.update") {
+    throw new Error("Only chat, private-message, agent, and shared-prompt updates can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
   const duplicate = events.find(event => event.requestId === frame.requestId);
@@ -93,11 +95,13 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
     };
     const onClose = () => finish(new Error("Connection closed while draining outbox"));
     const onMessage = (event: MessageEvent) => {
-      const response = JSON.parse(String(event.data)) as Record<string, unknown>;
+      let response: Record<string, unknown>;
+      try { response = JSON.parse(String(event.data)) as Record<string, unknown>; }
+      catch { return; }
       if (response.requestId !== frame.requestId) return;
       if (response.type === "error") finish(new Error(String(response.error)));
       else if (response.type === "chat.accepted" || response.type === "private.accepted"
-        || response.type === "agent.accepted") finish();
+        || response.type === "agent.accepted" || response.type === "prompt.accepted") finish();
     };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose, { once: true });

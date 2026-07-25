@@ -2,8 +2,9 @@
 
 - Evidence date: 2026-07-25
 - Implementation commits: `37d344d4`, plus running-task recovery fix
-  `72ce0f41`, trust/recovery-state validation fix `cc206faa`, and focused
-  recovery tests `13850eed` / `5230f979`
+  `72ce0f41`, trust/recovery-state validation fix `cc206faa`, focused recovery
+  tests `13850eed` / `5230f979`, and the current hardening changes pending
+  commit.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -35,7 +36,7 @@ Ran 1 test across 1 file.
 The test compiles and launches one real `cocodex-server.exe`, one resident
 Stephen `cocodex-client.exe`, and one resident Kai `cocodex-client.exe` with
 separate temporary state roots, workspaces, identities, account fixtures, and
-a reserved TLS/WSS loopback port. It records both client PIDs, force-stops and
+a selected TLS/WSS loopback port. It records both client PIDs, force-stops and
 restarts the server on the same port and state root, and asserts that the
 original client PIDs reconnect.
 
@@ -47,11 +48,18 @@ The exercised path includes:
 - signed reciprocal agent routing through each host's production local
   adapter;
 - streamed result events and local usage callbacks;
-- enrollment-bound recipient-key lookup, signed/sealed private messages, and
-  recipient-side fingerprint verification;
+- explicitly supplied, Ed25519-signed recipient key certificates,
+  signed/sealed private messages, and protected fingerprint verification;
 - server ciphertext-only persistence;
 - durable offline chat queues, stable IDs, restart recovery, and duplicate-ID
   checks.
+
+The current hardening suite also covers malformed-frame rejection, loopback GUI
+capability/origin checks, cancellation of in-flight local execution on client
+disconnect, expiry of queued/running agent tasks, and recipient-key certificate
+binding. `cocodex-server init` attempts the Windows Firewall rule and prints
+the single-port manual router-forwarding instructions when automatic setup is
+unavailable.
 
 Files:
 
@@ -85,10 +93,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-26 pass
+28 pass
 0 fail
-206 expect() calls
-Ran 26 tests across 18 files.
+224 expect() calls
+Ran 28 tests across 18 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
@@ -151,9 +159,11 @@ The following also remain deferred or insufficiently evidenced:
 - two separately authenticated real Stephen and Kai Codex accounts;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- automatic UPnP/NAT-PMP/PCP, CGNAT detection, relay, libp2p, Yjs/Hocuspocus,
+- automatic UPnP/NAT-PMP/PCP, CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
-  UI.
+  UI. The current GUI/server path includes a bounded Yjs shared-prompt
+  document, but it does not yet provide a full Hocuspocus deployment or
+  network pagination-gap UX.
 
 Accordingly, the connected deterministic private-alpha path works, but this
 report does not authorize a production or complete-private-alpha release claim.

@@ -167,14 +167,15 @@ export interface ReconnectingClientOptions {
 
 export async function maintainAuthenticatedClient(
   paths: ClientPaths,
-  onConnected: (socket: WebSocket) => void | (() => void) | Promise<void | (() => void)>,
+  onConnected: (socket: WebSocket) => void | (() => void | Promise<void>)
+    | Promise<void | (() => void | Promise<void>)>,
   options: ReconnectingClientOptions = {},
 ): Promise<void> {
   const connect = options.connect ?? connectAuthenticatedClient;
   const retryDelayMs = Math.max(100, options.retryDelayMs ?? 1_000);
   while (!options.signal?.aborted) {
     let socket: WebSocket | undefined;
-    let cleanup: void | (() => void) = undefined;
+    let cleanup: void | (() => void | Promise<void>) = undefined;
     try {
       socket = await connect(paths);
       cleanup = await onConnected(socket);
@@ -185,7 +186,7 @@ export async function maintainAuthenticatedClient(
     } catch (error) {
       options.onConnectionError?.(error instanceof Error ? error : new Error(String(error)));
     } finally {
-      cleanup?.();
+      await cleanup?.();
       if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
     }
     if (options.signal?.aborted) break;

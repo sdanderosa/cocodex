@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { publicKeyFingerprint } from "@cocodex/protocol";
+import { createDeviceKeyCertificate, verifyDeviceKeyCertificate } from "../src/cocodex/identity";
 import {
   openPrivateMessage,
   openSignedPrivateMessage,
@@ -21,6 +22,26 @@ function identity() {
 }
 
 describe("CoCodex private-message encryption", () => {
+  test("binds the recipient messaging key to its trusted signing identity", () => {
+    const recipient = identity();
+    const deviceId = randomUUID();
+    const certificate = createDeviceKeyCertificate(deviceId, {
+      publicKeyPem: recipient.signing.publicKey,
+      privateKeyPem: recipient.signing.privateKey,
+      messagingPublicKeyPem: recipient.messaging.publicKey,
+      messagingPrivateKeyPem: recipient.messaging.privateKey,
+    });
+    expect(verifyDeviceKeyCertificate(certificate, deviceId)).toEqual({
+      fingerprint: publicKeyFingerprint(recipient.signing.publicKey),
+      messagingPublicKeyPem: recipient.messaging.publicKey,
+    });
+    const tampered = JSON.parse(certificate);
+    tampered.messagingPublicKeyPem = identity().messaging.publicKey;
+    expect(() => verifyDeviceKeyCertificate(JSON.stringify(tampered), deviceId))
+      .toThrow("signature is invalid");
+    expect(() => verifyDeviceKeyCertificate(certificate, randomUUID()))
+      .toThrow("certificate is invalid");
+  });
   test("uses sealed boxes so only the recipient device can decrypt", async () => {
     const stephen = identity();
     const kai = identity();
