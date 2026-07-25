@@ -362,6 +362,31 @@ describe("authenticated WSS collaboration", () => {
       event: { senderDeviceId: stephen.id },
     });
 
+    const artifactId = randomUUID();
+    const artifactAccepted = nextFrame(stephenSocket, "artifact.accepted");
+    const artifactAtKai = nextFrame(reconnectedKai, "artifact.published");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "artifact.publish",
+      requestId: randomUUID(),
+      artifactId,
+      projectId: project.id,
+      taskId: kaiTaskId,
+      artifactType: "finding",
+      title: "Authentication finding",
+      summary: "The refresh token is not persisted after rotation.",
+      content: "Persist the rotated token before returning the response.",
+      status: "ready",
+    }));
+    expect((await artifactAccepted).artifact).toMatchObject({ id: artifactId, taskId: kaiTaskId, authorDeviceId: stephen.id });
+    expect((await artifactAtKai).artifact).toMatchObject({ id: artifactId, status: "ready" });
+    const artifactList = nextFrame(reconnectedKai, "artifact.list.result");
+    reconnectedKai.send(JSON.stringify({
+      version: 1, type: "artifact.list", requestId: randomUUID(), projectId: project.id,
+    }));
+    expect((await artifactList).artifacts).toEqual([
+      expect.objectContaining({ id: artifactId, content: "Persist the rotated token before returning the response." }),
+    ]);
     const stephenTaskId = randomUUID();
     const stephenIssuedAt = new Date().toISOString();
     const stephenExpiresAt = new Date(Date.now() + 1_500).toISOString();
@@ -374,6 +399,7 @@ describe("authenticated WSS collaboration", () => {
       nonce: stephenNonce,
       issuedAt: stephenIssuedAt,
       expiresAt: stephenExpiresAt,
+      dependencies: [kaiTaskId],
     }), stephen.privateKey).toString("base64url");
     const taskAtKai = nextFrame(reconnectedKai, "agent.task");
     stephenSocket.send(JSON.stringify({
@@ -387,6 +413,7 @@ describe("authenticated WSS collaboration", () => {
       nonce: stephenNonce,
       issuedAt: stephenIssuedAt,
       expiresAt: stephenExpiresAt,
+      dependencies: [kaiTaskId],
       signature: stephenSignature,
     }));
     expect((await taskAtKai).task).toMatchObject({

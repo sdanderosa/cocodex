@@ -22,6 +22,7 @@ import { tlsCertificateFingerprint } from "./tls";
 import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 import { serverEpoch } from "./server-state";
+import { listArtifacts, publishArtifact } from "./artifacts";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -497,6 +498,26 @@ export function startCoCodexServer(
             }
             return;
           }
+          if (message.type === "artifact.publish") {
+            const published = publishArtifact(db, {
+              id: message.artifactId,
+              projectId: message.projectId,
+              taskId: message.taskId,
+              authorDeviceId: deviceId,
+              type: message.artifactType,
+              title: message.title,
+              summary: message.summary,
+              content: message.content,
+              status: message.status,
+            });
+            socket.send(JSON.stringify({ version: 1, type: "artifact.accepted", requestId, artifact: published.artifact }));
+            if (published.created) sendToProject(message.projectId, { version: 1, type: "artifact.published", artifact: published.artifact });
+            return;
+          }
+          if (message.type === "artifact.list") {
+            socket.send(JSON.stringify({ version: 1, type: "artifact.list.result", requestId, projectId: message.projectId, artifacts: listArtifacts(db, message.projectId, deviceId) }));
+            return;
+          }
           if (message.type === "agent.request") {
             const { task, created } = createAgentTask(db, identity, {
               id: message.taskId,
@@ -507,13 +528,16 @@ export function startCoCodexServer(
               nonce: message.nonce,
               issuedAt: message.issuedAt,
               expiresAt: message.expiresAt,
+              dependencies: message.dependencies,
               requesterSignature: message.signature,
             });
-            if (created) sendToDevice(task.targetDeviceId, {
-              version: 1,
-              type: "agent.task",
-              task,
-            }, true);
+            if (created && pendingAgentTasks(db, task.targetDeviceId).some(ready => ready.id === task.id)) {
+              sendToDevice(task.targetDeviceId, {
+                version: 1,
+                type: "agent.task",
+                task,
+              }, true);
+            }
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.accepted",
@@ -541,6 +565,11 @@ export function startCoCodexServer(
                 status: message.status,
                 event: result.event,
               });
+              if (message.final) {
+                for (const ready of pendingAgentTasks(db, result.task.targetDeviceId)) {
+                  sendToDevice(ready.targetDeviceId, { version: 1, type: "agent.task", task: ready }, true);
+                }
+              }
             }
             socket.send(JSON.stringify({
               version: 1,

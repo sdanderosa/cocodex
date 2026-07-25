@@ -1,4 +1,4 @@
-# ADR 0010: Ephemeral presence and explicit local agent approval
+# ADR 0010: Ephemeral presence and local agent authorization
 
 - Status: Accepted for private alpha
 - Date: 2026-07-25
@@ -13,11 +13,13 @@ the chat subscription is opened, and emits a leave event when a device
 disconnects or clears its state. Presence is never persisted in SQLite and is
 never included in agent context.
 
-Remote agent tasks require an explicit one-time decision by the host client.
-The local client displays the complete prompt and requester device before
-running the task; approval is abortable, expires after five minutes, and is
-lost when the client disconnects. The server still authenticates and signs the
-task, but it cannot bypass the host's local approval boundary.
+Remote agent tasks require a host-owned local policy that pins the project,
+agent, workspace, sandbox, requester device ID, and requester signing-key
+fingerprint. The default `trusted-device` mode executes requests that pass that
+policy without a repetitive prompt, preserving direct trusted-member control.
+A host may select `always` mode to require an abortable five-minute allow-once
+decision with the complete prompt and requester device visible. The server
+still authenticates and signs every task and cannot bypass either local mode.
 
 The requester or host may send a signed, authenticated `agent.cancel` command.
 The server authoritatively records a final failed task event, routes a cancel
@@ -30,10 +32,10 @@ The host aborts the local process through its `AbortSignal`.
   project history.
 - The GUI can render remote pointers without exposing provider credentials or
   local files.
-- Automated tests must explicitly approve local tasks in the three-process
-  harness; this makes the safety boundary observable rather than implicit.
-- A future trusted-session policy may allow a user-selected host-level shortcut,
-  but the default remains explicit approval for remote execution.
+- Existing and newly configured policies default to direct control for pinned
+  trusted devices; unknown devices, projects, agents, or workspaces fail closed.
+- The three-process harness selects `always` mode so the stricter allow-once
+  path remains observable without making it the normal collaboration default.
 
 ## Evidence
 

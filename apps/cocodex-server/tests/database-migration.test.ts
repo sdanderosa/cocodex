@@ -47,7 +47,7 @@ describe("CoCodex database migrations", () => {
       const columns = migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>;
       expect(columns.map(column => column.name)).toContain("requester_signature");
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;

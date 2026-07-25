@@ -57,8 +57,9 @@ The exercised path includes:
 The current hardening suite also covers malformed-frame rejection, loopback GUI
 capability/origin checks, cancellation of in-flight local execution on client
 disconnect, expiry of queued/running agent tasks, and recipient-key certificate
-binding. Remote agent execution now pauses for explicit host-client approval
-with the complete prompt visible before the local Codex process starts. The
+binding. Remote agent execution now follows a host-owned policy: cryptographically
+pinned trusted devices run directly by default, while hosts can select an
+`always` mode that displays the complete prompt for an allow-once decision. The
 same WSS path carries bounded mouse-cursor and text-caret presence, and clears
 it on disconnect. Authenticated requester/host cancellation records an
 authoritative final task event and aborts the host process. `cocodex-server init` attempts the Windows Firewall rule and prints
@@ -105,10 +106,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-39 pass
+41 pass
 0 fail
-286 expect() calls
-Ran 37 tests across 21 files.
+301 expect() calls
+Ran 41 tests across 21 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
@@ -120,9 +121,14 @@ The production GUI build reported a bundle-size warning and completed.
 The server transfer slice is covered by signed encrypted export/import: the
 transfer file uses an AES-256-GCM envelope derived from a user passphrase,
 binds the database to the server identity and current epoch, and rejects wrong
-passphrases. `transfer-import` restores a verified snapshot and advances the
-persisted epoch so clients can detect a controlled server handoff. The server
-exposes that epoch through `/v1/server-info`, enrollment, and `auth.ok`.
+passphrases. Passphrases are supplied through a protected file or the
+`COCODEX_TRANSFER_PASSPHRASE` environment variable rather than process
+arguments. `transfer-import` restores a verified snapshot and advances the
+persisted epoch. The server exposes that epoch through `/v1/server-info`,
+enrollment, and `auth.ok`; clients persist the highest authenticated epoch and
+reject a stale server. The real WSS collaboration suite also publishes and
+lists a project artifact, then routes a reciprocal agent request whose signed
+dependency names the completed prior task.
 
 Additional successful gates:
 
@@ -176,6 +182,8 @@ as complete.
 The following also remain deferred or insufficiently evidenced:
 
 - two separately authenticated real Stephen and Kai Codex accounts;
+- complete cross-PC transfer orchestration for installing the transferred server
+  identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
 - NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,

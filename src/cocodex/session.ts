@@ -274,6 +274,7 @@ export async function runJsonLineSession(
             String(command.agentId),
             String(command.prompt),
             paths,
+            Array.isArray(command.dependencies) ? command.dependencies.map(String) : [],
           );
           enqueueDurableEvent(paths, {
             ...request,

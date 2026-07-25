@@ -76,6 +76,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     nonce: z.string().min(32).max(128),
     issuedAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
+    dependencies: z.array(z.uuid()).max(16).default([]),
     signature: z.string().min(64).max(256),
   }).strict(),
   z.object({
@@ -137,6 +138,25 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     ciphertext: z.string().min(64).max(96_000),
     clientCreatedAt: z.iso.datetime(),
   }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("artifact.publish"),
+    requestId,
+    artifactId: z.uuid(),
+    projectId,
+    taskId: z.uuid().nullable(),
+    artifactType: z.enum(["finding", "plan", "decision", "api-contract", "schema", "code-change", "commit", "diff", "test-result", "review", "handoff", "documentation", "failure-report", "browser-result", "final-result"]),
+    title: z.string().trim().min(1).max(200),
+    summary: z.string().trim().min(1).max(4_000),
+    content: z.string().min(1).max(256_000),
+    status: z.enum(["draft", "ready", "accepted", "rejected", "superseded", "integrated"]),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("artifact.list"),
+    requestId,
+    projectId,
+  }).strict(),
 ]);
 
 export const agentTaskSchema = z.object({
@@ -149,6 +169,7 @@ export const agentTaskSchema = z.object({
   nonce: z.string().min(32).max(128),
   issuedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
+  dependencies: z.array(z.uuid()).max(16).default([]),
   requesterSignature: z.string().min(64).max(256),
   requesterPublicKeyPem: z.string().min(64).max(2048),
   serverSignature: z.string().min(64).max(256),
@@ -195,11 +216,28 @@ export interface AgentTask {
   nonce: string;
   issuedAt: string;
   expiresAt: string;
+  dependencies: string[];
   requesterSignature: string;
   requesterPublicKeyPem: string;
   serverSignature: string;
   status: "queued" | "running" | "completed" | "failed";
   acceptedAt: string;
+}
+
+export type ArtifactType = "finding" | "plan" | "decision" | "api-contract" | "schema" | "code-change" | "commit" | "diff" | "test-result" | "review" | "handoff" | "documentation" | "failure-report" | "browser-result" | "final-result";
+export type ArtifactStatus = "draft" | "ready" | "accepted" | "rejected" | "superseded" | "integrated";
+export interface Artifact {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  authorDeviceId: string;
+  type: ArtifactType;
+  title: string;
+  summary: string;
+  content: string;
+  status: ArtifactStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentDefinition {

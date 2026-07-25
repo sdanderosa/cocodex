@@ -20,6 +20,9 @@ export {
   type ClientFrame,
   type AgentTask,
   type AgentDefinition,
+  type Artifact,
+  type ArtifactStatus,
+  type ArtifactType,
   type PrivateMessageEnvelope,
   type SharedProject,
 } from "./collaboration";

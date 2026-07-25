@@ -12,6 +12,7 @@ import {
   createProject,
   listProjects,
 } from "../src/shared-state";
+import { listArtifacts, publishArtifact } from "../src/artifacts";
 
 function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: Date): string {
   const pair = generateKeyPairSync("ed25519", {
@@ -93,6 +94,34 @@ describe("authoritative shared state", () => {
         clientCreatedAt: first.clientCreatedAt,
       })).toEqual({ event: first, created: false });
       expect(chatEventsAfter(db, project.id, kai, first.sequence)).toEqual([second]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("stores project-scoped artifacts idempotently for downstream handoffs", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = approvedDevice(db, "Stephen", now);
+      const kai = approvedDevice(db, "Kai", now);
+      const project = createProject(db, "Artifact handoff", stephen, now);
+      addProjectMember(db, project.id, stephen, kai, now);
+      const input = {
+        id: "8661361f-ce2f-4bec-88fd-c4fb32f49704",
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: stephen,
+        type: "finding" as const,
+        title: "Refresh-token finding",
+        summary: "Rotation is not persisted.",
+        content: "The refresh token write is missing after rotation.",
+        status: "ready" as const,
+      };
+      const published = publishArtifact(db, input, now);
+      expect(published.created).toBeTrue();
+      expect(publishArtifact(db, input, now).created).toBeFalse();
+      expect(listArtifacts(db, project.id, kai)).toEqual([published.artifact]);
     } finally {
       db.close();
     }

@@ -46,6 +46,7 @@ export interface CreateAgentTaskInput {
   nonce: string;
   issuedAt: string;
   expiresAt: string;
+  dependencies?: string[];
   requesterSignature: string;
 }
 
@@ -57,21 +58,32 @@ interface AgentRow {
 }
 
 interface DeviceKeyRow { publicKeyPem: string; status: string }
-interface TaskRow extends Omit<AgentTask, "status"> { status: AgentTask["status"] }
+interface TaskRow extends Omit<AgentTask, "status"> { status: AgentTask["status"]; dependenciesJson?: string }
+
+function parseDependencies(value: string | undefined): string[] {
+  if (!value) return [];
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string")) throw new Error("Stored task dependencies are invalid");
+  return parsed as string[];
+}
 
 function taskById(db: Database, id: string): AgentTask | null {
-  return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+  const row = db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
-    t.status, t.accepted_at AS acceptedAt
+    t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id WHERE t.id = ?`).get(id) as TaskRow | null;
+  if (!row) return null;
+  const { dependenciesJson, ...task } = row;
+  return { ...task, dependencies: parseDependencies(dependenciesJson) };
 }
 
 function sameRequest(task: AgentTask, input: CreateAgentTaskInput): boolean {
   return task.projectId === input.projectId && task.requesterDeviceId === input.requesterDeviceId
     && task.agentId === input.agentId && task.prompt === input.prompt && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
+    && JSON.stringify(task.dependencies) === JSON.stringify(input.dependencies ?? [])
     && task.requesterSignature === input.requesterSignature;
 }
 
@@ -95,6 +107,14 @@ export function createAgentTask(
   const agent = db.query(`SELECT id, project_id AS projectId, host_device_id AS hostDeviceId, enabled
     FROM agents WHERE id = ?`).get(input.agentId) as AgentRow | null;
   if (!agent || agent.projectId !== input.projectId || agent.enabled !== 1) throw new Error("Agent is not available in this project");
+  const dependencies = [...new Set(input.dependencies ?? [])];
+  if (dependencies.includes(input.id)) throw new Error("Task cannot depend on itself");
+  if (dependencies.length > 16) throw new Error("Too many task dependencies");
+  for (const dependencyId of dependencies) {
+    const dependency = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?")
+      .get(dependencyId) as { projectId: string } | null;
+    if (!dependency || dependency.projectId !== input.projectId) throw new Error("Task dependency was not found in this project");
+  }
   requireProjectMembership(db, input.projectId, agent.hostDeviceId);
   if (agent.hostDeviceId === input.requesterDeviceId) throw new Error("Remote agent must be hosted by another device");
   const requester = db.query(`SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?`)
@@ -115,6 +135,7 @@ export function createAgentTask(
     nonce: input.nonce,
     issuedAt: input.issuedAt,
     expiresAt: input.expiresAt,
+    dependencies,
   }), createPublicKey(requester.publicKeyPem), Buffer.from(input.requesterSignature, "base64url"));
   if (!requestValid) throw new Error("Invalid agent request signature");
   const acceptedAt = now.toISOString();
@@ -130,17 +151,18 @@ export function createAgentTask(
     targetDeviceId: agent.hostDeviceId,
     requesterSignature: input.requesterSignature,
     requesterPublicKeyPem: requester.publicKeyPem,
+    dependencies,
   };
   const serverSignature = sign(null, agentDispatchSigningTranscript(unsigned), identity.privateKeyPem).toString("base64url");
   const { taskId: _signedTaskId, ...dispatch } = unsigned;
-  const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature };
+  const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies };
   db.query(`INSERT INTO agent_tasks (
     id, project_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
-    issued_at, expires_at, requester_signature, server_signature, status, accepted_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`).run(
+    issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`).run(
     task.id, task.projectId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
     task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
-    task.serverSignature, task.acceptedAt,
+    task.serverSignature, task.acceptedAt, JSON.stringify(dependencies),
   );
   return { task, created: true };
 }
@@ -197,15 +219,23 @@ export function cancelAgentTask(
 }
 
 export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date()): AgentTask[] {
-  return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+  const rows = db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
-    t.status, t.accepted_at AS acceptedAt
+    t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
     WHERE t.target_device_id = ?
       AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
+  return rows.map(row => {
+    const { dependenciesJson, ...task } = row;
+    return { ...task, dependencies: parseDependencies(dependenciesJson) };
+  })
+    .filter(task => task.dependencies.every(dependencyId => {
+      const dependency = db.query("SELECT status FROM agent_tasks WHERE id = ?").get(dependencyId) as { status: string } | null;
+      return dependency?.status === "completed";
+    }));
 }
 
 export function appendAgentResult(

@@ -8,6 +8,7 @@ export interface AgentRequestTranscriptInput {
   nonce: string;
   issuedAt: string;
   expiresAt: string;
+  dependencies?: string[];
 }
 
 export interface AgentDispatchTranscriptInput extends AgentRequestTranscriptInput {
@@ -41,6 +42,7 @@ export function agentRequestSigningTranscript(input: AgentRequestTranscriptInput
     input.nonce,
     input.issuedAt,
     input.expiresAt,
+    JSON.stringify(input.dependencies ?? []),
   ]);
 }
 
@@ -54,6 +56,7 @@ export function agentDispatchSigningTranscript(input: AgentDispatchTranscriptInp
     input.nonce,
     input.issuedAt,
     input.expiresAt,
+    JSON.stringify(input.dependencies ?? []),
     input.requesterDeviceId,
     input.targetDeviceId,
     input.requesterSignature,

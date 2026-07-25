@@ -149,4 +149,23 @@ CREATE TABLE server_state (
 );
 INSERT INTO server_state (key, value) VALUES ('epoch', '1');`,
   },
+  {
+    version: 6,
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN dependencies_json TEXT NOT NULL DEFAULT '[]';
+CREATE TABLE artifacts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES agent_tasks(id) ON DELETE SET NULL,
+  author_device_id TEXT NOT NULL REFERENCES devices(id),
+  type TEXT NOT NULL CHECK (type IN ('finding', 'plan', 'decision', 'api-contract', 'schema', 'code-change', 'commit', 'diff', 'test-result', 'review', 'handoff', 'documentation', 'failure-report', 'browser-result', 'final-result')),
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'ready', 'accepted', 'rejected', 'superseded', 'integrated')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX artifacts_project_created ON artifacts(project_id, created_at);`,
+  },
 ];

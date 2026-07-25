@@ -116,13 +116,18 @@ export function loadClientConnection(paths: ClientPaths = clientPaths()): Client
   return { ...connection, serverEpoch: epoch };
 }
 
-export async function connectAuthenticatedClient(paths: ClientPaths = clientPaths()): Promise<WebSocket> {
+export type ClientWebSocketFactory = (url: string, options: unknown) => WebSocket;
+
+export async function connectAuthenticatedClient(
+  paths: ClientPaths = clientPaths(),
+  createSocket: ClientWebSocketFactory = (url, options) => new WebSocket(url, options as never),
+): Promise<WebSocket> {
   const connection = loadClientConnection(paths);
   const identity = loadOrCreateClientIdentity(paths);
   const host = connection.host.includes(":") ? `[${connection.host}]` : connection.host;
-  const socket = new WebSocket(`wss://${host}:${connection.port}/v1/connect`, {
+  const socket = createSocket(`wss://${host}:${connection.port}/v1/connect`, {
     tls: { ca: connection.serverCertificatePem, rejectUnauthorized: true },
-  } as never);
+  });
   return await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       socket.close();
@@ -230,8 +235,9 @@ export function sendAgentRequest(
   agentId: string,
   prompt: string,
   paths: ClientPaths = clientPaths(),
+  dependencies: string[] = [],
 ): string {
-  const frame = createAgentRequest(projectId, agentId, prompt, paths);
+  const frame = createAgentRequest(projectId, agentId, prompt, paths, dependencies);
   socket.send(JSON.stringify(frame));
   return frame.taskId;
 }
@@ -241,6 +247,7 @@ export function createAgentRequest(
   agentId: string,
   prompt: string,
   paths: ClientPaths = clientPaths(),
+  dependencies: string[] = [],
 ) {
   const identity = loadOrCreateClientIdentity(paths);
   const taskId = randomUUID();
@@ -248,7 +255,7 @@ export function createAgentRequest(
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
   const signature = sign(null, agentRequestSigningTranscript({
-    taskId, projectId, agentId, prompt, nonce, issuedAt, expiresAt,
+    taskId, projectId, agentId, prompt, nonce, issuedAt, expiresAt, dependencies,
   }), identity.privateKeyPem).toString("base64url");
   return {
     version: 1,
@@ -261,6 +268,7 @@ export function createAgentRequest(
     nonce,
     issuedAt,
     expiresAt,
+    dependencies,
     signature,
   };
 }

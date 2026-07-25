@@ -36,7 +36,10 @@ function configureWindowsFirewall(port: number): "created" | "manual-required" |
 }
 
 function requiredPassphrase(): string {
-  return requiredOption("--passphrase");
+  const file = option("--passphrase-file");
+  const value = file ? readFileSync(file, "utf8").trim() : process.env.COCODEX_TRANSFER_PASSPHRASE?.trim();
+  if (!value) throw new Error("Set COCODEX_TRANSFER_PASSPHRASE or provide --passphrase-file");
+  return value;
 }
 
 function runningPid(paths: ReturnType<typeof serverPaths>): number | undefined {
@@ -63,8 +66,8 @@ Usage:
   cocodex-server status [--state-root PATH]
   cocodex-server backup --output FILE [--state-root PATH]
   cocodex-server restore --input FILE [--state-root PATH]
-  cocodex-server transfer-export --output FILE --passphrase PASS [--state-root PATH]
-  cocodex-server transfer-import --input FILE --passphrase PASS [--state-root PATH]
+  cocodex-server transfer-export --output FILE [--passphrase-file FILE] [--state-root PATH]
+  cocodex-server transfer-import --input FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server migrate [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
