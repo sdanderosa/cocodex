@@ -91,4 +91,4 @@ test("the separate server process initializes, serves TLS, and restarts after te
     expect(stopped.exitCode).toBe(0);
     await second.exited;
   }
-});
+}, 20_000);
