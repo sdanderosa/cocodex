@@ -60,7 +60,8 @@ disconnect, expiry of queued/running agent tasks, and recipient-key certificate
 binding. Remote agent execution now pauses for explicit host-client approval
 with the complete prompt visible before the local Codex process starts. The
 same WSS path carries bounded mouse-cursor and text-caret presence, and clears
-it on disconnect. `cocodex-server init` attempts the Windows Firewall rule and prints
+it on disconnect. Authenticated requester/host cancellation records an
+authoritative final task event and aborts the host process. `cocodex-server init` attempts the Windows Firewall rule and prints
 the single-port manual router-forwarding instructions when automatic setup is
 unavailable. Initialization now performs a bounded UPnP discovery and
 `AddPortMapping` attempt; if no gateway responds or the mapping fails, the JSON
@@ -104,10 +105,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-35 pass
+37 pass
 0 fail
-268 expect() calls
-Ran 35 tests across 21 files.
+276 expect() calls
+Ran 37 tests across 21 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed

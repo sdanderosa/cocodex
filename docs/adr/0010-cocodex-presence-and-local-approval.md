@@ -19,6 +19,11 @@ running the task; approval is abortable, expires after five minutes, and is
 lost when the client disconnects. The server still authenticates and signs the
 task, but it cannot bypass the host's local approval boundary.
 
+The requester or host may send a signed, authenticated `agent.cancel` command.
+The server authoritatively records a final failed task event, routes a cancel
+control frame to the host, and broadcasts the cancellation through shared chat.
+The host aborts the local process through its `AbortSignal`.
+
 ## Consequences
 
 - Cursor state disappears naturally during outages and does not create stale
@@ -36,3 +41,5 @@ task, but it cannot bypass the host's local approval boundary.
 - Real two-member WSS presence update and leave test.
 - GUI approval controls and approval-command allowlist test.
 - Three-process reciprocal agent test with explicit host approvals.
+- Real WSS cancellation test proving the host receives the cancel frame and the
+  requester receives the authoritative final event.
