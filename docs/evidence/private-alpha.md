@@ -139,6 +139,10 @@ privacy scan with bundled Git        exit 0: Privacy scan passed
 anthropic-image-retry-e2e.test.ts     exit 0: 3 pass, 0 fail
 ```
 
+Private-message replay protection is covered by the server shared-state tests:
+the same ciphertext cannot be accepted again under a different message ID,
+while approved-device checks continue to gate both sender and recipient.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:

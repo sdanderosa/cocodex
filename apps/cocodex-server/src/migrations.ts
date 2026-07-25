@@ -168,4 +168,15 @@ CREATE TABLE artifacts (
 );
 CREATE INDEX artifacts_project_created ON artifacts(project_id, created_at);`,
   },
+  {
+    version: 7,
+    sql: `
+CREATE TABLE private_message_replays (
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  recipient_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  ciphertext_hash TEXT NOT NULL,
+  first_message_id TEXT NOT NULL REFERENCES private_messages(message_id) ON DELETE CASCADE,
+  PRIMARY KEY (sender_device_id, recipient_device_id, ciphertext_hash)
+);`,
+  },
 ];

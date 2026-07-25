@@ -13,6 +13,7 @@ import {
   listProjects,
 } from "../src/shared-state";
 import { listArtifacts, publishArtifact } from "../src/artifacts";
+import { appendPrivateMessage } from "../src/private-messages";
 
 function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: Date): string {
   const pair = generateKeyPairSync("ed25519", {
@@ -125,5 +126,17 @@ describe("authoritative shared state", () => {
     } finally {
       db.close();
     }
+  });
+
+  test("rejects replay of the same ciphertext under a new message ID", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = approvedDevice(db, "Stephen", now);
+      const kai = approvedDevice(db, "Kai", now);
+      const message = { messageId: "8661361f-ce2f-4bec-88fd-c4fb32f49704", senderDeviceId: stephen, recipientDeviceId: kai, ciphertext: "A".repeat(80), clientCreatedAt: now.toISOString() };
+      expect(appendPrivateMessage(db, message, now).created).toBeTrue();
+      expect(() => appendPrivateMessage(db, { ...message, messageId: "4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e" }, now)).toThrow("replay rejected");
+    } finally { db.close(); }
   });
 });

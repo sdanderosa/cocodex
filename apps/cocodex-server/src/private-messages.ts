@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { PrivateMessageEnvelope } from "@cocodex/protocol";
 
@@ -44,6 +45,15 @@ export function appendPrivateMessage(
     }
     return { envelope: existing, created: false };
   }
+  const ciphertextHash = createHash("sha256").update(input.ciphertext, "utf8").digest("hex");
+  const prior = db.query(`SELECT first_message_id AS messageId FROM private_message_replays
+    WHERE sender_device_id = ? AND recipient_device_id = ? AND ciphertext_hash = ?`)
+    .get(input.senderDeviceId, input.recipientDeviceId, ciphertextHash) as { messageId: string } | null;
+  if (prior) throw new Error("Private message ciphertext was already delivered (replay rejected)");
+  const historical = db.query(`SELECT message_id AS messageId FROM private_messages
+    WHERE sender_device_id = ? AND recipient_device_id = ? AND ciphertext = ?`)
+    .get(input.senderDeviceId, input.recipientDeviceId, input.ciphertext) as { messageId: string } | null;
+  if (historical) throw new Error("Private message ciphertext was already delivered (replay rejected)");
   const result = db.query(`
     INSERT INTO private_messages (
       message_id, sender_device_id, recipient_device_id, ciphertext,
@@ -57,6 +67,10 @@ export function appendPrivateMessage(
     input.clientCreatedAt,
     now.toISOString(),
   );
+  db.query(`INSERT INTO private_message_replays
+    (sender_device_id, recipient_device_id, ciphertext_hash, first_message_id)
+    VALUES (?, ?, ?, ?)`)
+    .run(input.senderDeviceId, input.recipientDeviceId, ciphertextHash, input.messageId);
   const envelope = db.query(`
     SELECT sequence, message_id AS messageId, sender_device_id AS senderDeviceId,
       recipient_device_id AS recipientDeviceId, ciphertext,
