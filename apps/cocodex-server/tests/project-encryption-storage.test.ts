@@ -20,6 +20,7 @@ import {
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "../src/project-encryption-storage";
+import { listEncryptedArtifacts, publishEncryptedArtifact } from "../src/encrypted-artifacts";
 import { addProjectMember, createProject } from "../src/shared-state";
 
 interface TestDevice {
@@ -102,6 +103,30 @@ function contextEnvelope(
     keyEpoch,
     recordType: "shared-context" as const,
     recordId,
+    nonce: randomBytes(24).toString("base64url"),
+    ciphertext,
+    senderDeviceId: sender.id,
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectContentSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
+function artifactEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  artifactId: string,
+  keyEpoch = 1,
+  ciphertext = randomBytes(64).toString("base64url"),
+): ProjectContentEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch,
+    recordType: "artifact" as const,
+    recordId: artifactId,
     nonce: randomBytes(24).toString("base64url"),
     ciphertext,
     senderDeviceId: sender.id,
@@ -284,6 +309,54 @@ describe("opaque project-encryption server storage", () => {
       expect(stored.envelopeJson).not.toContain("plaintext");
       expect(stored.envelopeJson).not.toContain("secret");
       expect(stored.envelopeJson).toContain(next.ciphertext);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("stores opaque artifacts, verifies sender signatures, and recovers by project list", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const owner = approvedDevice(db, "Stephen");
+      const member = approvedDevice(db, "Kai");
+      const project = createProject(db, "Encrypted artifacts", owner.id, now);
+      addProjectMember(db, project.id, owner.id, member.id, now);
+      expect(shareProjectKeyEnvelope(db, project.id, owner.id, keyEnvelope(project.id, owner, owner.id), now).created).toBeTrue();
+      expect(shareProjectKeyEnvelope(db, project.id, owner.id, keyEnvelope(project.id, owner, member.id), now).created).toBeTrue();
+
+      const artifactId = randomUUID();
+      const envelope = artifactEnvelope(project.id, owner, artifactId);
+      const published = publishEncryptedArtifact(db, {
+        artifactId,
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: owner.id,
+        envelope,
+      }, now);
+      expect(published.created).toBeTrue();
+      expect(publishEncryptedArtifact(db, {
+        artifactId,
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: owner.id,
+        envelope,
+      }, now).created).toBeFalse();
+      expect(listEncryptedArtifacts(db, project.id, member.id)).toEqual([published.artifact]);
+      const stored = db.query("SELECT envelope_json AS envelopeJson FROM project_artifacts WHERE id = ?")
+        .get(artifactId) as { envelopeJson: string };
+      expect(stored.envelopeJson).not.toContain("The secret artifact body");
+      expect(stored.envelopeJson).toContain(envelope.ciphertext);
+
+      const badSignature = Buffer.from(envelope.signature, "base64url");
+      badSignature[0] ^= 1;
+      expect(() => publishEncryptedArtifact(db, {
+        artifactId,
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: owner.id,
+        envelope: { ...envelope, signature: badSignature.toString("base64url") },
+      })).toThrow("signature is invalid");
     } finally {
       db.close();
     }

@@ -283,4 +283,19 @@ CREATE TABLE project_prompt_updates (
 CREATE INDEX project_prompt_updates_project_sequence
   ON project_prompt_updates(project_id, sequence);`,
   },
+  {
+    version: 15,
+    sql: `
+CREATE TABLE project_artifacts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES agent_tasks(id) ON DELETE SET NULL,
+  author_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX project_artifacts_project_created
+  ON project_artifacts(project_id, created_at, id);`,
+  },
 ];

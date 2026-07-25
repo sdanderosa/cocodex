@@ -289,6 +289,59 @@ describe("CoCodex protocol", () => {
     expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.prompt.changed" as const, update: routed }))
       .toMatchObject({ type: "project.prompt.changed", update: routed });
   });
+  test("accepts opaque encrypted artifact publish and list frames", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const projectId = crypto.randomUUID();
+    const senderDeviceId = crypto.randomUUID();
+    const artifactId = crypto.randomUUID();
+    const envelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "artifact" as const,
+      recordId: artifactId,
+      nonce: Buffer.alloc(24, 10).toString("base64url"),
+      ciphertext: Buffer.alloc(80, 11).toString("base64url"),
+      senderDeviceId,
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 12).toString("base64url"),
+    };
+    const publish = {
+      version: 1 as const,
+      type: "project.artifact.publish" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      artifactId,
+      taskId: null,
+      envelope,
+    };
+    expect(clientFrameSchema.parse(publish)).toEqual(publish);
+    const artifact = {
+      artifactId,
+      projectId,
+      taskId: null,
+      authorDeviceId: senderDeviceId,
+      envelope,
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.artifact.published" as const,
+      artifact,
+    })).toMatchObject({ type: "project.artifact.published", artifact });
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.artifact.list.result" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      artifacts: [artifact],
+    })).toMatchObject({ type: "project.artifact.list.result", artifacts: [artifact] });
+    expect(() => clientFrameSchema.parse({ ...publish, envelope: { ...envelope, extra: true } })).toThrow();
+  });
   test("bounds presence cursor and caret frames", () => {
     const frame = {
       version: 1 as const,

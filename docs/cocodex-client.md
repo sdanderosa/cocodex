@@ -99,9 +99,19 @@ not receive the prompt text or apply the Yjs update. The client verifies the
 sender and project epoch, decrypts locally, and passes the update to the normal
 Yjs document. Legacy `prompt.*` remains available for projects without a key.
 
+When a project key is available, `artifact.publish` and `artifact.list` select
+the encrypted `project.artifact.*` transport. The client encrypts the artifact
+type, title, summary, status, and body locally. The server stores only the
+signed envelope plus minimal routing metadata (project, optional task, author,
+and timestamps) in `project_artifacts`; receiving clients decrypt and validate
+the complete artifact before exposing the familiar artifact frame. Encrypted
+artifact publishes are durable in the protected outbox and lists are
+automatically reissued after reconnect. Legacy `artifact.*` remains for
+projects without a key.
+
 This is still not a claim that every project record is encrypted yet. Task
-prompts, agent results, artifacts, and file references remain on the explicitly
-documented follow-up path.
+prompts, agent results, and file references remain on the explicitly documented
+follow-up path.
 
 ## Usage sharing
 

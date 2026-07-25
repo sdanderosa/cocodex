@@ -4,6 +4,7 @@ import {
   projectContentEnvelopeSchema,
   projectKeyEnvelopeSchema,
   publicKeyFingerprint,
+  type Artifact,
   type AgentTask,
   type ChatEvent,
 } from "@cocodex/protocol";
@@ -62,6 +63,7 @@ export async function runJsonLineSession(
   const promptSubscriptions = new Set<string>();
   const encryptedPromptCursors = new Map<string, number>();
   const encryptedPromptSubscriptions = new Set<string>();
+  const encryptedArtifactSubscriptions = new Set<string>();
   const contextSubscriptions = new Set<string>();
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
@@ -134,6 +136,52 @@ export async function runJsonLineSession(
       requestId,
       projectId,
       updateId,
+      envelope,
+    };
+  };
+  const encryptedArtifactFrame = async (
+    projectId: string,
+    artifactId: string,
+    taskId: string | null,
+    artifactType: string,
+    title: string,
+    summary: string,
+    content: string,
+    status: string,
+    requestId: string,
+  ) => {
+    if (title.trim().length < 1 || title.trim().length > 200) throw new Error("Artifact title must be 1-200 characters");
+    if (summary.trim().length < 1 || summary.trim().length > 4_000) throw new Error("Artifact summary must be 1-4000 characters");
+    if (content.length < 1 || content.length > 256_000) throw new Error("Artifact content must be 1-256000 characters");
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+    if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
+    const envelope = await sealProjectContent({
+      projectId,
+      keyEpoch: stored.keyEpoch,
+      recordType: "artifact",
+      recordId: artifactId,
+      plaintext: JSON.stringify({
+        id: artifactId,
+        projectId,
+        taskId,
+        type: artifactType,
+        title: title.trim(),
+        summary: summary.trim(),
+        content,
+        status,
+      }),
+      projectKey: stored.projectKey,
+      senderDeviceId: connection.deviceId,
+      senderPrivateKeyPem: identity.privateKeyPem,
+      senderPublicKeyPem: identity.publicKeyPem,
+    });
+    return {
+      version: 1 as const,
+      type: "project.artifact.publish" as const,
+      requestId,
+      artifactId,
+      projectId,
+      taskId,
       envelope,
     };
   };
@@ -401,6 +449,89 @@ export async function runJsonLineSession(
     }
   };
 
+  const openEncryptedArtifact = async (rawArtifact: Record<string, any>): Promise<Artifact> => {
+    const projectId = String(rawArtifact.projectId);
+    const artifactId = String(rawArtifact.artifactId);
+    const parsedEnvelope = projectContentEnvelopeSchema.parse(rawArtifact.envelope);
+    const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
+    if (!key) throw new Error(`No project key is available for ${projectId} epoch ${parsedEnvelope.keyEpoch}`);
+    const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
+    const plaintext = await openProjectContent({
+      envelope: parsedEnvelope,
+      projectKey: key.projectKey,
+      expectedProjectId: projectId,
+      expectedKeyEpoch: key.keyEpoch,
+      expectedRecordType: "artifact",
+      expectedRecordId: artifactId,
+      expectedSenderDeviceId: parsedEnvelope.senderDeviceId,
+      expectedSenderPublicKeyPem: senderPublicKeyPem,
+    });
+    if (plaintext.byteLength > 300_000) throw new Error("Encrypted artifact is too large");
+    let decoded: unknown;
+    try { decoded = JSON.parse(plaintext.toString("utf8")); }
+    catch { throw new Error("Encrypted artifact is not valid JSON"); }
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new Error("Encrypted artifact is invalid");
+    const record = decoded as Record<string, unknown>;
+    const allowedTypes = new Set(["finding", "plan", "decision", "api-contract", "schema", "code-change", "commit", "diff", "test-result", "review", "handoff", "documentation", "failure-report", "browser-result", "final-result"]);
+    const allowedStatuses = new Set(["draft", "ready", "accepted", "rejected", "superseded", "integrated"]);
+    if (record.id !== artifactId || record.projectId !== projectId
+      || (record.taskId !== null && typeof record.taskId !== "string")
+      || typeof record.type !== "string" || !allowedTypes.has(record.type)
+      || typeof record.title !== "string" || record.title.trim().length < 1 || record.title.length > 200
+      || typeof record.summary !== "string" || record.summary.trim().length < 1 || record.summary.length > 4_000
+      || typeof record.content !== "string" || record.content.length < 1 || record.content.length > 256_000
+      || typeof record.status !== "string" || !allowedStatuses.has(record.status)) {
+      throw new Error("Encrypted artifact is invalid");
+    }
+    if (record.taskId !== rawArtifact.taskId || parsedEnvelope.senderDeviceId !== rawArtifact.authorDeviceId) {
+      throw new Error("Encrypted artifact metadata does not match its envelope");
+    }
+    return {
+      id: artifactId,
+      projectId,
+      taskId: record.taskId as string | null,
+      authorDeviceId: String(rawArtifact.authorDeviceId),
+      type: record.type as Artifact["type"],
+      title: record.title,
+      summary: record.summary,
+      content: record.content,
+      status: record.status as Artifact["status"],
+      createdAt: String(rawArtifact.createdAt),
+      updatedAt: String(rawArtifact.updatedAt),
+    };
+  };
+
+  const openEncryptedArtifactFrame = async (frame: Record<string, any>): Promise<void> => {
+    try {
+      const projectId = String(frame.projectId ?? frame.artifact?.projectId);
+      if (frame.type === "project.artifact.list.result") {
+        const rawArtifacts = Array.isArray(frame.artifacts) ? frame.artifacts : [];
+        const artifacts: Artifact[] = [];
+        for (const rawArtifact of rawArtifacts) artifacts.push(await openEncryptedArtifact(rawArtifact));
+        emit({ source: "server", frame: {
+          version: 1,
+          type: "artifact.list.result",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          projectId,
+          artifacts,
+        } });
+        return;
+      }
+      if (frame.type === "project.artifact.accepted" || frame.type === "project.artifact.published") {
+        const artifact = await openEncryptedArtifact(frame.artifact);
+        emit({ source: "server", frame: {
+          version: 1,
+          type: frame.type === "project.artifact.accepted" ? "artifact.accepted" : "artifact.published",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          projectId,
+          artifact,
+        } });
+      }
+    } catch (error) {
+      emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const openProjectKeyEnvelopeFromServer = (envelope: Record<string, any>): void => {
     if (envelope.recipientDeviceId !== connection.deviceId) return;
     if (!identity.projectWrapPrivateKeyPem || !identity.projectWrapPublicKeyPem) {
@@ -500,6 +631,10 @@ export async function runJsonLineSession(
         void openEncryptedPromptFrame(frame);
         return;
       }
+      if (frame.type === "project.artifact.accepted" || frame.type === "project.artifact.published" || frame.type === "project.artifact.list.result") {
+        void openEncryptedArtifactFrame(frame);
+        return;
+      }
       if (frame.type === "chat.snapshot") {
         const events = Array.isArray(frame.events) ? frame.events : [];
         const latest = events.at(-1)?.sequence;
@@ -574,6 +709,9 @@ export async function runJsonLineSession(
         projectId,
         afterSequence: encryptedPromptCursors.get(projectId) ?? 0,
       });
+    }
+    for (const projectId of encryptedArtifactSubscriptions) {
+      send({ version: 1, type: "project.artifact.list", requestId: randomUUID(), projectId });
     }
     for (const projectId of promptSubscriptions) {
       send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
@@ -940,6 +1078,74 @@ export async function runJsonLineSession(
           }
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, eventId, encrypted: Boolean(stored) });
+        } else if (command.type === "project.artifact.publish") {
+          const projectId = String(command.projectId);
+          const artifactId = String(command.artifactId ?? randomUUID());
+          const taskId = command.taskId === null || command.taskId === undefined ? null : String(command.taskId);
+          const frame = await encryptedArtifactFrame(
+            projectId,
+            artifactId,
+            taskId,
+            String(command.artifactType),
+            String(command.title),
+            String(command.summary),
+            String(command.content),
+            String(command.status),
+            controlRequestId(command.id),
+          );
+          encryptedArtifactSubscriptions.add(projectId);
+          enqueueDurableEvent(paths, frame);
+          const delivered = await flush();
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, artifactId, encrypted: true });
+        } else if (command.type === "artifact.publish") {
+          const projectId = String(command.projectId);
+          const artifactId = String(command.artifactId ?? randomUUID());
+          const taskId = command.taskId === null || command.taskId === undefined ? null : String(command.taskId);
+          const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          if (stored) {
+            const frame = await encryptedArtifactFrame(
+              projectId,
+              artifactId,
+              taskId,
+              String(command.artifactType),
+              String(command.title),
+              String(command.summary),
+              String(command.content),
+              String(command.status),
+              controlRequestId(command.id),
+            );
+            encryptedArtifactSubscriptions.add(projectId);
+            enqueueDurableEvent(paths, frame);
+          } else {
+            enqueueDurableEvent(paths, {
+              version: 1,
+              type: "artifact.publish",
+              requestId: controlRequestId(command.id),
+              artifactId,
+              projectId,
+              taskId,
+              artifactType: String(command.artifactType) as any,
+              title: String(command.title),
+              summary: String(command.summary),
+              content: String(command.content),
+              status: String(command.status) as any,
+            });
+          }
+          const delivered = await flush();
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, artifactId, encrypted: Boolean(stored) });
+        } else if (command.type === "project.artifact.list") {
+          const projectId = String(command.projectId);
+          encryptedArtifactSubscriptions.add(projectId);
+          send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId });
+        } else if (command.type === "artifact.list") {
+          const projectId = String(command.projectId);
+          const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          if (stored) {
+            encryptedArtifactSubscriptions.add(projectId);
+            send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId });
+          } else {
+            send({ version: 1, type: "artifact.list", requestId: controlRequestId(command.id), projectId });
+          }
         } else if (command.type === "agent.request") {
           const request = createAgentRequest(
             String(command.projectId),

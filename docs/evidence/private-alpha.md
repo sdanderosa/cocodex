@@ -10,7 +10,8 @@
   encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
-  lifecycle timeout hardening `0f09345f`.
+  lifecycle timeout hardening `0f09345f`, followed by encrypted project
+  artifacts (current implementation commit recorded below).
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -405,6 +406,43 @@ Full CoCodex command:
 
 Exit status: `0`; relevant output: `68 pass`, `0 fail`, `594 expect() calls`.
 
+## Encrypted project artifacts
+
+Implementation commit: recorded in the Git checkpoint that follows this
+evidence update.
+
+The `project.artifact.*` transport encrypts the complete artifact record on the
+client when a project key is available. The server stores only a signed opaque
+envelope plus project/task/author routing metadata in `project_artifacts`.
+Client-side decryption validates the envelope sender, key epoch, artifact ID,
+project ID, task binding, type, title, summary, status, and body before the
+normal artifact frame is exposed. The existing protected outbox carries an
+offline publish, and a subscribed list is reissued after reconnect.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`; relevant output: `19 pass`, `0 fail`, `138 expect() calls`.
+The session test uses two enrolled clients and a real TLS/WSS server, confirms
+that the SQLite artifact envelope contains neither the title nor body, and
+recovers the decrypted artifact from a post-restart list on both clients.
+
+The complete CoCodex command was rerun after this change:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `70 pass`, `0 fail`, `621 expect() calls`
+across 26 files.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
@@ -452,11 +490,11 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- whole-project encryption is not implemented yet: tasks, agent results,
-  artifacts, and file references remain server-readable; Final Goal/context,
-  shared chat, and shared prompt updates are encrypted only through their
-  explicit new frames. Automatic post-removal rotation orchestration and
-  revocation UI are still incomplete.
+- whole-project encryption is not implemented yet: tasks, agent results, and
+  file references remain server-readable; Final Goal/context, shared chat,
+  shared prompt updates, and keyed artifacts are encrypted only through their
+  explicit new frames. Legacy plaintext compatibility routes remain. Automatic
+  post-removal rotation orchestration and revocation UI are still incomplete.
 - robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt

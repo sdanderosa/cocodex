@@ -32,6 +32,10 @@ const ALLOWED_COMMANDS = new Set([
   "agent.cancel",
   "agent.approval",
   "private.send",
+  "artifact.publish",
+  "artifact.list",
+  "project.artifact.publish",
+  "project.artifact.list",
 ]);
 
 type SessionRunner = (paths: ClientPaths, options: JsonLineSessionOptions) => Promise<void>;

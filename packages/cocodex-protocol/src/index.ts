@@ -103,3 +103,17 @@ export {
   type EncryptedPromptAcceptedFrame,
   type EncryptedPromptChangedFrame,
 } from "./project-prompt";
+export {
+  encryptedArtifactSchema,
+  encryptedArtifactPublishFrameSchema,
+  encryptedArtifactListFrameSchema,
+  encryptedArtifactAcceptedFrameSchema,
+  encryptedArtifactPublishedFrameSchema,
+  encryptedArtifactListResultFrameSchema,
+  type EncryptedArtifact,
+  type EncryptedArtifactPublishFrame,
+  type EncryptedArtifactListFrame,
+  type EncryptedArtifactAcceptedFrame,
+  type EncryptedArtifactPublishedFrame,
+  type EncryptedArtifactListResultFrame,
+} from "./project-artifact";

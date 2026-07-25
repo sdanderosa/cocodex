@@ -96,20 +96,22 @@ only, and returns it only to approved members of a shared project. It never
 receives provider credentials or raw quota/account records.
 
 Project-content encryption is enabled for the explicit `project.key.*`,
-`project.context.*`, `project.chat.*`, and `project.prompt.*` slices. The server
+`project.context.*`, `project.chat.*`, `project.prompt.*`, and
+`project.artifact.*` slices. The server
 verifies owner-signed key envelopes, approved membership, signatures,
 replay/idempotency, context revisions, and monotonic key epochs, then stores
 only opaque envelope JSON in `project_key_envelopes`,
 `encrypted_project_context`, `project_chat_events`, and
-`project_prompt_updates`. It never receives the project key or opens the Final
-Goal/context/chat/prompt ciphertext. For encrypted prompts it orders and
-deduplicates Yjs updates without applying them; the clients perform the Yjs
-state transition after local decryption.
+`project_prompt_updates`, and `project_artifacts`. It never receives the
+project key or opens the Final Goal/context/chat/prompt/artifact ciphertext. For
+encrypted prompts it orders and deduplicates Yjs updates without applying them;
+the clients perform the Yjs state transition after local decryption. Encrypted
+artifact rows expose only project/task/author routing metadata and timestamps.
 
 This is not yet a whole-project E2EE claim. Legacy `context.*` frames, shared
-task prompts, agent results, artifacts, and file references remain
-server-readable until their own encrypted envelopes and end-to-end tests are
-complete. Legacy `prompt.*` remains for projects without a project key. Key
+task prompts, agent results, and file references remain server-readable until
+their own encrypted envelopes and end-to-end tests are complete. Legacy
+`prompt.*` and `artifact.*` remain for projects without a project key. Key
 rotation and project-member removal are implemented for the project-key
 lifecycle, but a release still needs automatic rotation orchestration and UI
 before claiming complete revocation UX.

@@ -3,7 +3,7 @@
 - Status: Accepted for the first project-encryption slice
 - Date: 2026-07-25
 - Scope: project-wrap identity, opaque key delivery, and encrypted
-  Final Goal/context/chat/prompt slices
+  Final Goal/context/chat/prompt/artifact slices
 
 ## Context
 
@@ -45,12 +45,15 @@ key envelopes; the removed client receives a revocation notice and marks its
 local key ring unusable for new writes. Replayed rotations are idempotent and
 stale expected epochs are rejected.
 
-The same envelope format now backs the `project.chat.*` and
-`project.prompt.*` paths. The server assigns an authoritative sequence and
-persists only the opaque envelope in `project_chat_events` and
-`project_prompt_updates`; the client decrypts `{content}` or `{update}` locally
-and emits the existing chat-event or Yjs prompt-update shape to the UI. The
-server deliberately does not apply encrypted Yjs updates because doing so would
+The same envelope format now backs the `project.chat.*`, `project.prompt.*`,
+and `project.artifact.*` paths. The server assigns an authoritative sequence
+where the record type needs one, and persists only opaque envelopes in
+`project_chat_events`, `project_prompt_updates`, and `project_artifacts`. For
+artifacts, routing metadata is limited to the project, optional task ID,
+author device, and server timestamps; title, summary, type, status, and body
+are inside the envelope. The client decrypts `{content}`, `{update}`, or the
+artifact record locally and emits the existing UI shape. The server
+deliberately does not apply encrypted Yjs updates because doing so would
 require access to the prompt plaintext.
 
 Legacy `context.get`/`context.update` remain available for the existing
@@ -70,12 +73,12 @@ described as end-to-end encrypted. The encrypted path uses distinct
 
 ## Consequences and remaining work
 
-This slice proves complete encrypted-context, encrypted-chat, and encrypted
-shared-prompt flows and keeps the server blind to those payloads. It does not
-yet encrypt tasks, agent prompts/results, artifacts, or file references. The
-legacy plaintext chat/context/prompt compatibility routes remain for old
-fixtures and must be removed only after every record type has an end-to-end
-migration.
+This slice proves complete encrypted-context, encrypted-chat, encrypted
+shared-prompt, and encrypted-artifact flows and keeps the server blind to
+those payloads. It does not yet encrypt tasks, agent prompts/results, or file
+references. The legacy plaintext chat/context/prompt/artifact compatibility
+routes remain for old fixtures and must be removed only after every record
+type has an end-to-end migration.
 
 ## Evidence
 
@@ -88,6 +91,6 @@ migration.
   WSS key/context/chat/prompt routing and restart-safe SQLite storage.
 - `tests/cocodex-project-encryption-session.test.ts` runs two enrolled client
   sessions against a real server, initializes a project key, encrypts a chat
-  message, Yjs prompt update, and Final Goal/context update, proves the stored
-  rows omit the plaintext, and verifies that the other client decrypts all three
-  locally.
+  message, Yjs prompt update, Final Goal/context update, and artifact, proves
+  the stored rows omit plaintext, and verifies that the other client decrypts
+  all four locally after a server restart.

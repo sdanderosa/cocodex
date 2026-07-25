@@ -263,6 +263,56 @@ describe("CoCodex encrypted project context session", () => {
     expect(stored.envelopeJson).not.toContain(plaintextGoal);
     expect(stored.envelopeJson).toContain("ciphertext");
 
+    const artifactSubscribeStephen = crypto.randomUUID();
+    const artifactSubscribeKai = crypto.randomUUID();
+    stephen.send({ id: artifactSubscribeStephen, type: "artifact.list", projectId: project.id });
+    kai.send({ id: artifactSubscribeKai, type: "artifact.list", projectId: project.id });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === artifactSubscribeStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === artifactSubscribeKai),
+    ]);
+
+    const artifactId = crypto.randomUUID();
+    const artifactTitle = "Encrypted handoff finding";
+    const artifactContent = "The artifact body is decrypted only by enrolled project members.";
+    stephen.send({
+      id: crypto.randomUUID(),
+      type: "artifact.publish",
+      projectId: project.id,
+      artifactId,
+      taskId: null,
+      artifactType: "finding",
+      title: artifactTitle,
+      summary: "Opaque artifact summary",
+      content: artifactContent,
+      status: "ready",
+    });
+    const [artifactAtStephen, artifactAtKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.accepted"
+        && ((event.frame as Record<string, unknown>).artifact as Record<string, unknown> | undefined)?.id === artifactId),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.published"
+        && ((event.frame as Record<string, unknown>).artifact as Record<string, unknown> | undefined)?.id === artifactId),
+    ]);
+    expect(artifactAtStephen.frame).toMatchObject({ type: "artifact.accepted", projectId: project.id });
+    expect(artifactAtKai.frame).toMatchObject({ type: "artifact.published", projectId: project.id });
+    expect((artifactAtKai.frame as Record<string, any>).artifact).toMatchObject({
+      id: artifactId,
+      title: artifactTitle,
+      content: artifactContent,
+      status: "ready",
+    });
+    const storedArtifact = db.query("SELECT envelope_json AS envelopeJson FROM project_artifacts WHERE id = ?")
+      .get(artifactId) as { envelopeJson: string };
+    expect(storedArtifact.envelopeJson).not.toContain(artifactTitle);
+    expect(storedArtifact.envelopeJson).not.toContain(artifactContent);
+    expect(storedArtifact.envelopeJson).toContain("ciphertext");
+
     const stephenDisconnected = stephen.waitFor(event => event.source === "session" && event.state === "disconnected");
     const kaiDisconnected = kai.waitFor(event => event.source === "session" && event.state === "disconnected");
     const serverIndex = servers.indexOf(server);
@@ -327,6 +377,24 @@ describe("CoCodex encrypted project context session", () => {
     ]);
     expect((contextSnapshotStephen.frame as Record<string, unknown>).context).toMatchObject({ finalGoal: plaintextGoal });
     expect((contextSnapshotKai.frame as Record<string, unknown>).context).toMatchObject({ finalGoal: plaintextGoal });
+
+    const artifactListStephen = crypto.randomUUID();
+    const artifactListKai = crypto.randomUUID();
+    stephen.send({ id: artifactListStephen, type: "artifact.list", projectId: project.id });
+    kai.send({ id: artifactListKai, type: "artifact.list", projectId: project.id });
+    const [artifactSnapshotStephen, artifactSnapshotKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === artifactListStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "artifact.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === artifactListKai),
+    ]);
+    for (const snapshot of [artifactSnapshotStephen, artifactSnapshotKai]) {
+      expect((snapshot.frame as Record<string, unknown>).artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: artifactId, content: artifactContent }),
+      ]));
+    }
 
     stephen.close();
     kai.close();

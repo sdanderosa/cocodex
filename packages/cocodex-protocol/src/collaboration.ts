@@ -19,6 +19,13 @@ import {
   encryptedPromptSubscribeFrameSchema,
   encryptedPromptUpdateFrameSchema,
 } from "./project-prompt";
+import {
+  encryptedArtifactAcceptedFrameSchema,
+  encryptedArtifactListFrameSchema,
+  encryptedArtifactListResultFrameSchema,
+  encryptedArtifactPublishFrameSchema,
+  encryptedArtifactPublishedFrameSchema,
+} from "./project-artifact";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -174,6 +181,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   encryptedChatSendFrameSchema,
   encryptedPromptSubscribeFrameSchema,
   encryptedPromptUpdateFrameSchema,
+  encryptedArtifactPublishFrameSchema,
+  encryptedArtifactListFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("artifact.publish"),
@@ -345,6 +354,9 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   encryptedPromptSnapshotFrameSchema,
   encryptedPromptAcceptedFrameSchema,
   encryptedPromptChangedFrameSchema,
+  encryptedArtifactAcceptedFrameSchema,
+  encryptedArtifactPublishedFrameSchema,
+  encryptedArtifactListResultFrameSchema,
   projectKeyResultFrameSchema,
   projectKeyAcceptedFrameSchema,
   projectKeyChangedFrameSchema,
