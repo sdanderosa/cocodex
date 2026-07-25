@@ -98,6 +98,23 @@ class JsonSessionHarness {
   }
 }
 
+async function waitUntilConnectedViaProjectList(session: JsonSessionHarness): Promise<void> {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const id = crypto.randomUUID();
+    session.send({ id, type: "project.list" });
+    try {
+      const result = await session.waitFor(event =>
+        (event.source === "server" && (event.frame as Record<string, unknown> | undefined)?.requestId === id)
+        || (event.source === "control" && event.id === id), 750);
+      if (result.source === "server") return;
+    } catch {
+      // The resident session may still be between reconnect attempts.
+    }
+    await Bun.sleep(250);
+  }
+  throw new Error("CoCodex session did not reconnect before the recovery deadline");
+}
+
 describe("CoCodex encrypted project context session", () => {
   test("initializes a project key, encrypts context on the wire, and decrypts it on another client", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-server-"));
@@ -245,6 +262,71 @@ describe("CoCodex encrypted project context session", () => {
       .get(project.id) as { envelopeJson: string };
     expect(stored.envelopeJson).not.toContain(plaintextGoal);
     expect(stored.envelopeJson).toContain("ciphertext");
+
+    const stephenDisconnected = stephen.waitFor(event => event.source === "session" && event.state === "disconnected");
+    const kaiDisconnected = kai.waitFor(event => event.source === "session" && event.state === "disconnected");
+    const serverIndex = servers.indexOf(server);
+    if (serverIndex >= 0) servers.splice(serverIndex, 1);
+    await server.stop(true);
+    await Promise.all([stephenDisconnected, kaiDisconnected]);
+    const restarted = startCoCodexServer({ ...config, port: server.port }, db, identity);
+    servers.push(restarted);
+    await Promise.all([
+      waitUntilConnectedViaProjectList(stephen),
+      waitUntilConnectedViaProjectList(kai),
+    ]);
+
+    const recoveredChatStephen = crypto.randomUUID();
+    const recoveredChatKai = crypto.randomUUID();
+    stephen.send({ id: recoveredChatStephen, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
+    kai.send({ id: recoveredChatKai, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
+    const [chatSnapshotStephen, chatSnapshotKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredChatStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredChatKai),
+    ]);
+    expect((chatSnapshotStephen.frame as Record<string, unknown>).events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: plaintextChat }),
+    ]));
+    expect((chatSnapshotKai.frame as Record<string, unknown>).events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: plaintextChat }),
+    ]));
+
+    const recoveredPromptStephen = crypto.randomUUID();
+    const recoveredPromptKai = crypto.randomUUID();
+    stephen.send({ id: recoveredPromptStephen, type: "prompt.subscribe", projectId: project.id, afterSequence: 0 });
+    kai.send({ id: recoveredPromptKai, type: "prompt.subscribe", projectId: project.id, afterSequence: 0 });
+    const [promptSnapshotStephen, promptSnapshotKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.snapshot"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredPromptStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.snapshot"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredPromptKai),
+    ]);
+    for (const snapshot of [promptSnapshotStephen, promptSnapshotKai]) {
+      expect((snapshot.frame as Record<string, unknown>).updates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ update: promptUpdate }),
+      ]));
+    }
+
+    const recoveredContextStephen = crypto.randomUUID();
+    const recoveredContextKai = crypto.randomUUID();
+    stephen.send({ id: recoveredContextStephen, type: "project.context.get", projectId: project.id });
+    kai.send({ id: recoveredContextKai, type: "project.context.get", projectId: project.id });
+    const [contextSnapshotStephen, contextSnapshotKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "context.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredContextStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "context.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredContextKai),
+    ]);
+    expect((contextSnapshotStephen.frame as Record<string, unknown>).context).toMatchObject({ finalGoal: plaintextGoal });
+    expect((contextSnapshotKai.frame as Record<string, unknown>).context).toMatchObject({ finalGoal: plaintextGoal });
 
     stephen.close();
     kai.close();
