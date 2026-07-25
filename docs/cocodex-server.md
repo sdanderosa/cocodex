@@ -111,6 +111,14 @@ replay rules, then routes a request to the host client. The host client
 revalidates and executes locally. Private-message rows contain ciphertext and
 routing metadata only; plaintext is not logged or passed into agent context.
 
+Presence is a separate ephemeral membership-scoped channel. Both legacy and
+encrypted chat subscriptions register the socket for presence snapshots and
+updates, so project-key selection does not disable awareness. The server bounds
+cursor/caret/display-name payloads, rate-limits updates, keeps cursor/caret/
+typing state independent, removes state on member revocation, and clears a
+device only after its last authenticated socket closes. Presence is never
+persisted in SQLite or included in agent context.
+
 Signed usage reports are a separate sanitized server record. The server checks
 the reporting device's Ed25519 signature and revision, stores the latest report
 only, and returns it only to approved members of a shared project. It never

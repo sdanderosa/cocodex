@@ -72,6 +72,13 @@ and applies it locally. Offline chat, private ciphertext, prompt updates, and
 context updates are kept in the protected local outbox and replayed after
 reconnect.
 
+Presence is deliberately ephemeral. The client publishes a normalized mouse
+cursor plus a bounded prompt caret/selection and typing flag; local state keeps
+those channels merged, batches typing updates, clears typing after idle/blur,
+and republishes the state after reconnect. The GUI shows named awareness/status
+chips for remote caret/selection/typing state. Offsets are advisory for the
+current prompt snapshot, not stable Yjs RelativePositions or an inline overlay.
+
 To instruct a local or remote named agent through the JSON-line session:
 
 ```json
