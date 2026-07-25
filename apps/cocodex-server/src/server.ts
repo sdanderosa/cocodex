@@ -9,7 +9,7 @@ import {
   websocketAuthTranscript,
 } from "@cocodex/protocol";
 import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
-import type { ServerConfig } from "./config";
+import { verifyAdminToken, type ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
 import {
@@ -75,6 +75,13 @@ function json(value: unknown, status = 200): Response {
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
+}
+
+function adminToken(request: Request): string | undefined {
+  const value = request.headers.get("authorization");
+  if (!value?.startsWith("Bearer ")) return undefined;
+  const token = value.slice("Bearer ".length).trim();
+  return token || undefined;
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {
@@ -197,6 +204,17 @@ export function startCoCodexServer(
           identityFingerprint: identity.fingerprint,
           certificateFingerprint,
           serverEpoch: serverEpoch(db),
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/admin/status") {
+        if (!verifyAdminToken(adminToken(request) ?? "", config.adminTokenHash)) {
+          return json({ error: "Admin authentication required" }, 401);
+        }
+        return json({
+          service: "cocodex-server",
+          epoch: serverEpoch(db),
+          connectedDevices: [...sockets].filter(socket => socket.data.authenticatedDeviceId).length,
+          certificateFingerprint,
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/enrollment/challenge") {

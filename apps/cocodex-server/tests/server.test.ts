@@ -58,11 +58,19 @@ describe("CoCodex Server enrollment boundary", () => {
     });
     const invitation = decodeInvitation(invitationCode);
     const pair = deviceIdentity();
-    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443, "admin-test-token");
     config.hostname = "127.0.0.1";
     config.port = 0;
     const running = startCoCodexServer(config, db, identity);
     runningServers.push(running);
+    const deniedAdmin = await fetch(`https://127.0.0.1:${running.port}/v1/admin/status`, { tls: { rejectUnauthorized: false } });
+    expect(deniedAdmin.status).toBe(401);
+    const allowedAdmin = await fetch(`https://127.0.0.1:${running.port}/v1/admin/status`, {
+      tls: { rejectUnauthorized: false },
+      headers: { authorization: "Bearer admin-test-token" },
+    });
+    expect(allowedAdmin.status).toBe(200);
+    expect((await allowedAdmin.json()) as { service: string }).toMatchObject({ service: "cocodex-server" });
     const challengeResponse = await fetch(`https://127.0.0.1:${running.port}/v1/enrollment/challenge`, {
       method: "POST",
       tls: { rejectUnauthorized: false },

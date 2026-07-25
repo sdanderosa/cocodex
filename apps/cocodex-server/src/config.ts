@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import type { ServerPaths } from "./paths";
@@ -9,9 +10,10 @@ export interface ServerConfig {
   publicHost: string;
   tlsCertificate: string;
   tlsPrivateKey: string;
+  adminTokenHash?: string;
 }
 
-export function createDefaultConfig(paths: ServerPaths, publicHost: string, port: number): ServerConfig {
+export function createDefaultConfig(paths: ServerPaths, publicHost: string, port: number, adminToken = randomBytes(32).toString("base64url")): ServerConfig {
   if (!publicHost.trim()) throw new Error("Public host is required");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535");
   return {
@@ -21,7 +23,19 @@ export function createDefaultConfig(paths: ServerPaths, publicHost: string, port
     publicHost: publicHost.trim(),
     tlsCertificate: paths.tlsCertificate,
     tlsPrivateKey: paths.tlsPrivateKey,
+    adminTokenHash: hashAdminToken(adminToken),
   };
+}
+
+export function hashAdminToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+export function verifyAdminToken(token: string, expectedHash: string | undefined): boolean {
+  if (!expectedHash || !/^[0-9a-f]{64}$/i.test(expectedHash)) return false;
+  const actual = Buffer.from(hashAdminToken(token), "hex");
+  const expected = Buffer.from(expectedHash, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 export function saveConfig(paths: ServerPaths, config: ServerConfig): void {

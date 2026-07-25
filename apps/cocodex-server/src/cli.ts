@@ -4,7 +4,7 @@ import { createEncryptedServerTransfer, createServerBackup, restoreEncryptedServ
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
-import { createServerIdentity, loadServerIdentity } from "./identity";
+import { createServerIdentity, loadServerIdentity, randomToken } from "./identity";
 import { createInvitation } from "./invitations";
 import { classifyDirectHosting, tryAutomaticPortMapping } from "./port-mapping";
 import { registerAgent } from "./agent-routing";
@@ -86,7 +86,8 @@ async function run(): Promise<void> {
     case "init": {
       const publicHost = requiredOption("--public-host");
       const port = Number(option("--port") ?? "19463");
-      saveConfig(paths, createDefaultConfig(paths, publicHost, port));
+      const adminToken = randomToken();
+      saveConfig(paths, createDefaultConfig(paths, publicHost, port, adminToken));
       createServerIdentity(paths);
       await createTlsIdentity(paths, publicHost);
       openDatabase(paths.database).close();
@@ -99,6 +100,7 @@ async function run(): Promise<void> {
         publicHost,
         port,
         serverFingerprint: tlsCertificateFingerprint(paths.tlsCertificate),
+        adminToken,
         firewall,
         portMapping,
         networkDiagnostic,
