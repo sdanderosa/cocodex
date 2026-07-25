@@ -111,6 +111,31 @@ replay rules, then routes a request to the host client. The host client
 revalidates and executes locally. Private-message rows contain ciphertext and
 routing metadata only; plaintext is not logged or passed into agent context.
 
+The `agent.list` route is the authoritative named-agent roster. It is scoped to
+the requesting project member and derives each agent's host display name,
+approved-device state, socket readiness, active/queued task counts, and latest
+terminal status from server state. A disconnected or revoked host is reported
+as `offline`; the server never trusts a client-provided status or exposes task
+prompts/results in the roster. The route is advisory discovery only, so every
+`agent.request` still passes the normal signed authorization and local-policy
+checks. See ADR 0018.
+
+`agent.task.list` is the companion activity projection. It returns only
+bounded task identity, dependency, status, timestamp, event-count, and
+encryption metadata for the requesting project member. It joins both legacy
+and encrypted result-event tables without opening ciphertext or prompts, so a
+GUI activity card cannot become a server-side agent context leak.
+
+Removing a project member is an atomic security boundary: the server deletes
+their key envelopes, terminalizes queued/running work targeted at that host,
+marks the current key epoch as `rotation_required`, and notifies remaining
+members. While that gate is set, encrypted chat, prompt, context, artifact,
+and agent writes must use the current epoch and every legacy plaintext route is
+rejected. A complete owner-signed rotation containing every remaining approved
+member clears the gate. Historical pre-key plaintext rows are retained for
+audit but are not served through keyed routes; a full historical migration is
+still a release-gate item.
+
 Presence is a separate ephemeral membership-scoped channel. Both legacy and
 encrypted chat subscriptions register the socket for presence snapshots and
 updates, so project-key selection does not disable awareness. The server bounds

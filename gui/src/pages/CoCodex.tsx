@@ -48,6 +48,40 @@ interface AgentApproval {
   prompt: string;
 }
 
+type AgentStatus = "offline" | "available" | "queued" | "working" | "completed" | "failed";
+
+interface AgentView {
+  id: string;
+  projectId: string;
+  name: string;
+  hostDeviceId: string;
+  hostDisplayName: string;
+  enabled: boolean;
+  status: AgentStatus;
+  activeTasks: number;
+  queuedTasks: number;
+  lastTaskAt: string | null;
+}
+
+type AgentTaskStatus = "queued" | "running" | "completed" | "failed";
+
+interface AgentTaskView {
+  id: string;
+  projectId: string;
+  agentId: string;
+  agentName: string;
+  requesterDeviceId: string;
+  targetDeviceId: string;
+  status: AgentTaskStatus;
+  dependencies: string[];
+  acceptedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastActivityAt: string;
+  eventCount: number;
+  encrypted: boolean;
+}
+
 interface SharedProjectContext {
   projectId: string;
   finalGoal: string;
@@ -100,7 +134,7 @@ interface LocalPresence {
 
 interface SessionValue {
   source?: string;
-  state?: ConnectionState;
+  state?: ConnectionState | "key-available" | "rotation-required";
   approvalState?: "pending" | "resolved";
   taskId?: string;
   task?: AgentApproval;
@@ -122,7 +156,14 @@ interface SessionValue {
     context?: SharedProjectContext;
     reports?: UsageReportView[];
     report?: UsageReportView;
+    agents?: AgentView[];
+    tasks?: AgentTaskView[];
   };
+}
+
+function isConnectionState(value: unknown): value is ConnectionState {
+  return value === "not-configured" || value === "stopped" || value === "connecting"
+    || value === "connected" || value === "retrying";
 }
 
 interface BridgeEvent {
@@ -163,7 +204,25 @@ const STATE_TKEY: Record<ConnectionState, TKey> = {
   retrying: "cocodex.state.reconnecting",
 };
 
+const AGENT_STATUS_TKEY: Record<AgentStatus, TKey> = {
+  offline: "cocodex.agents.offline",
+  available: "cocodex.agents.available",
+  queued: "cocodex.agents.queued",
+  working: "cocodex.agents.working",
+  completed: "cocodex.agents.completed",
+  failed: "cocodex.agents.failed",
+};
+
+const TASK_STATUS_TKEY: Record<AgentTaskStatus, TKey> = {
+  queued: "cocodex.tasks.queued",
+  running: "cocodex.tasks.working",
+  completed: "cocodex.tasks.completed",
+  failed: "cocodex.tasks.failed",
+};
+
 function stateLabel(t: TFn, state: ConnectionState): string { return t(STATE_TKEY[state]); }
+function agentStatusLabel(t: TFn, status: AgentStatus): string { return t(AGENT_STATUS_TKEY[status]); }
+function taskStatusLabel(t: TFn, status: AgentTaskStatus): string { return t(TASK_STATUS_TKEY[status]); }
 
 function updateToBase64(update: Uint8Array): string {
   let binary = "";
@@ -200,6 +259,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [sharedContext, setSharedContext] = useState<SharedProjectContext>();
   const [finalGoalDraft, setFinalGoalDraft] = useState("");
   const [usageReports, setUsageReports] = useState<UsageReportView[]>([]);
+  const [agents, setAgents] = useState<AgentView[]>([]);
+  const [tasks, setTasks] = useState<AgentTaskView[]>([]);
   const [agentId, setAgentId] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -262,8 +323,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       const value = event.value;
       const frame = value?.frame;
       const nextState = value?.state;
-      if (value?.source === "session" && nextState) {
+      if (value?.source === "session" && isConnectionState(nextState)) {
         setStatus(previous => previous ? { ...previous, state: nextState, running: nextState !== "stopped" } : previous);
+      }
+      if (value?.source === "project-encryption" && value.state === "rotation-required") {
+        setNotice(t("cocodex.encryption.rotationRequired"));
       }
       if (event.channel === "error" && value?.error) setNotice(String(value.error));
       if (value?.source === "agent-approval") {
@@ -291,6 +355,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       } else if ((frame?.type === "usage.changed" || frame?.type === "usage.accepted") && frame.report) {
         setUsageReports(previous => [...previous.filter(item => item.deviceId !== frame.report!.deviceId), frame.report!]
           .sort((a, b) => a.displayName.localeCompare(b.displayName)));
+      }
+      if (frame?.projectId === projectId && frame.type === "agent.list.result" && Array.isArray(frame.agents)) {
+        setAgents(frame.agents);
+      }
+      if (frame?.projectId === projectId && frame.type === "agent.task.list.result" && Array.isArray(frame.tasks)) {
+        setTasks(frame.tasks);
       }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
@@ -373,12 +443,27 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setSharedContext(undefined);
     setFinalGoalDraft("");
     setUsageReports([]);
+    setAgents([]);
+    setTasks([]);
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
     void command({ type: "context.get", projectId });
     void command({ type: "usage.get", projectId });
+    void command({ type: "agent.list", projectId });
+    void command({ type: "agent.task.list", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
+
+  useEffect(() => {
+    if (status?.state !== "connected" || !projectId) return;
+    const refresh = () => {
+      void command({ type: "agent.list", projectId });
+      void command({ type: "agent.task.list", projectId });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 2_000);
+    return () => window.clearInterval(interval);
+  }, [status?.state, projectId, command]);
 
   useEffect(() => {
     presenceConnectionState.current = status?.state;
@@ -544,6 +629,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   }, [projectId, sendPresenceState, status?.state]);
 
   const visiblePresence = status?.state === "connected" ? presence : [];
+  const visibleAgents = status?.state === "connected" ? agents : [];
+  const visibleTasks = status?.state === "connected" ? tasks : [];
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
 
@@ -766,6 +853,51 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                   );
                 })}
                 {!usageReports.length && <p className="muted">{t("cocodex.usage.noMembers")}</p>}
+              </div>
+            </section>
+            <section className="cocodex-agents">
+              <div className="cocodex-section-head">
+                <div><strong>{t("cocodex.agents.title")}</strong><small>{t("cocodex.agents.subtitle")}</small></div>
+                <IconBot />
+              </div>
+              <div className="cocodex-agent-list">
+                {visibleAgents.map(agent => (
+                  <article className="cocodex-agent-card" key={agent.id}>
+                    <div className="cocodex-agent-card-head">
+                      <span className={`cocodex-agent-status status-${agent.status}`} aria-label={agentStatusLabel(t, agent.status)} />
+                      <strong>{agent.name}</strong>
+                      <small>{agentStatusLabel(t, agent.status)}</small>
+                    </div>
+                    <small>{t("cocodex.agents.host", { host: agent.hostDisplayName })}</small>
+                    <small>{t("cocodex.agents.tasks", { active: agent.activeTasks, queued: agent.queuedTasks })}</small>
+                  </article>
+                ))}
+                {!visibleAgents.length && <p className="muted">{t("cocodex.agents.empty")}</p>}
+              </div>
+            </section>
+            <section className="cocodex-agents cocodex-task-activity">
+              <div className="cocodex-section-head">
+                <div><strong>{t("cocodex.tasks.title")}</strong><small>{t("cocodex.tasks.subtitle")}</small></div>
+                <IconRefresh />
+              </div>
+              <div className="cocodex-agent-list">
+                {visibleTasks.map(task => {
+                  const visualStatus = task.status === "running" ? "working" : task.status;
+                  return (
+                    <article className="cocodex-agent-card cocodex-task-card" key={task.id}>
+                      <div className="cocodex-agent-card-head">
+                        <span className={`cocodex-agent-status status-${visualStatus}`} aria-label={taskStatusLabel(t, task.status)} />
+                        <strong>{task.agentName}</strong>
+                        <small>{taskStatusLabel(t, task.status)}</small>
+                      </div>
+                      <code>{task.id.slice(0, 8)}</code>
+                      <small>{t("cocodex.tasks.events", { count: task.eventCount })}
+                        {task.encrypted ? ` · ${t("cocodex.tasks.encrypted")}` : ""}</small>
+                      {task.dependencies.length > 0 && <small>{t("cocodex.tasks.dependencies", { count: task.dependencies.length })}</small>}
+                    </article>
+                  );
+                })}
+                {!visibleTasks.length && <p className="muted">{t("cocodex.tasks.empty")}</p>}
               </div>
             </section>
             <div className="cocodex-section-head">

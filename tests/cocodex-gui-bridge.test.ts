@@ -62,11 +62,21 @@ describe("CoCodex GUI bridge", () => {
       type: "usage.get",
       projectId: crypto.randomUUID(),
     }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "agent.list",
+      projectId: crypto.randomUUID(),
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "agent.task.list",
+      projectId: crypto.randomUUID(),
+    }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.approval", taskId: "task-1", approved: true }).accepted).toBe(true);
     bridge.stop();
     await Bun.sleep(5);
 
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
     expect(received.some((value: any) => value.type === "context.get")).toBe(true);
     expect(received.some((value: any) => value.type === "context.update" && value.finalGoal === "Keep the shared goal authoritative")).toBe(true);
     expect(received.some((value: any) => value.type === "usage.get")).toBe(true);

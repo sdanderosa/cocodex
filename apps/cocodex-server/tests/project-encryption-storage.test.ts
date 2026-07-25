@@ -285,6 +285,7 @@ describe("opaque project-encryption server storage", () => {
       const member = approvedDevice(db, "Kai");
       const project = createProject(db, "Encrypted context", owner.id);
       addProjectMember(db, project.id, owner.id, member.id);
+      expect(shareProjectKeyEnvelope(db, project.id, owner.id, keyEnvelope(project.id, owner, owner.id)).created).toBeTrue();
       const first = contextEnvelope(project.id, member, randomUUID());
       const firstWrite = updateEncryptedProjectContext(db, project.id, member.id, 0, first);
       expect(firstWrite).toMatchObject({ revision: 1, created: true, envelope: first });

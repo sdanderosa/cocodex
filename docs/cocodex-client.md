@@ -90,6 +90,28 @@ its local agent policy before invoking the local Codex runtime. Agent results
 are streamed back into the authoritative project chat. Private messages are
 decrypted locally and are never automatically added to an agent prompt.
 
+The same session can request the project-scoped `agent.list` roster. The
+server supplies the approved host name, readiness-derived status, and task
+counts; the GUI refreshes it while connected and clears it from view when the
+connection is lost. These cards are advisory discovery, not an execution
+grant: a task still requires the full signed server route and local host policy
+checks. Persistent activity history, dependency-graph editing, co-agents, and
+full computer/browser helpers remain later requirements (ADR 0018).
+
+The client also subscribes to `agent.task.list`. Its activity cards show the
+server-derived task status, dependency count, event count, and whether the
+task uses an encrypted project envelope. Prompt and result bodies continue to
+arrive only through their normal local-decryption path; activity metadata is
+not an authorization grant.
+
+When the server removes a member, the client marks the local project key ring
+as rotation-required and surfaces the notice without silently falling back to
+plaintext. The owner can still load the current key for an explicit rotation;
+only a strictly newer server-accepted epoch clears the local gate. If a key is
+introduced after legacy context exists, the client durably re-encrypts the last
+known context revision before switching its reconnect subscription to the
+encrypted projection.
+
 ## Encrypted project context
 
 New client installations also create a dedicated X25519 project-wrap keypair;

@@ -313,4 +313,9 @@ CREATE INDEX project_chat_events_task ON project_chat_events(task_id, sequence);
 INSERT OR IGNORE INTO server_state (key, value) VALUES ('authority_status', 'active');
 INSERT OR IGNORE INTO server_state (key, value) VALUES ('identity_fingerprint', '');`,
   },
+  {
+    version: 18,
+    sql: `
+ALTER TABLE project_key_epochs ADD COLUMN rotation_required INTEGER NOT NULL DEFAULT 0 CHECK (rotation_required IN (0, 1));`,
+  },
 ];

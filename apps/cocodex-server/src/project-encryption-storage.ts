@@ -29,6 +29,7 @@ interface ProjectKeyEpochRow {
   currentEpoch: number;
   lastRotationId: string | null;
   updatedAt: string;
+  rotationRequired: boolean;
 }
 
 export interface ProjectKeyEnvelopeWriteResult {
@@ -52,6 +53,7 @@ export interface ProjectKeyEpochRecord {
   currentEpoch: number;
   lastRotationId: string | null;
   updatedAt: string | null;
+  rotationRequired: boolean;
 }
 
 export interface ProjectKeyRotationResult extends ProjectKeyEpochRecord {
@@ -134,18 +136,19 @@ function readProjectKeyEpoch(db: Database, projectId: string): ProjectKeyEpochRo
   const row = db.query(`
     SELECT current_epoch AS currentEpoch,
       last_rotation_id AS lastRotationId,
-      updated_at AS updatedAt
+      updated_at AS updatedAt,
+      rotation_required AS rotationRequired
     FROM project_key_epochs
     WHERE project_id = ?
-  `).get(projectId) as ProjectKeyEpochRow | null;
-  if (row) return row;
+  `).get(projectId) as (Omit<ProjectKeyEpochRow, "rotationRequired"> & { rotationRequired: boolean | number }) | null;
+  if (row) return { ...row, rotationRequired: row.rotationRequired === true || row.rotationRequired === 1 };
   const legacy = db.query(`
     SELECT MAX(key_epoch) AS currentEpoch, MAX(updated_at) AS updatedAt
     FROM project_key_envelopes
     WHERE project_id = ?
   `).get(projectId) as { currentEpoch: number | null; updatedAt: string | null };
   if (!legacy.currentEpoch) return null;
-  return { currentEpoch: legacy.currentEpoch, lastRotationId: null, updatedAt: legacy.updatedAt ?? "" };
+  return { currentEpoch: legacy.currentEpoch, lastRotationId: null, updatedAt: legacy.updatedAt ?? "", rotationRequired: false };
 }
 
 function ensureProjectKeyEpochRow(
@@ -162,10 +165,36 @@ function ensureProjectKeyEpochRow(
   db.query(`
     INSERT INTO project_key_epochs (
       project_id, current_epoch, last_rotation_id, updated_by_device_id,
-      created_at, updated_at
-    ) VALUES (?, 1, NULL, ?, ?, ?)
+      created_at, updated_at, rotation_required
+    ) VALUES (?, 1, NULL, ?, ?, ?, 0)
   `).run(projectId, senderDeviceId, timestamp, timestamp);
-  return { currentEpoch: 1, lastRotationId: null, updatedAt: timestamp };
+  return { currentEpoch: 1, lastRotationId: null, updatedAt: timestamp, rotationRequired: false };
+}
+
+/** Return the active epoch and fail closed while membership-key rotation is pending. */
+export function currentProjectKeyEpochForWrite(db: Database, projectId: string): number {
+  const state = readProjectKeyEpoch(db, projectId);
+  if (!state?.currentEpoch) throw new Error("Project encryption key has not been initialized");
+  if (state.rotationRequired) {
+    throw new Error("Project key rotation is required before encrypted writes are accepted");
+  }
+  return state.currentEpoch;
+}
+
+/** Reject legacy plaintext project routes once a project has entered encrypted mode. */
+export function assertLegacyProjectWriteAllowed(db: Database, projectId: string): void {
+  const epoch = db.query(`
+    SELECT current_epoch AS currentEpoch, rotation_required AS rotationRequired
+    FROM project_key_epochs WHERE project_id = ?
+  `).get(projectId) as { currentEpoch: number; rotationRequired: boolean | number } | null;
+  const legacy = db.query(`
+    SELECT 1 AS initialized FROM project_key_envelopes WHERE project_id = ? LIMIT 1
+  `).get(projectId) as { initialized: number } | null;
+  if (!epoch && !legacy) return;
+  if (epoch?.rotationRequired === true || epoch?.rotationRequired === 1) {
+    throw new Error("Project key rotation is required before encrypted writes are accepted");
+  }
+  throw new Error("Project requires encrypted content frames");
 }
 
 export function getProjectKeyEpoch(
@@ -180,6 +209,7 @@ export function getProjectKeyEpoch(
     currentEpoch: state?.currentEpoch ?? 0,
     lastRotationId: state?.lastRotationId ?? null,
     updatedAt: state?.updatedAt || null,
+    rotationRequired: state?.rotationRequired ?? false,
   };
 }
 
@@ -228,6 +258,9 @@ export function shareProjectKeyEnvelope(
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
     const epoch = ensureProjectKeyEpochRow(db, projectId, senderDeviceId, envelope.keyEpoch, now);
+    if (epoch.rotationRequired) {
+      throw new Error("Project key rotation is required before sharing project keys");
+    }
     if (envelope.keyEpoch < epoch.currentEpoch) {
       throw new Error(`Project key envelope epoch ${envelope.keyEpoch} is stale; current epoch is ${epoch.currentEpoch}`);
     }
@@ -329,6 +362,7 @@ export function rotateProjectKeyEpoch(
         currentEpoch,
         lastRotationId: state.lastRotationId,
         updatedAt: state.updatedAt || null,
+        rotationRequired: state.rotationRequired,
         keyEpoch: currentEpoch,
         envelopes: prior,
         created: false,
@@ -363,15 +397,15 @@ export function rotateProjectKeyEpoch(
     if (state) {
       db.query(`
         UPDATE project_key_epochs
-        SET current_epoch = ?, last_rotation_id = ?, updated_by_device_id = ?, updated_at = ?
+        SET current_epoch = ?, last_rotation_id = ?, updated_by_device_id = ?, updated_at = ?, rotation_required = 0
         WHERE project_id = ?
       `).run(keyEpoch, rotationId, ownerDeviceId, timestamp, projectId);
     } else {
       db.query(`
         INSERT INTO project_key_epochs (
           project_id, current_epoch, last_rotation_id, updated_by_device_id,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          created_at, updated_at, rotation_required
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
       `).run(projectId, keyEpoch, rotationId, ownerDeviceId, timestamp, timestamp);
     }
     return {
@@ -379,6 +413,7 @@ export function rotateProjectKeyEpoch(
       currentEpoch: keyEpoch,
       lastRotationId: rotationId,
       updatedAt: timestamp,
+      rotationRequired: false,
       keyEpoch,
       envelopes,
       created: true,
@@ -392,12 +427,32 @@ export function removeProjectMemberAndInvalidateKeys(
   ownerDeviceId: string,
   memberDeviceId: string,
   now = new Date(),
-): void {
-  removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now);
-  db.query(`
-    DELETE FROM project_key_envelopes
-    WHERE project_id = ? AND (recipient_device_id = ? OR sender_device_id = ?)
-  `).run(projectId, memberDeviceId, memberDeviceId);
+): string[] {
+  let cancelledTaskIds: string[] = [];
+  removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now, () => {
+    cancelledTaskIds = (db.query(`
+      SELECT id FROM agent_tasks
+      WHERE project_id = ? AND target_device_id = ? AND status IN ('queued', 'running')
+      ORDER BY accepted_at ASC, id ASC
+    `).all(projectId, memberDeviceId) as Array<{ id: string }>).map(row => row.id);
+    if (cancelledTaskIds.length > 0) {
+      db.query(`
+        UPDATE agent_tasks
+        SET status = 'failed', completed_at = ?
+        WHERE project_id = ? AND target_device_id = ? AND status IN ('queued', 'running')
+      `).run(now.toISOString(), projectId, memberDeviceId);
+    }
+    db.query(`
+      DELETE FROM project_key_envelopes
+      WHERE project_id = ? AND (recipient_device_id = ? OR sender_device_id = ?)
+    `).run(projectId, memberDeviceId, memberDeviceId);
+    db.query(`
+      UPDATE project_key_epochs
+      SET rotation_required = 1, updated_at = ?
+      WHERE project_id = ?
+    `).run(now.toISOString(), projectId);
+  });
+  return cancelledTaskIds;
 }
 
 export function listProjectKeyEnvelopes(
@@ -460,6 +515,10 @@ export function updateEncryptedProjectContext(
   if (envelope.projectId !== projectId) throw new Error("Encrypted project context belongs to another project");
   if (envelope.recordType !== "shared-context") throw new Error("Project context envelope must use the shared-context record type");
   requireProjectMembership(db, projectId, senderDeviceId);
+  const currentEpoch = currentProjectKeyEpochForWrite(db, projectId);
+  if (envelope.keyEpoch !== currentEpoch) {
+    throw new Error(`Encrypted project context must use the current project key epoch ${currentEpoch}`);
+  }
   if (envelope.senderDeviceId !== senderDeviceId) throw new Error("Project context sender device does not match the authenticated device");
   verifyEnvelopeSender(
     db,
@@ -519,6 +578,9 @@ export function updateEncryptedProjectContext(
       updatedAt,
       updatedAt,
     );
+    // Once an encrypted context revision is accepted, remove any legacy
+    // plaintext projection so migration cannot leave a second readable copy.
+    db.query("DELETE FROM shared_project_context WHERE project_id = ?").run(projectId);
     return { projectId, envelope, revision, updatedAt, created: true };
   }).immediate();
 }

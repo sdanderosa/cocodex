@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
-import { createAgentTask, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
+import { createAgentTask, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
 import { appendEncryptedAgentResult, cancelEncryptedAgentTask, createEncryptedAgentTask, pendingEncryptedAgentTasks } from "../src/encrypted-agent-routing";
 import { openDatabase } from "../src/database";
 import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
@@ -54,6 +54,49 @@ function contentEnvelope(projectId: string, sender: ReturnType<typeof device>, r
 }
 
 describe("authoritative agent dependencies", () => {
+  test("lists only project agents with server-derived host and task status", () => {
+    const db = openDatabase(":memory:");
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-list-"));
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = device(db, "Stephen", now);
+      const kai = device(db, "Kai", now);
+      const identity = createServerIdentity(serverPaths(root));
+      const project = createProject(db, "Roster", stephen.id, now);
+      addProjectMember(db, project.id, stephen.id, kai.id, now);
+      registerAgent(db, { id: "kai-agent", projectId: project.id, hostDeviceId: kai.id, name: "Kai" }, now);
+
+      expect(() => listAgents(db, project.id, crypto.randomUUID())).toThrow("approved project member");
+
+      expect(listAgents(db, project.id, stephen.id, () => false)).toEqual([expect.objectContaining({
+        id: "kai-agent", hostDisplayName: "Kai", status: "offline", activeTasks: 0, queuedTasks: 0,
+      })]);
+      expect(listAgents(db, project.id, stephen.id, () => true)).toEqual([expect.objectContaining({
+        id: "kai-agent", status: "available", lastTaskAt: null,
+      })]);
+
+      const taskId = "8661361f-ce2f-4bec-88fd-c4fb32f49704";
+      const issuedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+      const nonce = "N".repeat(32);
+      const prompt = "Find the bug";
+      const signature = sign(null, agentRequestSigningTranscript({
+        taskId, projectId: project.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies: [],
+      }), stephen.privateKey).toString("base64url");
+      createAgentTask(db, identity, {
+        id: taskId, projectId: project.id, requesterDeviceId: stephen.id, agentId: "kai-agent", prompt,
+        nonce, issuedAt, expiresAt, dependencies: [], requesterSignature: signature,
+      }, now);
+      expect(listAgents(db, project.id, stephen.id, () => true)).toEqual([expect.objectContaining({
+        status: "queued", queuedTasks: 1, lastTaskAt: now.toISOString(),
+      })]);
+      appendAgentResult(db, kai.id, taskId, "690d9307-4b83-4ff6-9da8-d816219bea53", "Done", true, "completed", now);
+      expect(listAgents(db, project.id, stephen.id, () => true)).toEqual([expect.objectContaining({
+        status: "completed", activeTasks: 0, queuedTasks: 0,
+      })]);
+    } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("holds a dependent task until its prerequisite completes", () => {
     const db = openDatabase(":memory:");
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-routing-"));
@@ -72,6 +115,12 @@ describe("authoritative agent dependencies", () => {
       };
       const first = make("8661361f-ce2f-4bec-88fd-c4fb32f49704", "Find the bug");
       const second = make("4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e", "Write tests", [first.id]);
+      expect(pendingAgentTasks(db, kai.id)).toEqual([first]);
+      db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
+      expect(pendingAgentTasks(db, kai.id)).toEqual([]);
+      db.query("UPDATE agents SET enabled = 1, host_device_id = ? WHERE id = ?").run(stephen.id, "kai-agent");
+      expect(pendingAgentTasks(db, kai.id)).toEqual([]);
+      db.query("UPDATE agents SET host_device_id = ? WHERE id = ?").run(kai.id, "kai-agent");
       expect(pendingAgentTasks(db, kai.id)).toEqual([first]);
       appendAgentResult(db, kai.id, first.id, "690d9307-4b83-4ff6-9da8-d816219bea53", "Finding", true, "completed", now);
       expect(pendingAgentTasks(db, kai.id).map(task => task.id)).toEqual([second.id]);
@@ -109,6 +158,12 @@ describe("authoritative agent dependencies", () => {
       }, now);
       expect(created.created).toBeTrue();
       expect(created.task.prompt).toBe("[encrypted]");
+      expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([created.task]);
+      db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
+      expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([]);
+      db.query("UPDATE agents SET enabled = 1, host_device_id = ? WHERE id = ?").run(stephen.id, "kai-agent");
+      expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([]);
+      db.query("UPDATE agents SET host_device_id = ? WHERE id = ?").run(kai.id, "kai-agent");
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([created.task]);
       expect(cancelEncryptedAgentTask(db, stephen.id, taskId).task.id).toBe(taskId);
       const resultId = "4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e";

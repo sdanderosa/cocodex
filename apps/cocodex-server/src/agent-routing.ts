@@ -4,6 +4,8 @@ import {
   agentDispatchSigningTranscript,
   agentRequestSigningTranscript,
   type AgentDefinition,
+  type AgentTaskView,
+  type AgentView,
   type AgentTask,
   type ChatEvent,
 } from "@cocodex/protocol";
@@ -35,6 +37,143 @@ export function registerAgent(db: Database, input: RegisterAgentInput, now = new
     VALUES (?, ?, ?, ?, 1, ?)`)
     .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
   return agent;
+}
+
+export function listAgents(
+  db: Database,
+  projectId: string,
+  requesterDeviceId: string,
+  isHostReady: (hostDeviceId: string, agentId: string) => boolean = () => true,
+): AgentView[] {
+  requireProjectMembership(db, projectId, requesterDeviceId);
+  const rows = db.query(`
+    SELECT a.id, a.project_id AS projectId, a.name, a.host_device_id AS hostDeviceId,
+      a.enabled, d.display_name AS hostDisplayName, d.status AS hostStatus,
+      pm.device_id AS hostMemberDeviceId
+    FROM agents a
+    JOIN devices d ON d.id = a.host_device_id
+    LEFT JOIN project_members pm ON pm.project_id = a.project_id AND pm.device_id = a.host_device_id
+    WHERE a.project_id = ?
+    ORDER BY a.created_at ASC, a.id ASC
+  `).all(projectId) as Array<{
+    id: string;
+    projectId: string;
+    name: string;
+    hostDeviceId: string;
+    enabled: number;
+    hostDisplayName: string;
+    hostStatus: string;
+    hostMemberDeviceId: string | null;
+  }>;
+  return rows.map(row => {
+    const counts = db.query(`
+      SELECT
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS activeTasks,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queuedTasks,
+        MAX(COALESCE(completed_at, accepted_at)) AS lastTaskAt
+      FROM agent_tasks WHERE agent_id = ?
+    `).get(row.id) as { activeTasks: number | null; queuedTasks: number | null; lastTaskAt: string | null };
+    const activeTasks = Math.max(0, Number(counts.activeTasks ?? 0));
+    const queuedTasks = Math.max(0, Number(counts.queuedTasks ?? 0));
+    const hostReady = row.hostMemberDeviceId !== null
+      && row.hostStatus === "approved" && isHostReady(row.hostDeviceId, row.id);
+    const latest = counts.lastTaskAt
+      ? db.query(`SELECT status FROM agent_tasks WHERE agent_id = ?
+          ORDER BY COALESCE(completed_at, accepted_at) DESC, id DESC LIMIT 1`).get(row.id) as { status: string } | null
+      : null;
+    const status: AgentView["status"] = row.enabled !== 1 || !hostReady
+      ? "offline"
+      : activeTasks > 0
+        ? "working"
+        : queuedTasks > 0
+          ? "queued"
+          : latest?.status === "completed"
+            ? "completed"
+            : latest?.status === "failed"
+              ? "failed"
+              : "available";
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      name: row.name,
+      hostDeviceId: row.hostDeviceId,
+      hostDisplayName: row.hostDisplayName,
+      enabled: row.enabled === 1,
+      status,
+      activeTasks,
+      queuedTasks,
+      lastTaskAt: counts.lastTaskAt ?? null,
+    } satisfies AgentView;
+  });
+}
+
+export function listAgentTasks(
+  db: Database,
+  projectId: string,
+  requesterDeviceId: string,
+  limit = 128,
+): AgentTaskView[] {
+  requireProjectMembership(db, projectId, requesterDeviceId);
+  const boundedLimit = Math.max(1, Math.min(256, Math.trunc(limit)));
+  const rows = db.query(`
+    SELECT t.id, t.project_id AS projectId, t.agent_id AS agentId,
+      a.name AS agentName, t.requester_device_id AS requesterDeviceId,
+      t.target_device_id AS targetDeviceId, t.status,
+      t.dependencies_json AS dependenciesJson, t.accepted_at AS acceptedAt,
+      t.completed_at AS completedAt,
+      CASE WHEN t.prompt_envelope_json IS NOT NULL THEN 1 ELSE 0 END AS encrypted,
+      COALESCE((SELECT MIN(c.accepted_at)
+        FROM agent_task_events e JOIN chat_events c ON c.sequence = e.chat_sequence
+        WHERE e.task_id = t.id AND e.status = 'running'),
+        (SELECT MIN(c.accepted_at)
+        FROM project_chat_events c
+        WHERE c.task_id = t.id AND c.status = 'running')) AS startedAt,
+      (SELECT COUNT(*) FROM agent_task_events e WHERE e.task_id = t.id)
+        + (SELECT COUNT(*) FROM project_chat_events c WHERE c.task_id = t.id) AS eventCount,
+      COALESCE(
+        (SELECT MAX(c.accepted_at)
+          FROM agent_task_events e JOIN chat_events c ON c.sequence = e.chat_sequence
+          WHERE e.task_id = t.id),
+        (SELECT MAX(c.accepted_at) FROM project_chat_events c WHERE c.task_id = t.id),
+        t.accepted_at
+      ) AS lastActivityAt
+    FROM agent_tasks t
+    JOIN agents a ON a.id = t.agent_id
+    WHERE t.project_id = ?
+    ORDER BY lastActivityAt DESC, t.id ASC
+    LIMIT ?
+  `).all(projectId, boundedLimit) as Array<{
+    id: string;
+    projectId: string;
+    agentId: string;
+    agentName: string;
+    requesterDeviceId: string;
+    targetDeviceId: string;
+    status: AgentTaskView["status"];
+    dependenciesJson: string;
+    acceptedAt: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    encrypted: number;
+    eventCount: number;
+    lastActivityAt: string;
+  }>;
+  return rows.map(row => ({
+    id: row.id,
+    projectId: row.projectId,
+    agentId: row.agentId,
+    agentName: row.agentName,
+    requesterDeviceId: row.requesterDeviceId,
+    targetDeviceId: row.targetDeviceId,
+    status: row.status,
+    dependencies: parseDependencies(row.dependenciesJson),
+    acceptedAt: row.acceptedAt,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
+    lastActivityAt: row.lastActivityAt,
+    eventCount: Math.max(0, Number(row.eventCount ?? 0)),
+    encrypted: row.encrypted === 1,
+  } satisfies AgentTaskView));
 }
 
 export interface CreateAgentTaskInput {
@@ -218,16 +357,24 @@ export function cancelAgentTask(
   );
 }
 
-export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date()): AgentTask[] {
+export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date(), agentId?: string): AgentTask[] {
+  const agentFilter = agentId ? " AND t.agent_id = ?" : "";
   const rows = db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
     t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
-    FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
+    FROM agent_tasks t
+    JOIN devices d ON d.id = t.requester_device_id
+    JOIN agents a ON a.id = t.agent_id
+      AND a.project_id = t.project_id
+      AND a.host_device_id = t.target_device_id
+      AND a.enabled = 1
     WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NULL
+      AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.target_device_id)
       AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
-    ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
+      ${agentFilter}
+    ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString(), ...(agentId ? [agentId] : [])) as TaskRow[];
   return rows.map(row => {
     const { dependenciesJson, ...task } = row;
     return { ...task, dependencies: parseDependencies(dependenciesJson) };

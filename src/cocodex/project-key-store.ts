@@ -206,10 +206,11 @@ export function storeProjectKey(path: string, projectId: string, keyEpoch: numbe
   }
   const projects = { ...store.projects };
   projects[projectId] = { ...(projects[projectId] ?? {}), [String(keyEpoch)]: key.toString("base64url") };
+  const isNewerEpoch = state.currentEpoch === null || keyEpoch > state.currentEpoch;
   const nextState: StoredProjectKeyState = {
     ...state,
     currentEpoch: Math.max(state.currentEpoch ?? keyEpoch, keyEpoch),
-    rotationRequired: false,
+    rotationRequired: isNewerEpoch ? false : state.rotationRequired,
   };
   saveProjectKeyStore(path, writeProjectKeyState({ ...store, projects }, projectId, nextState));
 }
@@ -330,6 +331,16 @@ export function loadProjectKeyForEncryption(
   const state = loadProjectKeyState(path, projectId);
   if (!state || state.revoked || state.rotationRequired || state.currentEpoch === null) return undefined;
   if (keyEpoch !== undefined && keyEpoch !== state.currentEpoch) return undefined;
+  return loadProjectKey(path, projectId, state.currentEpoch);
+}
+
+/** Load the current key for an owner preparing a server-approved rotation. */
+export function loadProjectKeyForRotation(
+  path: string,
+  projectId: string,
+): { keyEpoch: number; projectKey: Buffer } | undefined {
+  const state = loadProjectKeyState(path, projectId);
+  if (!state || state.revoked || state.currentEpoch === null) return undefined;
   return loadProjectKey(path, projectId, state.currentEpoch);
 }
 

@@ -19,6 +19,105 @@
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
 
+## Latest authoritative agent-roster and encryption-hardening slice
+
+This recovery checkpoint adds a bounded, server-derived named-agent roster and
+status card plus revocation-safe project-key rotation. The working-tree patch
+is based on durable `HEAD` `917f29b8` (`docs: record presence hardening
+evidence`) and remains uncommitted until the final validation checkpoint.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+24 pass
+0 fail
+192 expect() calls
+Ran 24 tests across 4 files.
+```
+
+The server's `agent.list.result` frame is strict and project-scoped. It joins
+approved host devices to registered agents, derives readiness from authenticated
+`agent.ready` sockets, and derives active/queued/terminal state from persisted
+tasks. The GUI refreshes the roster while connected and hides it after a
+disconnect. The slice does not claim persistent activity history, task editing,
+co-agent graphs, full computer/browser helpers, or privileged execution.
+
+The same focused run covers `agent.task.list.result`: task status,
+dependencies, timestamps, event counts, and encrypted-vs-legacy routing are
+server-derived, while prompts and ciphertext are absent from the frame.
+
+Files:
+
+- `packages/cocodex-protocol/src/collaboration.ts`
+- `packages/cocodex-protocol/src/index.ts`
+- `apps/cocodex-server/src/agent-routing.ts`
+- `apps/cocodex-server/src/encrypted-agent-routing.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/agent-bridge.ts`
+- `src/cocodex/session.ts`
+- `src/cocodex/gui-bridge.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `gui/src/styles-cocodex.css`
+- `gui/src/i18n/*.ts`
+- `apps/cocodex-server/tests/agent-routing.test.ts`
+- `apps/cocodex-server/tests/collaboration-server.test.ts`
+- `packages/cocodex-protocol/tests/protocol.test.ts`
+- `tests/cocodex-gui-bridge.test.ts`
+- `docs/adr/0018-cocodex-authoritative-agent-roster-and-status.md`
+
+The full CoCodex suite was rerun after the slice and encryption hardening:
+
+```text
+80 pass
+0 fail
+744 expect() calls
+Ran 80 tests across 27 files.  (exit 0)
+test:cocodex-dependencies             (exit 0: 7 pass, 0 fail, 46 expectations)
+typecheck:cocodex                 (exit 0)
+lint:gui                          (exit 0; one pre-existing warning)
+build:gui                         (exit 0; bundle-size warning)
+privacy:scan                      (exit 0: Privacy scan passed)
+```
+
+The existing OpenCodex suite was also run from the same worktree:
+
+```powershell
+.\node_modules\.bin\bun.exe run test
+```
+
+The command reached the existing CLI model/help/provider tests but did not
+complete within the 240-second command ceiling (`exit 124`, no failing
+assertion was emitted in the captured tail). The test-started child processes
+were cleaned up, and no CoCodex listener remained. This keeps the overall
+release gate incomplete; it is not reported as an existing-suite pass.
+
+The revocation hardening adds migration 18 (`rotation_required`), atomically
+invalidates a removed host's queued work and key envelopes, rejects legacy
+plaintext project routes after encrypted mode is active, and broadcasts a
+strict `project.key.rotation-required` notice to remaining members. The focused
+WSS test proves that the owner cannot write at the old epoch until a complete
+new-epoch rotation succeeds. Client reconnects migrate the legacy project
+context projection before switching to encrypted reads; competing migration
+retries are terminally discarded from the durable outbox.
+
+Historical plaintext chat, prompt, artifact, and task rows created before a
+project's first key initialization are not retroactively rewritten in this
+slice. They are no longer served through keyed legacy routes; complete
+historical content migration remains a release-gate item and is not claimed as
+finished here.
+
 ## Focused three-process path
 
 Test:

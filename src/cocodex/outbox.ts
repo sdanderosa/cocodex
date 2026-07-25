@@ -116,6 +116,17 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
         // but discard this non-retryable event so it cannot block later work.
         if ((frame.type === "context.update" || frame.type === "project.context.update") && message.includes("revision conflict")) {
           discardQueuedEvent(paths.outbox, frame.requestId);
+        } else if (frame.type === "project.context.update" && message.includes("replay conflict")) {
+          // Two clients may race the deterministic legacy-context migration;
+          // the first accepted envelope is authoritative and this retry is
+          // terminal rather than an outbox head-of-line blocker.
+          discardQueuedEvent(paths.outbox, frame.requestId);
+        } else if (message.includes("Project requires encrypted content frames")
+          || message.includes("Project key rotation is required")) {
+          // A legacy queued event cannot be safely replayed after a project
+          // enters encrypted mode or awaits key rotation. Drop only this
+          // terminal event so it cannot block later durable work.
+          discardQueuedEvent(paths.outbox, frame.requestId);
         }
         finish(new Error(message));
       }

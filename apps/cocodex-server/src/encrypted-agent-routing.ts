@@ -13,6 +13,7 @@ import {
 } from "@cocodex/protocol";
 import type { ServerIdentity } from "./identity";
 import { requireProjectMembership } from "./shared-state";
+import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_TASK_LIFETIME_MS = 5 * 60_000;
@@ -102,16 +103,6 @@ function parseEnvelope(value: string): ProjectContentEnvelope {
   catch { throw new Error("Stored encrypted agent envelope is invalid"); }
 }
 
-function currentProjectKeyEpoch(db: Database, projectId: string): number {
-  const current = db.query("SELECT current_epoch AS currentEpoch FROM project_key_epochs WHERE project_id = ?")
-    .get(projectId) as { currentEpoch: number } | null;
-  if (current) return current.currentEpoch;
-  const legacy = db.query("SELECT MAX(key_epoch) AS currentEpoch FROM project_key_envelopes WHERE project_id = ?")
-    .get(projectId) as { currentEpoch: number | null };
-  if (!legacy.currentEpoch) throw new Error("Project encryption key has not been initialized");
-  return legacy.currentEpoch;
-}
-
 function verifyEnvelopeSender(db: Database, senderDeviceId: string, envelope: ProjectContentEnvelope): string {
   const device = db.query(`
     SELECT public_key_pem AS publicKeyPem FROM devices
@@ -188,7 +179,7 @@ export function createEncryptedAgentTask(
   if (envelope.recordType !== "task") throw new Error("Encrypted agent prompt must use the task record type");
   if (envelope.recordId !== input.id) throw new Error("Encrypted agent prompt record ID must match the task ID");
   if (envelope.senderDeviceId !== input.requesterDeviceId) throw new Error("Encrypted agent prompt sender does not match the requester");
-  if (envelope.keyEpoch !== currentProjectKeyEpoch(db, input.projectId)) {
+  if (envelope.keyEpoch !== currentProjectKeyEpochForWrite(db, input.projectId)) {
     throw new Error("Encrypted agent prompt must use the current project key epoch");
   }
   verifyEnvelopeSender(db, input.requesterDeviceId, envelope);
@@ -264,7 +255,8 @@ function signDispatch(privateKeyPem: string, input: Parameters<typeof agentEncry
   return sign(null, agentEncryptedDispatchSigningTranscript(input), privateKeyPem).toString("base64url");
 }
 
-export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string, now = new Date()): EncryptedAgentTask[] {
+export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string, now = new Date(), agentId?: string): EncryptedAgentTask[] {
+  const agentFilter = agentId ? " AND t.agent_id = ?" : "";
   const rows = db.query(`
     SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt,
@@ -272,11 +264,18 @@ export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string,
       t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
       t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
       t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
-    FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
+    FROM agent_tasks t
+    JOIN devices d ON d.id = t.requester_device_id
+    JOIN agents a ON a.id = t.agent_id
+      AND a.project_id = t.project_id
+      AND a.host_device_id = t.target_device_id
+      AND a.enabled = 1
     WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NOT NULL
+      AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.target_device_id)
       AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
+      ${agentFilter}
     ORDER BY t.accepted_at, t.id
-  `).all(targetDeviceId, now.toISOString()) as TaskRow[];
+  `).all(targetDeviceId, now.toISOString(), ...(agentId ? [agentId] : [])) as TaskRow[];
   return rows.map(taskFromRow).filter(task => task.dependencies.every(dependencyId => {
     const dependency = db.query("SELECT status FROM agent_tasks WHERE id = ?").get(dependencyId) as { status: string } | null;
     return dependency?.status === "completed";
@@ -340,7 +339,7 @@ export function appendEncryptedAgentResult(
   if (envelope.recordType !== "agent-response") throw new Error("Encrypted agent result must use the agent-response record type");
   if (envelope.recordId !== input.eventId) throw new Error("Encrypted agent result record ID must match the event ID");
   if (envelope.senderDeviceId !== input.targetDeviceId) throw new Error("Encrypted agent result sender does not match the host device");
-  if (envelope.keyEpoch !== currentProjectKeyEpoch(db, taskRow.projectId)) throw new Error("Encrypted agent result must use the current project key epoch");
+  if (envelope.keyEpoch !== currentProjectKeyEpochForWrite(db, taskRow.projectId)) throw new Error("Encrypted agent result must use the current project key epoch");
   verifyEnvelopeSender(db, input.targetDeviceId, envelope);
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {

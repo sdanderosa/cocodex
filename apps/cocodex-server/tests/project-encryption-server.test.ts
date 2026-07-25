@@ -376,6 +376,7 @@ describe("encrypted project WSS routing", () => {
 
     const removedAck = nextFrame(ownerSocket, "project.member.removed");
     const removedNotice = nextFrame(memberSocket, "project.member.removed");
+    const rotationRequired = nextFrame(ownerSocket, "project.key.rotation-required");
     ownerSocket.send(JSON.stringify({
       version: 1,
       type: "project.member.remove",
@@ -385,6 +386,18 @@ describe("encrypted project WSS routing", () => {
     }));
     expect(await removedAck).toMatchObject({ projectId: project.id, deviceId: member.id });
     expect(await removedNotice).toMatchObject({ projectId: project.id, deviceId: member.id });
+    expect(await rotationRequired).toMatchObject({ projectId: project.id, removedDeviceId: member.id, currentEpoch: 2 });
+
+    const blockedWrite = nextFrame(ownerSocket, "error");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.context.update",
+      requestId: randomUUID(),
+      projectId: project.id,
+      expectedRevision: 2,
+      envelope: secondContext,
+    }));
+    expect(await blockedWrite).toMatchObject({ error: expect.stringContaining("rotation is required") });
 
     const removedKeyError = nextFrame(memberSocket, "project.key.result");
     memberSocket.send(JSON.stringify({

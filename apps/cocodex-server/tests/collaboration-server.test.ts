@@ -226,6 +226,27 @@ describe("authenticated WSS collaboration", () => {
 
     const stephenSocket = await connect(server.port, stephen, fingerprint);
     const kaiSocket = await connect(server.port, kai, fingerprint);
+    const agentRoster = nextFrame(stephenSocket, "agent.list.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    const listedAgents = (await agentRoster).agents as Array<Record<string, unknown>>;
+    expect(listedAgents).toHaveLength(2);
+    expect(listedAgents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "local-codex", name: "Stephen's Codex", hostDisplayName: "Stephen", status: "available" }),
+      expect.objectContaining({ id: "kai-codex", name: "Kai's Codex", hostDisplayName: "Kai", status: "available" }),
+    ]));
+    const emptyTaskList = nextFrame(stephenSocket, "agent.task.list.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.task.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await emptyTaskList).tasks).toEqual([]);
     for (const socket of [stephenSocket, kaiSocket]) {
       const history = nextFrame(socket, "chat.snapshot");
       socket.send(JSON.stringify({
@@ -475,6 +496,18 @@ describe("authenticated WSS collaboration", () => {
       status: "completed",
       event: { senderDeviceId: stephen.id },
     });
+    const completedTaskList = nextFrame(stephenSocket, "agent.task.list.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "agent.task.list", requestId: randomUUID(), projectId: project.id,
+    }));
+    expect((await completedTaskList).tasks).toEqual([expect.objectContaining({
+      id: kaiTaskId,
+      agentName: "Stephen's Codex",
+      status: "completed",
+      dependencies: [],
+      eventCount: 1,
+      encrypted: false,
+    })]);
 
     const artifactId = randomUUID();
     const artifactAccepted = nextFrame(stephenSocket, "artifact.accepted");
@@ -551,6 +584,16 @@ describe("authenticated WSS collaboration", () => {
       final: false,
       status: "running",
     });
+    const runningTaskList = nextFrame(stephenSocket, "agent.task.list.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "agent.task.list", requestId: randomUUID(), projectId: project.id,
+    }));
+    expect((await runningTaskList).tasks).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: stephenTaskId,
+      status: "running",
+      dependencies: [kaiTaskId],
+      eventCount: 1,
+    })]));
 
     const promptAtStephen = nextFrame(stephenSocket, "prompt.snapshot");
     const promptAtKai = nextFrame(reconnectedKai, "prompt.snapshot");

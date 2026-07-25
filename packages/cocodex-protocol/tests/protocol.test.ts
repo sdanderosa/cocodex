@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
   canonicalEd25519PublicKey,
+  agentListFrameSchema,
+  agentTaskListFrameSchema,
   clientFrameSchema,
   decodeInvitation,
   encodeInvitation,
@@ -10,6 +12,7 @@ import {
   projectContextResultFrameSchema,
   projectKeyEnvelopeSchema,
   projectKeyRotatedFrameSchema,
+  projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
   presenceAcceptedFrameSchema,
@@ -468,6 +471,79 @@ describe("CoCodex protocol", () => {
     delete (legacyFrame as Partial<typeof frame>).typing;
     expect(clientFrameSchema.parse(legacyFrame)).toMatchObject({ ...frame, typing: false });
     expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
+  });
+  test("strictly validates the authoritative agent roster", () => {
+    const projectId = crypto.randomUUID();
+    const agent = {
+      id: "lucas",
+      projectId,
+      name: "Lucas",
+      hostDeviceId: crypto.randomUUID(),
+      hostDisplayName: "Stephen",
+      enabled: true,
+      status: "working" as const,
+      activeTasks: 1,
+      queuedTasks: 2,
+      lastTaskAt: "2030-01-01T00:00:00.000Z",
+    };
+    const frame = {
+      version: 1 as const,
+      type: "agent.list.result" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      agents: [agent],
+    };
+    expect(agentListFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(clientFrameSchema.parse({
+      version: 1, type: "agent.list", requestId: crypto.randomUUID(), projectId,
+    })).toMatchObject({ type: "agent.list", projectId });
+    expect(() => agentListFrameSchema.parse({ ...frame, agents: [{ ...agent, extra: true }] })).toThrow();
+  });
+  test("strictly validates task activity without carrying prompt content", () => {
+    const projectId = crypto.randomUUID();
+    const task = {
+      id: crypto.randomUUID(),
+      projectId,
+      agentId: "lucas",
+      agentName: "Lucas",
+      requesterDeviceId: crypto.randomUUID(),
+      targetDeviceId: crypto.randomUUID(),
+      status: "running" as const,
+      dependencies: [],
+      acceptedAt: "2030-01-01T00:00:00.000Z",
+      startedAt: "2030-01-01T00:00:01.000Z",
+      completedAt: null,
+      lastActivityAt: "2030-01-01T00:00:02.000Z",
+      eventCount: 2,
+      encrypted: true,
+    };
+    const frame = {
+      version: 1 as const,
+      type: "agent.task.list.result" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      tasks: [task],
+    };
+    expect(agentTaskListFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(clientFrameSchema.parse({
+      version: 1, type: "agent.task.list", requestId: crypto.randomUUID(), projectId,
+    })).toMatchObject({ type: "agent.task.list", projectId });
+    expect(() => agentTaskListFrameSchema.parse({ ...frame, tasks: [{ ...task, prompt: "secret" }] })).toThrow();
+  });
+  test("strictly validates key-rotation-required notices", () => {
+    const frame = {
+      version: 1 as const,
+      type: "project.key.rotation-required" as const,
+      projectId: crypto.randomUUID(),
+      removedDeviceId: crypto.randomUUID(),
+      currentEpoch: 3,
+    };
+    expect(projectKeyRotationRequiredFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => projectKeyRotationRequiredFrameSchema.parse({ ...frame, removedDeviceId: "not-a-uuid" })).toThrow();
+    expect(() => projectKeyRotationRequiredFrameSchema.parse({ ...frame, currentEpoch: 0 })).toThrow();
   });
   test("strictly validates server presence snapshots, updates, and leaves", () => {
     const projectId = crypto.randomUUID();

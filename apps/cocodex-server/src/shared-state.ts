@@ -62,6 +62,7 @@ export function removeProjectMember(
   ownerDeviceId: string,
   memberDeviceId: string,
   now = new Date(),
+  afterRemoved?: () => void,
 ): void {
   const owner = requireProjectMembership(db, projectId, ownerDeviceId);
   if (owner.role !== "owner") throw new Error("Only a project owner can remove members");
@@ -78,6 +79,7 @@ export function removeProjectMember(
       INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
       VALUES ('project.member.removed', ?, ?, ?, ?)
     `).run(ownerDeviceId, memberDeviceId, now.toISOString(), JSON.stringify({ projectId }));
+    afterRemoved?.();
   }).immediate();
 }
 

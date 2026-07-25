@@ -7,6 +7,7 @@ import {
   type ProjectContentEnvelope,
 } from "@cocodex/protocol";
 import { requireProjectMembership } from "./shared-state";
+import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 
 /** Opaque, ordered Yjs updates. The server never applies the Yjs payload. */
 export interface EncryptedPromptUpdate {
@@ -49,18 +50,6 @@ function envelopeJson(value: ProjectContentEnvelope): string {
 function parseEnvelope(value: string): ProjectContentEnvelope {
   try { return projectContentEnvelopeSchema.parse(JSON.parse(value)); }
   catch { throw new Error("Stored encrypted prompt envelope is invalid"); }
-}
-
-function currentProjectKeyEpoch(db: Database, projectId: string): number {
-  const current = db.query(`
-    SELECT current_epoch AS currentEpoch FROM project_key_epochs WHERE project_id = ?
-  `).get(projectId) as { currentEpoch: number } | null;
-  if (current) return current.currentEpoch;
-  const legacy = db.query(`
-    SELECT MAX(key_epoch) AS currentEpoch FROM project_key_envelopes WHERE project_id = ?
-  `).get(projectId) as { currentEpoch: number | null };
-  if (!legacy.currentEpoch) throw new Error("Project encryption key has not been initialized");
-  return legacy.currentEpoch;
 }
 
 function verifySender(db: Database, senderDeviceId: string, envelope: ProjectContentEnvelope): void {
@@ -109,7 +98,7 @@ export function appendEncryptedPromptUpdateResult(
   if (envelope.recordType !== "shared-prompt") throw new Error("Encrypted prompt envelope must use the shared-prompt record type");
   if (envelope.recordId !== input.updateId) throw new Error("Encrypted prompt record ID must match the update ID");
   if (envelope.senderDeviceId !== input.senderDeviceId) throw new Error("Encrypted prompt sender does not match the authenticated device");
-  const currentEpoch = currentProjectKeyEpoch(db, input.projectId);
+  const currentEpoch = currentProjectKeyEpochForWrite(db, input.projectId);
   if (envelope.keyEpoch !== currentEpoch) throw new Error(`Encrypted prompt envelope must use the current project key epoch ${currentEpoch}`);
   verifySender(db, input.senderDeviceId, envelope);
   const serialized = envelopeJson(envelope);
@@ -155,4 +144,3 @@ export function encryptedPromptUpdatesAfter(
   `).all(projectId, afterSequence, boundedLimit) as UpdateRow[];
   return rows.map(updateFromRow);
 }
-

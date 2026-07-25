@@ -96,6 +96,18 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("agent.list"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("agent.task.list"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("chat.subscribe"),
     requestId,
     projectId,
@@ -128,6 +140,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     version: z.literal(1),
     type: z.literal("agent.ready"),
     requestId,
+    agentId: z.string().trim().min(1).max(120).optional(),
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -290,6 +303,8 @@ export const projectKeyResultFrameSchema = z.object({
   requestId,
   projectId,
   envelopes: z.array(projectKeyEnvelopeSchema).max(128),
+  currentEpoch: z.number().int().nonnegative().max(PROJECT_KEY_EPOCH_MAX).optional(),
+  rotationRequired: z.boolean().optional(),
 }).strict();
 
 export const projectKeyAcceptedFrameSchema = z.object({
@@ -318,12 +333,69 @@ export const projectKeyRotatedFrameSchema = z.object({
   created: z.boolean(),
 }).strict();
 
+export const projectKeyRotationRequiredFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.rotation-required"),
+  projectId,
+  removedDeviceId: z.uuid(),
+  currentEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX),
+}).strict();
+
 export const projectMemberRemovedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("project.member.removed"),
   requestId: requestId.optional(),
   projectId,
   deviceId,
+}).strict();
+
+export const agentStatusSchema = z.enum(["offline", "available", "queued", "working", "completed", "failed"]);
+export const agentTaskStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
+
+export const agentViewSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  projectId,
+  name: z.string().trim().min(1).max(120),
+  hostDeviceId: z.uuid(),
+  hostDisplayName: z.string().trim().min(1).max(80),
+  enabled: z.boolean(),
+  status: agentStatusSchema,
+  activeTasks: z.number().int().nonnegative().max(64),
+  queuedTasks: z.number().int().nonnegative().max(64),
+  lastTaskAt: z.iso.datetime().nullable(),
+}).strict();
+
+export const agentListFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("agent.list.result"),
+  requestId,
+  projectId,
+  agents: z.array(agentViewSchema).max(128),
+}).strict();
+
+export const agentTaskViewSchema = z.object({
+  id: z.uuid(),
+  projectId,
+  agentId: z.string().trim().min(1).max(120),
+  agentName: z.string().trim().min(1).max(120),
+  requesterDeviceId: z.uuid(),
+  targetDeviceId: z.uuid(),
+  status: agentTaskStatusSchema,
+  dependencies: z.array(z.uuid()).max(16),
+  acceptedAt: z.iso.datetime(),
+  startedAt: z.iso.datetime().nullable(),
+  completedAt: z.iso.datetime().nullable(),
+  lastActivityAt: z.iso.datetime(),
+  eventCount: z.number().int().nonnegative().max(256),
+  encrypted: z.boolean(),
+}).strict();
+
+export const agentTaskListFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("agent.task.list.result"),
+  requestId,
+  projectId,
+  tasks: z.array(agentTaskViewSchema).max(256),
 }).strict();
 
 export const projectContextResultFrameSchema = z.object({
@@ -417,7 +489,10 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectKeyAcceptedFrameSchema,
   projectKeyChangedFrameSchema,
   projectKeyRotatedFrameSchema,
+  projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
+  agentListFrameSchema,
+  agentTaskListFrameSchema,
   projectContextResultFrameSchema,
   projectContextUpdatedFrameSchema,
   projectContextChangedFrameSchema,
@@ -432,7 +507,14 @@ export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
 export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
 export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema>;
 export type ProjectKeyRotatedFrame = z.infer<typeof projectKeyRotatedFrameSchema>;
+export type ProjectKeyRotationRequiredFrame = z.infer<typeof projectKeyRotationRequiredFrameSchema>;
 export type ProjectMemberRemovedFrame = z.infer<typeof projectMemberRemovedFrameSchema>;
+export type AgentStatus = z.infer<typeof agentStatusSchema>;
+export type AgentView = z.infer<typeof agentViewSchema>;
+export type AgentListFrame = z.infer<typeof agentListFrameSchema>;
+export type AgentTaskStatus = z.infer<typeof agentTaskStatusSchema>;
+export type AgentTaskView = z.infer<typeof agentTaskViewSchema>;
+export type AgentTaskListFrame = z.infer<typeof agentTaskListFrameSchema>;
 export type ProjectContextResultFrame = z.infer<typeof projectContextResultFrameSchema>;
 export type ProjectContextUpdatedFrame = z.infer<typeof projectContextUpdatedFrameSchema>;
 export type ProjectContextChangedFrame = z.infer<typeof projectContextChangedFrameSchema>;
@@ -451,7 +533,7 @@ export const agentTaskSchema = z.object({
   requesterSignature: z.string().min(64).max(256),
   requesterPublicKeyPem: z.string().min(64).max(2048),
   serverSignature: z.string().min(64).max(256),
-  status: z.enum(["queued", "running", "completed", "failed"]),
+  status: agentTaskStatusSchema,
   acceptedAt: z.iso.datetime(),
 }).strict();
 

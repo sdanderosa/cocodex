@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
@@ -29,7 +29,7 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "./project-encryption";
-import { loadProjectKey, loadProjectKeyForEncryption, revokeProjectKey, storeProjectKey } from "./project-key-store";
+import { loadProjectKey, loadProjectKeyForEncryption, loadProjectKeyForRotation, loadProjectKeyState, markProjectKeyRotationRequired, revokeProjectKey, storeProjectKey } from "./project-key-store";
 
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
@@ -72,6 +72,9 @@ export async function runJsonLineSession(
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
   const usageSubscriptions = new Set<string>();
+  const agentSubscriptions = new Set<string>();
+  const agentTaskSubscriptions = new Set<string>();
+  const legacyContextSnapshots = new Map<string, { revision: number; finalGoal: string; context: Record<string, unknown> }>();
   let privateCursor = 0;
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
@@ -79,11 +82,22 @@ export async function runJsonLineSession(
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
+  const assertLegacyProjectFallbackAllowed = (projectId: string): void => {
+    if (loadProjectKeyState(paths.projectKeys, projectId)) {
+      throw new Error(`Project ${projectId} requires encrypted content frames`);
+    }
+  };
   const send = (frame: unknown) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("CoCodex Server is offline");
     socket.send(JSON.stringify(frame));
   };
-  const migrateProjectSubscriptions = (projectId: string): void => {
+  const migrationRecordId = (projectId: string, revision: number): string => {
+    const hex = createHash("sha256").update(`CoCodex legacy context migration\u0000${projectId}\u0000${revision}`).digest("hex").slice(0, 32).split("");
+    hex[12] = "5";
+    hex[16] = ((Number.parseInt(hex[16]!, 16) & 3) | 8).toString(16);
+    return `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+  };
+  const migrateProjectSubscriptions = async (projectId: string): Promise<void> => {
     if (chatSubscriptions.has(projectId) && !encryptedChatCursors.has(projectId)) {
       chatCursors.delete(projectId);
       encryptedChatCursors.set(projectId, 0);
@@ -96,6 +110,36 @@ export async function runJsonLineSession(
     }
     if (contextSubscriptions.delete(projectId)) {
       encryptedContextSubscriptions.add(projectId);
+      let migration: Promise<number> | undefined;
+      const snapshot = legacyContextSnapshots.get(projectId);
+      const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+      if (snapshot && stored && snapshot.revision > 0) {
+        const serialized = JSON.stringify({ finalGoal: snapshot.finalGoal, context: snapshot.context });
+        const envelope = await sealProjectContent({
+          projectId,
+          keyEpoch: stored.keyEpoch,
+          recordType: "shared-context",
+          recordId: migrationRecordId(projectId, snapshot.revision),
+          plaintext: serialized,
+          projectKey: stored.projectKey,
+          senderDeviceId: connection.deviceId,
+          senderPrivateKeyPem: identity.privateKeyPem,
+          senderPublicKeyPem: identity.publicKeyPem,
+        });
+        enqueueDurableEvent(paths, {
+          version: 1,
+          type: "project.context.update",
+          requestId: randomUUID(),
+          projectId,
+          expectedRevision: 0,
+          envelope,
+        });
+        migration = flush();
+      }
+      if (migration) {
+        try { await migration; }
+        catch (error) { emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) }); }
+      }
       send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
     }
   };
@@ -758,7 +802,7 @@ export async function runJsonLineSession(
         expectedSenderPublicKeyPem: senderPublicKeyPem,
       }).then(projectKey => {
         storeProjectKey(paths.projectKeys, parsedEnvelope.projectId, parsedEnvelope.keyEpoch, projectKey);
-        migrateProjectSubscriptions(parsedEnvelope.projectId);
+        void migrateProjectSubscriptions(parsedEnvelope.projectId);
         emit({ source: "project-encryption", state: "key-available", projectId: parsedEnvelope.projectId, keyEpoch: parsedEnvelope.keyEpoch });
       }).catch(error => emitError({
         source: "project-encryption",
@@ -831,7 +875,9 @@ export async function runJsonLineSession(
       let frame: Record<string, any>;
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
-      if (frame.type === "presence.snapshot" || frame.type === "presence.update"
+      if (frame.type === "agent.list.result" || frame.type === "agent.task.list.result"
+        || frame.type === "project.key.rotation-required"
+        || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
         try { frame = projectServerFrameSchema.parse(frame) as Record<string, any>; }
         catch (error) {
@@ -914,11 +960,18 @@ export async function runJsonLineSession(
       } else if (frame.type === "project.key.result") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);
+        if (frame.rotationRequired === true) {
+          markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
+          emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), currentEpoch: Number(frame.currentEpoch ?? 0) });
+        }
       } else if (frame.type === "project.key.changed") {
         openProjectKeyEnvelopeFromServer(frame.envelope);
       } else if (frame.type === "project.key.rotated") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);
+      } else if (frame.type === "project.key.rotation-required") {
+        markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
+        emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), removedDeviceId: String(frame.removedDeviceId), currentEpoch: Number(frame.currentEpoch) });
       } else if (frame.type === "project.member.removed") {
         if (frame.deviceId === connection.deviceId) {
           try {
@@ -933,12 +986,29 @@ export async function runJsonLineSession(
         || frame.type === "project.context.changed") {
         openEncryptedProjectContext(frame);
       }
+      if ((frame.type === "context.result" || frame.type === "context.updated" || frame.type === "context.changed")
+        && frame.context && typeof frame.context === "object" && !Array.isArray(frame.context)) {
+        const context = frame.context as Record<string, unknown>;
+        legacyContextSnapshots.set(String(context.projectId ?? frame.projectId), {
+          revision: Number(context.revision ?? 0),
+          finalGoal: String(context.finalGoal ?? ""),
+          context: context.context && typeof context.context === "object" && !Array.isArray(context.context)
+            ? context.context as Record<string, unknown>
+            : {},
+        });
+      }
       emit({ source: "server", frame });
     };
     connected.addEventListener("message", listener);
     const flushedEvents = await flush();
     for (const [projectId, afterSequence] of chatCursors) {
-      send({ version: 1, type: "chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+      if (loadProjectKeyState(paths.projectKeys, projectId)) {
+        chatCursors.delete(projectId);
+        encryptedChatCursors.set(projectId, afterSequence);
+        send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+      } else {
+        send({ version: 1, type: "chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+      }
     }
     for (const [projectId, afterSequence] of encryptedChatCursors) {
       send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
@@ -956,10 +1026,22 @@ export async function runJsonLineSession(
       send({ version: 1, type: "project.artifact.list", requestId: randomUUID(), projectId });
     }
     for (const projectId of promptSubscriptions) {
-      send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
+      if (loadProjectKeyState(paths.projectKeys, projectId)) {
+        promptSubscriptions.delete(projectId);
+        encryptedPromptSubscriptions.add(projectId);
+        send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: encryptedPromptCursors.get(projectId) ?? 0 });
+      } else {
+        send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
+      }
     }
     for (const projectId of contextSubscriptions) {
-      send({ version: 1, type: "context.get", requestId: randomUUID(), projectId });
+      if (loadProjectKeyState(paths.projectKeys, projectId)) {
+        contextSubscriptions.delete(projectId);
+        encryptedContextSubscriptions.add(projectId);
+        send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
+      } else {
+        send({ version: 1, type: "context.get", requestId: randomUUID(), projectId });
+      }
     }
     for (const projectId of projectKeySubscriptions) {
       send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
@@ -969,6 +1051,12 @@ export async function runJsonLineSession(
     }
     for (const projectId of usageSubscriptions) {
       send({ version: 1, type: "usage.get", requestId: randomUUID(), projectId });
+    }
+    for (const projectId of agentSubscriptions) {
+      send({ version: 1, type: "agent.list", requestId: randomUUID(), projectId });
+    }
+    for (const projectId of agentTaskSubscriptions) {
+      send({ version: 1, type: "agent.task.list", requestId: randomUUID(), projectId });
     }
     try {
       send({
@@ -1004,6 +1092,7 @@ export async function runJsonLineSession(
         authorizeTask: policy.approvalMode === "always" ? authorizeAgentTask : () => true,
       }), {
         localDeviceId: connection.deviceId,
+        agentId: policy.agentId,
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
         trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
         journalPath: paths.agentJournal,
@@ -1043,6 +1132,14 @@ export async function runJsonLineSession(
         }
         if (command.type === "project.list") {
           send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
+        } else if (command.type === "agent.list") {
+          const projectId = String(command.projectId);
+          agentSubscriptions.add(projectId);
+          send({ version: 1, type: "agent.list", requestId: controlRequestId(command.id), projectId });
+        } else if (command.type === "agent.task.list") {
+          const projectId = String(command.projectId);
+          agentTaskSubscriptions.add(projectId);
+          send({ version: 1, type: "agent.task.list", requestId: controlRequestId(command.id), projectId });
         } else if (command.type === "project.key.get") {
           const projectId = String(command.projectId);
           projectKeySubscriptions.add(projectId);
@@ -1098,7 +1195,7 @@ export async function runJsonLineSession(
         } else if (command.type === "project.key.rotate") {
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
           const projectId = String(command.projectId);
-          const current = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          const current = loadProjectKeyForRotation(paths.projectKeys, projectId);
           if (!current) throw new Error(`No project encryption key is available for ${projectId}`);
           const nextEpoch = current.keyEpoch + 1;
           if (!Array.isArray(command.recipients) || command.recipients.length < 1 || command.recipients.length > 128) {
@@ -1144,6 +1241,7 @@ export async function runJsonLineSession(
               afterSequence,
             });
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             const afterSequence = Number(command.afterSequence ?? chatCursors.get(projectId) ?? 0);
             chatCursors.set(projectId, afterSequence);
             send({
@@ -1175,6 +1273,7 @@ export async function runJsonLineSession(
             encryptedPromptSubscriptions.add(projectId);
             send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, afterSequence });
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             promptSubscriptions.add(projectId);
             send({
               version: 1,
@@ -1192,12 +1291,12 @@ export async function runJsonLineSession(
         } else if (command.type === "context.get") {
           const projectId = String(command.projectId);
           contextSubscriptions.add(projectId);
-          send({
-            version: 1,
-            type: "context.get",
-            requestId: controlRequestId(command.id),
-            projectId,
-          });
+          if (loadProjectKeyState(paths.projectKeys, projectId)) {
+            encryptedContextSubscriptions.add(projectId);
+            send({ version: 1, type: "project.context.get", requestId: controlRequestId(command.id), projectId });
+          } else {
+            send({ version: 1, type: "context.get", requestId: controlRequestId(command.id), projectId });
+          }
         } else if (command.type === "project.context.get") {
           const projectId = String(command.projectId);
           encryptedContextSubscriptions.add(projectId);
@@ -1247,17 +1346,39 @@ export async function runJsonLineSession(
         } else if (command.type === "context.update") {
           const projectId = String(command.projectId);
           contextSubscriptions.add(projectId);
-          enqueueDurableEvent(paths, {
-            version: 1,
-            type: "context.update",
-            requestId: controlRequestId(command.id),
-            projectId,
-            expectedRevision: Number(command.expectedRevision ?? 0),
-            finalGoal: String(command.finalGoal ?? ""),
-            context: command.context ?? {},
-          });
+          const expectedRevision = Number(command.expectedRevision ?? 0);
+          const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          if (stored) {
+            const payload = { finalGoal: String(command.finalGoal ?? ""), context: command.context ?? {} };
+            const serialized = JSON.stringify(payload);
+            if (Buffer.byteLength(serialized, "utf8") > PROJECT_CONTEXT_MAX_BYTES) throw new Error("Encrypted project context is too large");
+            const envelope = await sealProjectContent({
+              projectId,
+              keyEpoch: stored.keyEpoch,
+              recordType: "shared-context",
+              recordId: String(command.recordId ?? randomUUID()),
+              plaintext: serialized,
+              projectKey: stored.projectKey,
+              senderDeviceId: connection.deviceId,
+              senderPrivateKeyPem: identity.privateKeyPem,
+              senderPublicKeyPem: identity.publicKeyPem,
+            });
+            encryptedContextSubscriptions.add(projectId);
+            enqueueDurableEvent(paths, { version: 1, type: "project.context.update", requestId: controlRequestId(command.id), projectId, expectedRevision, envelope });
+          } else {
+            assertLegacyProjectFallbackAllowed(projectId);
+            enqueueDurableEvent(paths, {
+              version: 1,
+              type: "context.update",
+              requestId: controlRequestId(command.id),
+              projectId,
+              expectedRevision,
+              finalGoal: String(command.finalGoal ?? ""),
+              context: command.context ?? {},
+            });
+          }
           const delivered = await flush();
-          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, projectId });
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, projectId, encrypted: Boolean(stored) });
         } else if (command.type === "prompt.update") {
           const updateId = String(command.updateId ?? randomUUID());
           const projectId = String(command.projectId);
@@ -1270,6 +1391,7 @@ export async function runJsonLineSession(
             encryptedPromptSubscriptions.add(projectId);
             enqueueDurableEvent(paths, frame);
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             enqueueDurableEvent(paths, {
               version: 1,
               type: "prompt.update",
@@ -1312,6 +1434,7 @@ export async function runJsonLineSession(
             encryptedChatCursors.set(projectId, encryptedChatCursors.get(projectId) ?? 0);
             enqueueDurableEvent(paths, frame);
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             enqueueDurableEvent(paths, {
               version: 1,
               type: "chat.send",
@@ -1363,6 +1486,7 @@ export async function runJsonLineSession(
             encryptedArtifactSubscriptions.add(projectId);
             enqueueDurableEvent(paths, frame);
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             enqueueDurableEvent(paths, {
               version: 1,
               type: "artifact.publish",
@@ -1390,6 +1514,7 @@ export async function runJsonLineSession(
             encryptedArtifactSubscriptions.add(projectId);
             send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId });
           } else {
+            assertLegacyProjectFallbackAllowed(projectId);
             send({ version: 1, type: "artifact.list", requestId: controlRequestId(command.id), projectId });
           }
         } else if (command.type === "agent.request") {
@@ -1414,6 +1539,7 @@ export async function runJsonLineSession(
               request.requestId,
             ));
           } else {
+            assertLegacyProjectFallbackAllowed(request.projectId);
             enqueueDurableEvent(paths, { ...request });
           }
           const delivered = await flush();

@@ -26,6 +26,7 @@ export interface LocalAgentAdapter {
 
 export interface AgentBridgeSecurity {
   localDeviceId: string;
+  agentId?: string;
   serverPublicKeyPem: string;
   trustedRequesterFingerprints: ReadonlyMap<string, string>;
   journalPath?: string;
@@ -37,6 +38,7 @@ export interface AgentBridgeSecurity {
 
 async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentBridgeSecurity): Promise<AgentTask | null> {
   if (task.targetDeviceId !== security.localDeviceId
+    || (security.agentId !== undefined && task.agentId !== security.agentId)
     || (task.status !== "queued" && task.status !== "running")) return null;
   const now = (security.now ?? (() => new Date()))().getTime();
   if ((task.status === "queued" && Date.parse(task.expiresAt) <= now)
@@ -332,6 +334,7 @@ export function attachLocalAgentBridge(
     version: 1,
     type: "agent.ready",
     requestId: randomUUID(),
+    ...(security.agentId ? { agentId: security.agentId } : {}),
   }));
   return async () => {
     socket.removeEventListener("message", listener);

@@ -6,13 +6,16 @@ import {
   clientFrameSchema,
   decodeInvitation,
   enrollmentClaimSchema,
+  agentListFrameSchema,
+  agentTaskListFrameSchema,
+  projectKeyRotationRequiredFrameSchema,
   presenceAcceptedFrameSchema,
   presenceLeaveFrameSchema,
   presenceSnapshotFrameSchema,
   presenceUpdateFrameSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
-import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
+import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks } from "./agent-routing";
 import {
   appendEncryptedAgentResult,
   cancelEncryptedAgentTask,
@@ -41,6 +44,8 @@ import { getSharedProjectContext, updateSharedProjectContext } from "./shared-co
 import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./usage";
 import {
   getEncryptedProjectContext,
+  assertLegacyProjectWriteAllowed,
+  getProjectKeyEpoch,
   listProjectKeyEnvelopes,
   removeProjectMemberAndInvalidateKeys,
   rotateProjectKeyEpoch,
@@ -74,6 +79,7 @@ interface SocketData {
   subscribedEncryptedContexts: Set<string>;
   subscribedUsages: Set<string>;
   agentReady: boolean;
+  agentId?: string;
 }
 
 interface DeviceAuthRow {
@@ -170,12 +176,14 @@ export function startCoCodexServer(
     }
   }
 
-  function sendToDevice(deviceId: string, frame: unknown, requireAgentReady = false): void {
+  function sendToDevice(deviceId: string, frame: unknown, requireAgentReady = false, agentId?: string): void {
     const device = deviceForAuthentication(db, deviceId);
     if (!device || device.status !== "approved") return;
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
-      if (socket.data.authenticatedDeviceId === deviceId && (!requireAgentReady || socket.data.agentReady)) {
+      if (socket.data.authenticatedDeviceId === deviceId
+        && (!requireAgentReady || socket.data.agentReady)
+        && (!agentId || socket.data.agentId === agentId)) {
         socket.send(encoded);
       }
     }
@@ -186,6 +194,25 @@ export function startCoCodexServer(
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
       if (!deviceId || !socket.data.subscribedProjects.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedProjects.delete(projectId);
+      }
+    }
+  }
+
+  function sendToProjectMembers(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
@@ -581,11 +608,26 @@ export function startCoCodexServer(
             });
           }
           if (message.type === "agent.ready") {
+            const registeredAgents = (db.query(`
+              SELECT id FROM agents
+              WHERE host_device_id = ? AND enabled = 1
+              ORDER BY id ASC
+            `).all(deviceId) as Array<{ id: string }>).map(row => row.id);
+            if (registeredAgents.length === 0) {
+              throw new Error("No enabled local agent is registered for this device");
+            }
+            if (message.agentId && !registeredAgents.includes(message.agentId)) {
+              throw new Error("Agent ready announcement does not match an enabled local agent");
+            }
+            if (!message.agentId && registeredAgents.length > 1) {
+              throw new Error("Agent ID is required when a device hosts multiple agents");
+            }
             socket.data.agentReady = true;
-            for (const task of pendingAgentTasks(db, deviceId)) {
+            socket.data.agentId = message.agentId ?? registeredAgents[0];
+            for (const task of pendingAgentTasks(db, deviceId, new Date(), socket.data.agentId)) {
               socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
             }
-            for (const task of pendingEncryptedAgentTasks(db, deviceId)) {
+            for (const task of pendingEncryptedAgentTasks(db, deviceId, new Date(), socket.data.agentId)) {
               socket.send(JSON.stringify({ version: 1, type: "project.agent.task", task }));
             }
             socket.send(JSON.stringify({
@@ -602,6 +644,31 @@ export function startCoCodexServer(
               requestId,
               projects: listProjects(db, deviceId),
             }));
+            return;
+          }
+          if (message.type === "agent.list") {
+            const agents = listAgents(db, message.projectId, deviceId, (hostDeviceId, agentId) =>
+              [...sockets].some(candidate => candidate.data.authenticatedDeviceId === hostDeviceId
+                && candidate.data.agentReady
+                && (!candidate.data.agentId || candidate.data.agentId === agentId)));
+            socket.send(JSON.stringify(agentListFrameSchema.parse({
+              version: 1,
+              type: "agent.list.result",
+              requestId,
+              projectId: message.projectId,
+              agents,
+            })));
+            return;
+          }
+          if (message.type === "agent.task.list") {
+            const tasks = listAgentTasks(db, message.projectId, deviceId);
+            socket.send(JSON.stringify(agentTaskListFrameSchema.parse({
+              version: 1,
+              type: "agent.task.list.result",
+              requestId,
+              projectId: message.projectId,
+              tasks,
+            })));
             return;
           }
           if (message.type === "project.chat.subscribe") {
@@ -715,6 +782,8 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "chat.subscribe") {
+            requireProjectMembership(db, message.projectId, deviceId);
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             const events = chatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
             socket.data.subscribedProjects.add(message.projectId);
             socket.send(JSON.stringify({
@@ -735,7 +804,7 @@ export function startCoCodexServer(
                 type: "agent.cancel",
                 taskId: cancelled.task.id,
                 reason: message.reason,
-              });
+              }, false, cancelled.task.agentId);
               socket.send(JSON.stringify({
                 version: 1,
                 type: "agent.cancelled",
@@ -751,7 +820,7 @@ export function startCoCodexServer(
                 type: "agent.cancel",
                 taskId: cancelled.task.id,
                 reason: message.reason,
-              }, true);
+              }, true, cancelled.task.agentId);
               sendToProject(cancelled.task.projectId, {
                 version: 1,
                 type: "agent.result",
@@ -847,6 +916,7 @@ export function startCoCodexServer(
           }
           if (message.type === "prompt.subscribe") {
             requireProjectMembership(db, message.projectId, deviceId);
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             socket.data.subscribedPrompts.add(message.projectId);
             socket.send(JSON.stringify({
               version: 1,
@@ -858,6 +928,7 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "prompt.update") {
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             const applied = applySharedPromptUpdate(
               db, message.projectId, deviceId, message.updateId, message.update,
             );
@@ -913,6 +984,7 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "artifact.publish") {
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             const published = publishArtifact(db, {
               id: message.artifactId,
               projectId: message.projectId,
@@ -929,12 +1001,15 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.key.get") {
+            const keyState = getProjectKeyEpoch(db, message.projectId, deviceId);
             socket.send(JSON.stringify({
               version: 1,
               type: "project.key.result",
               requestId,
               projectId: message.projectId,
               envelopes: listProjectKeyEnvelopes(db, message.projectId, deviceId, message.keyEpoch),
+              currentEpoch: keyState.currentEpoch,
+              rotationRequired: keyState.rotationRequired,
             }));
             return;
           }
@@ -989,7 +1064,15 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.member.remove") {
-            removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
+            const cancelledTaskIds = removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
+            for (const taskId of cancelledTaskIds) {
+              sendToDevice(message.deviceId, {
+                version: 1,
+                type: "agent.cancel",
+                taskId,
+                reason: "Host device was removed from the project.",
+              }, true);
+            }
             clearProjectPresence(message.projectId, message.deviceId);
             socket.send(JSON.stringify({
               version: 1,
@@ -1004,6 +1087,16 @@ export function startCoCodexServer(
               projectId: message.projectId,
               deviceId: message.deviceId,
             });
+            const keyEpoch = getProjectKeyEpoch(db, message.projectId, deviceId);
+            if (keyEpoch.rotationRequired && keyEpoch.currentEpoch > 0) {
+              sendToProjectMembers(message.projectId, projectKeyRotationRequiredFrameSchema.parse({
+                version: 1,
+                type: "project.key.rotation-required",
+                projectId: message.projectId,
+                removedDeviceId: message.deviceId,
+                currentEpoch: keyEpoch.currentEpoch,
+              }));
+            }
             return;
           }
           if (message.type === "project.context.get") {
@@ -1053,11 +1146,13 @@ export function startCoCodexServer(
           }
           if (message.type === "context.get") {
             requireProjectMembership(db, message.projectId, deviceId);
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             socket.data.subscribedContexts.add(message.projectId);
             socket.send(JSON.stringify({ version: 1, type: "context.result", requestId, context: getSharedProjectContext(db, message.projectId, deviceId) }));
             return;
           }
           if (message.type === "context.update") {
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             const context = updateSharedProjectContext(db, message.projectId, deviceId, message.expectedRevision, message.finalGoal, message.context);
             socket.data.subscribedContexts.add(message.projectId);
             socket.send(JSON.stringify({ version: 1, type: "context.updated", requestId, context }));
@@ -1098,10 +1193,13 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "artifact.list") {
+            requireProjectMembership(db, message.projectId, deviceId);
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             socket.send(JSON.stringify({ version: 1, type: "artifact.list.result", requestId, projectId: message.projectId, artifacts: listArtifacts(db, message.projectId, deviceId) }));
             return;
           }
           if (message.type === "agent.request") {
+            assertLegacyProjectWriteAllowed(db, message.projectId);
             const { task, created } = createAgentTask(db, identity, {
               id: message.taskId,
               projectId: message.projectId,
@@ -1114,12 +1212,12 @@ export function startCoCodexServer(
               dependencies: message.dependencies,
               requesterSignature: message.signature,
             });
-            if (created && pendingAgentTasks(db, task.targetDeviceId).some(ready => ready.id === task.id)) {
+            if (created && pendingAgentTasks(db, task.targetDeviceId, new Date(), task.agentId).some(ready => ready.id === task.id)) {
               sendToDevice(task.targetDeviceId, {
                 version: 1,
                 type: "agent.task",
                 task,
-              }, true);
+              }, true, task.agentId);
             }
             socket.send(JSON.stringify({
               version: 1,
@@ -1141,13 +1239,16 @@ export function startCoCodexServer(
               dependencies: message.dependencies,
               envelope: message.envelope,
             });
-            if (created && pendingEncryptedAgentTasks(db, task.targetDeviceId).some(ready => ready.id === task.id)) {
-              sendToDevice(task.targetDeviceId, { version: 1, type: "project.agent.task", task }, true);
+            if (created && pendingEncryptedAgentTasks(db, task.targetDeviceId, new Date(), task.agentId).some(ready => ready.id === task.id)) {
+              sendToDevice(task.targetDeviceId, { version: 1, type: "project.agent.task", task }, true, task.agentId);
             }
             socket.send(JSON.stringify({ version: 1, type: "project.agent.accepted", requestId, task }));
             return;
           }
           if (message.type === "agent.result") {
+            const taskProject = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?")
+              .get(message.taskId) as { projectId: string } | null;
+            if (taskProject) assertLegacyProjectWriteAllowed(db, taskProject.projectId);
             const result = appendAgentResult(
               db,
               deviceId,
@@ -1167,8 +1268,8 @@ export function startCoCodexServer(
                 event: result.event,
               });
               if (message.final) {
-                for (const ready of pendingAgentTasks(db, result.task.targetDeviceId)) {
-                  sendToDevice(ready.targetDeviceId, { version: 1, type: "agent.task", task: ready }, true);
+                for (const ready of pendingAgentTasks(db, result.task.targetDeviceId, new Date(), result.task.agentId)) {
+                  sendToDevice(ready.targetDeviceId, { version: 1, type: "agent.task", task: ready }, true, ready.agentId);
                 }
               }
             }
@@ -1200,8 +1301,8 @@ export function startCoCodexServer(
                 event: result.event,
               });
               if (message.final) {
-                for (const ready of pendingEncryptedAgentTasks(db, result.task.targetDeviceId)) {
-                  sendToDevice(ready.targetDeviceId, { version: 1, type: "project.agent.task", task: ready }, true);
+                for (const ready of pendingEncryptedAgentTasks(db, result.task.targetDeviceId, new Date(), result.task.agentId)) {
+                  sendToDevice(ready.targetDeviceId, { version: 1, type: "project.agent.task", task: ready }, true, ready.agentId);
                 }
               }
             }
@@ -1214,6 +1315,7 @@ export function startCoCodexServer(
             }));
             return;
           }
+          if (message.type === "chat.send") assertLegacyProjectWriteAllowed(db, message.projectId);
           const appended = appendChatEventResult(db, {
             projectId: message.projectId,
             eventId: message.eventId,

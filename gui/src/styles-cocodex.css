@@ -64,6 +64,20 @@
 .cocodex-usage-window { margin-top: 3px; font-size: var(--text-caption); }
 .cocodex-usage-window span { flex: 1; }
 .cocodex-usage-window b { color: var(--green); }
+.cocodex-agents { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; }
+.cocodex-agent-list { display: grid; gap: 7px; max-height: 220px; overflow-y: auto; padding: 0 12px; }
+.cocodex-agent-card { padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 45%, var(--raised)); display: grid; gap: 3px; }
+.cocodex-agent-card small { color: var(--muted); font-size: var(--text-caption); overflow-wrap: anywhere; }
+.cocodex-agent-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cocodex-agent-card-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cocodex-agent-card-head small { flex: none; }
+.cocodex-task-card code { color: var(--faint); font-size: var(--text-caption); }
+.cocodex-agent-status { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.cocodex-agent-status.status-available { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.cocodex-agent-status.status-working { background: #8b5cf6; box-shadow: 0 0 0 3px color-mix(in srgb, #8b5cf6 18%, transparent); }
+.cocodex-agent-status.status-queued { background: var(--amber); }
+.cocodex-agent-status.status-completed { background: var(--green); }
+.cocodex-agent-status.status-failed { background: var(--red); }
 .cocodex-message-list { flex: 1; overflow-y: auto; padding: 16px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
 .cocodex-message-list article { max-width: 82%; margin: 0 0 12px; padding: 10px 12px; border-radius: 4px var(--radius) var(--radius) var(--radius); background: var(--raised); }
 .cocodex-message-list article.mine { margin-left: auto; border-radius: var(--radius) 4px var(--radius) var(--radius); background: color-mix(in srgb, #7c3aed 18%, var(--raised)); }

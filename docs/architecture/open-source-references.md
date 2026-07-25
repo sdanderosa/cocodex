@@ -78,6 +78,15 @@ reviewed again before release.
   Legacy agent frames remain only for projects without a key. See ADR 0016.
 - **Agent events:** reuse OpenCodex and official Codex runtime behavior;
   borrow only typed event and isolation concepts from OpenHands.
+- **Agent roster:** adapt MeshCentral's authoritative server/device boundary.
+  `agent.list.result` is server-derived from approved host readiness and task
+  rows; the client renders discovery only, while every dispatch still passes
+  signed server authorization and local execution policy. See ADR 0018.
+- **Revocation-safe key rotation:** retain Syncthing-style cryptographic device
+  identity and explicit trust, then add a CoCodex-specific server epoch gate
+  for member removal. No reference source code is copied; the transaction,
+  strict notice, and legacy-route rejection are independently implemented. See
+  ADR 0019.
 - **Authoritative project context:** the encrypted `project.context.*` path
   keeps only signed opaque envelopes in SQLite, with a monotonic server
   revision; stale optimistic writers receive a conflict instead of overwriting

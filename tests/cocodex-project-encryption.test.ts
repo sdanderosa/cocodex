@@ -21,6 +21,7 @@ import {
   canEncryptProject,
   loadProjectKey,
   loadProjectKeyForEncryption,
+  loadProjectKeyForRotation,
   loadProjectKeyState,
   loadProjectKeyStore,
   markProjectKeyRotationRequired,
@@ -294,6 +295,9 @@ describe("CoCodex project encryption foundation", () => {
       });
       expect(canEncryptProject(path, projectId)).toBe(false);
       expect(loadProjectKeyForEncryption(path, projectId)).toBeUndefined();
+      storeProjectKey(path, projectId, 4, firstKey);
+      expect(loadProjectKeyState(path, projectId)).toMatchObject({ currentEpoch: 4, rotationRequired: true });
+      expect(loadProjectKeyForRotation(path, projectId)).toEqual({ keyEpoch: 4, projectKey: firstKey });
 
       expect(rotateProjectKey(path, projectId, 5, secondKey)).toEqual({
         currentEpoch: 5,

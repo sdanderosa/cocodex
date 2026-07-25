@@ -7,6 +7,7 @@ import {
   type ProjectContentEnvelope,
 } from "@cocodex/protocol";
 import { requireProjectMembership } from "./shared-state";
+import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 
 /**
  * The server-side chat path stores only the signed opaque project envelope.
@@ -68,22 +69,6 @@ function parseEnvelope(value: string): ProjectContentEnvelope {
   } catch {
     throw new Error("Stored encrypted chat envelope is invalid");
   }
-}
-
-function currentProjectKeyEpoch(db: Database, projectId: string): number {
-  const current = db.query(`
-    SELECT current_epoch AS currentEpoch
-    FROM project_key_epochs
-    WHERE project_id = ?
-  `).get(projectId) as { currentEpoch: number } | null;
-  if (current) return current.currentEpoch;
-  const legacy = db.query(`
-    SELECT MAX(key_epoch) AS currentEpoch
-    FROM project_key_envelopes
-    WHERE project_id = ?
-  `).get(projectId) as { currentEpoch: number | null };
-  if (!legacy.currentEpoch) throw new Error("Project encryption key has not been initialized");
-  return legacy.currentEpoch;
 }
 
 function verifyEnvelopeSender(
@@ -153,7 +138,7 @@ export function appendEncryptedChatEventResult(
   if (envelope.recordType !== "chat") throw new Error("Encrypted chat envelope must use the chat record type");
   if (envelope.recordId !== input.eventId) throw new Error("Encrypted chat record ID must match the event ID");
   if (envelope.senderDeviceId !== input.senderDeviceId) throw new Error("Encrypted chat sender does not match the authenticated device");
-  const currentEpoch = currentProjectKeyEpoch(db, input.projectId);
+  const currentEpoch = currentProjectKeyEpochForWrite(db, input.projectId);
   if (envelope.keyEpoch !== currentEpoch) {
     throw new Error(`Encrypted chat envelope must use the current project key epoch ${currentEpoch}`);
   }
