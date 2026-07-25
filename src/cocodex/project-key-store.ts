@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { hardenSecretPath } from "../lib/windows-secret-acl";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import { PROJECT_KEY_BYTES, PROJECT_KEY_EPOCH_MAX, projectKeyEnvelopeSchema, type ProjectKeyEnvelope } from "@cocodex/protocol";
 
 const STORE_VERSION = 1 as const;
@@ -226,11 +228,17 @@ export function loadProjectKeyStore(path: string): StoredProjectKeyStore {
 
 export function saveProjectKeyStore(path: string, store: StoredProjectKeyStore): void {
   const validated = validateStore(store);
-  writeFileSync(path, `${JSON.stringify(validated, null, 2)}\n`, {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true });
+  hardenSecretDir(directory, { required: true });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(validated, null, 2)}\n`, {
     encoding: "utf8",
-    flag: "w",
+    flag: "wx",
     mode: 0o600,
   });
+  hardenSecretPath(temporary, { required: true });
+  renameSync(temporary, path);
   hardenSecretPath(path, { required: true });
 }
 
