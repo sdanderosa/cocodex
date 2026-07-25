@@ -11,7 +11,8 @@
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
   lifecycle timeout hardening `0f09345f`, encrypted project artifacts
-  `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`.
+  `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`, with the
+  authoritative roster and revocation-safe key hardening in `7942452f`.
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
   evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
   presence, and disconnected-UI hardening `76647c34`.
@@ -22,9 +23,9 @@
 ## Latest authoritative agent-roster and encryption-hardening slice
 
 This recovery checkpoint adds a bounded, server-derived named-agent roster and
-status card plus revocation-safe project-key rotation. The working-tree patch
-is based on durable `HEAD` `917f29b8` (`docs: record presence hardening
-evidence`) and remains uncommitted until the final validation checkpoint.
+status card plus revocation-safe project-key rotation. It is committed in
+`7942452f`, based on durable `HEAD` `917f29b8` (`docs: record presence
+hardening evidence`).
 
 Focused command:
 
