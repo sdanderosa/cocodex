@@ -297,6 +297,43 @@ initializes a project key, writes encrypted context, verifies the SQLite row
 does not contain the plaintext goal, and recovers the goal by local decryption
 on the other client. This does not generalize to all project records yet.
 
+## Encrypted shared chat and project-key lifecycle
+
+Implementation commit: `02d24e16`
+
+The project-key epoch state is now monotonic and server-authoritative. Owner
+rotations are compare-and-swap operations that require one signed envelope for
+every approved member; replayed rotations are idempotent. Removing a member
+deletes its project membership and key envelopes, sends a revocation notice,
+and the removed client marks its local key ring unusable for new writes.
+
+The new `project.chat.*` transport encrypts the chat body on the client with
+the current project key, signs the envelope, assigns authoritative server
+sequence, and stores only opaque envelope JSON in `project_chat_events`. The
+client decrypts and verifies the envelope before emitting the normal local
+`chat.event` shape. Existing `chat.*` fixtures remain compatible when no local
+project key exists.
+
+Focused command and evidence:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts `
+  .\tests\cocodex-outbox.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `32 pass`, `0 fail`, `218 expect() calls`.
+The complete `bun run test:cocodex` command also passed with `66 pass`, `0
+fail`, and `555 expect() calls`. The focused WSS test includes tampered
+signature rejection and a SQLite canary proving that the chat plaintext is
+absent.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
@@ -344,10 +381,11 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- whole-project encryption and complete key epochs are not implemented yet:
-  shared chat, prompts, tasks, agent results, artifacts, and file references
-  remain server-readable; Final Goal/context is encrypted only through the new
-  explicit project-context frames, and key rotation on revocation is deferred.
+- whole-project encryption is not implemented yet: prompts, tasks, agent
+  results, artifacts, and file references remain server-readable; Final
+  Goal/context and shared chat are encrypted only through their explicit new
+  frames. Automatic post-removal rotation orchestration and revocation UI are
+  still incomplete.
 - NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
