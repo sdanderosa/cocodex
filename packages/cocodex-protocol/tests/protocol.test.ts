@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
   canonicalEd25519PublicKey,
+  clientFrameSchema,
   decodeInvitation,
   encodeInvitation,
   enrollmentSigningTranscript,
@@ -53,6 +54,18 @@ describe("CoCodex protocol", () => {
     expect(enrollmentSigningTranscript({ ...input, displayName: "Stephen" })).not.toEqual(baseline);
   });
 
+  test("accepts bounded Yjs prompt frames and rejects extra fields", () => {
+    const frame = {
+      version: 1 as const,
+      type: "prompt.update" as const,
+      requestId: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      updateId: crypto.randomUUID(),
+      update: "AQID",
+    };
+    expect(clientFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => clientFrameSchema.parse({ ...frame, targetDeviceId: crypto.randomUUID() })).toThrow();
+  });
   test("WebSocket proof binds the server, device, request, and challenge", () => {
     const input = {
       serverFingerprint: "server-a",

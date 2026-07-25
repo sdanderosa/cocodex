@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServerBackup, restoreServerBackup } from "./backup";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
@@ -32,12 +33,31 @@ function configureWindowsFirewall(port: number): "created" | "manual-required" |
   return result.exitCode === 0 ? "created" : "manual-required";
 }
 
+function runningPid(paths: ReturnType<typeof serverPaths>): number | undefined {
+  if (!existsSync(paths.pid)) return undefined;
+  const pid = Number(readFileSync(paths.pid, "utf8").trim());
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  try { process.kill(pid, 0); return pid; }
+  catch { return undefined; }
+}
+
+function requireStopped(paths: ReturnType<typeof serverPaths>): void {
+  const pid = runningPid(paths);
+  if (pid) throw new Error(`CoCodex Server is running with PID ${pid}; stop it first`);
+}
+
 function usage(): void {
   console.log(`CoCodex Server
 
 Usage:
   cocodex-server init --public-host HOST [--port PORT] [--state-root PATH]
   cocodex-server start [--state-root PATH]
+  cocodex-server stop [--state-root PATH]
+  cocodex-server restart [--state-root PATH]
+  cocodex-server status [--state-root PATH]
+  cocodex-server backup --output FILE [--state-root PATH]
+  cocodex-server restore --input FILE [--state-root PATH]
+  cocodex-server migrate [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
   cocodex-server device-keys --device ID [--state-root PATH]
@@ -91,6 +111,73 @@ async function run(): Promise<void> {
       });
       db.close();
       console.log(code);
+      return;
+    }
+    case "status": {
+      const config = existsSync(paths.config) ? loadConfig(paths) : undefined;
+      console.log(JSON.stringify({
+        initialized: Boolean(config),
+        stateRoot: paths.root,
+        running: runningPid(paths) !== undefined,
+        pid: runningPid(paths) ?? null,
+        publicHost: config?.publicHost ?? null,
+        port: config?.port ?? null,
+        serverFingerprint: config && existsSync(config.tlsCertificate)
+          ? tlsCertificateFingerprint(config.tlsCertificate) : null,
+      }));
+      return;
+    }
+    case "stop": {
+      const pid = runningPid(paths);
+      if (!pid) {
+        if (existsSync(paths.pid)) rmSync(paths.pid, { force: true });
+        console.log(JSON.stringify({ stopped: false, running: false }));
+        return;
+      }
+      process.kill(pid, "SIGTERM");
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && runningPid(paths) !== undefined) await Bun.sleep(100);
+      if (runningPid(paths) !== undefined) throw new Error(`CoCodex Server PID ${pid} did not stop`);
+      if (existsSync(paths.pid)) rmSync(paths.pid, { force: true });
+      console.log(JSON.stringify({ stopped: true, pid }));
+      return;
+    }
+    case "restart": {
+      const pid = runningPid(paths);
+      if (pid) {
+        process.kill(pid, "SIGTERM");
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline && runningPid(paths) !== undefined) await Bun.sleep(100);
+        if (runningPid(paths) !== undefined) throw new Error(`CoCodex Server PID ${pid} did not stop`);
+      }
+      const script = Bun.argv[1];
+      const args = script?.endsWith(".ts") ? [script, "start"] : ["start"];
+      Bun.spawn([process.execPath, ...args, "--state-root", paths.root], {
+        stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true,
+      });
+      console.log(JSON.stringify({ restarted: true, stateRoot: paths.root }));
+      return;
+    }
+    case "backup": {
+      requireStopped(paths);
+      const identity = loadServerIdentity(paths);
+      const backup = createServerBackup(paths, identity, requiredOption("--output"));
+      console.log(JSON.stringify({ backedUp: true, createdAt: backup.createdAt, databaseSha256: backup.databaseSha256 }));
+      return;
+    }
+    case "restore": {
+      requireStopped(paths);
+      const identity = loadServerIdentity(paths);
+      const backup = restoreServerBackup(paths, identity, requiredOption("--input"));
+      openDatabase(paths.database).close();
+      console.log(JSON.stringify({ restored: true, createdAt: backup.createdAt, databaseSha256: backup.databaseSha256 }));
+      return;
+    }
+    case "migrate": {
+      requireStopped(paths);
+      const db = openDatabase(paths.database);
+      db.close();
+      console.log(JSON.stringify({ migrated: true, database: paths.database }));
       return;
     }
     case "devices": {

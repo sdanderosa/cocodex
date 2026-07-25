@@ -36,6 +36,14 @@ async function waitForHealth(port: number): Promise<Response> {
   throw lastError ?? new Error("Server did not become healthy");
 }
 
+async function runCli(cli: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn([process.execPath, cli, ...args], { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
 test("the separate server process initializes, serves TLS, and restarts after termination", async () => {
   const root = mkdtempSync(join(tmpdir(), "cocodex-process-"));
   roots.push(root);
@@ -54,6 +62,9 @@ test("the separate server process initializes, serves TLS, and restarts after te
   ], { stdout: "pipe", stderr: "pipe" });
   expect(await init.exited).toBe(0);
   expect(await new Response(init.stdout).text()).toContain('"initialized":true');
+  const initializedStatus = await runCli(cli, ["status", "--state-root", root]);
+  expect(initializedStatus.exitCode).toBe(0);
+  expect(JSON.parse(initializedStatus.stdout)).toMatchObject({ initialized: true, running: false, port });
 
   const start = () => Bun.spawn([
     process.execPath,
@@ -73,8 +84,11 @@ test("the separate server process initializes, serves TLS, and restarts after te
   try {
     const secondHealth = await waitForHealth(port);
     expect(secondHealth.status).toBe(200);
+    const runningStatus = await runCli(cli, ["status", "--state-root", root]);
+    expect(JSON.parse(runningStatus.stdout)).toMatchObject({ initialized: true, running: true });
   } finally {
-    second.kill(9);
+    const stopped = await runCli(cli, ["stop", "--state-root", root]);
+    expect(stopped.exitCode).toBe(0);
     await second.exited;
   }
 });

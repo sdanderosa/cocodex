@@ -61,6 +61,12 @@ binding. `cocodex-server init` attempts the Windows Firewall rule and prints
 the single-port manual router-forwarding instructions when automatic setup is
 unavailable.
 
+The separate server CLI now also exposes `status`, `stop`, `restart`, `migrate`,
+`backup`, and `restore`. Backups are signed by the server's Ed25519 identity,
+include a SHA-256 database checksum, and are rejected if tampered with or
+presented to a different server identity. The lifecycle test exercises status
+and graceful stop against the real TLS server process.
+
 Files:
 
 - `tests/cocodex-private-alpha-process.test.ts`

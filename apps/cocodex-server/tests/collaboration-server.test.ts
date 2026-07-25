@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import * as Y from "yjs";
 import {
   agentRequestSigningTranscript,
   decodeInvitation,
@@ -409,6 +410,46 @@ describe("authenticated WSS collaboration", () => {
       final: false,
       status: "running",
     });
+
+    const promptAtStephen = nextFrame(stephenSocket, "prompt.snapshot");
+    const promptAtKai = nextFrame(reconnectedKai, "prompt.snapshot");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId: project.id,
+    }));
+    reconnectedKai.send(JSON.stringify({
+      version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId: project.id,
+    }));
+    const stephenPrompt = new Y.Doc();
+    const kaiPrompt = new Y.Doc();
+    Y.applyUpdate(stephenPrompt, Buffer.from(String((await promptAtStephen).update), "base64"));
+    Y.applyUpdate(kaiPrompt, Buffer.from(String((await promptAtKai).update), "base64"));
+    stephenPrompt.getText("prompt").insert(0, "Stephen ");
+    kaiPrompt.getText("prompt").insert(0, "Kai ");
+    const stephenUpdate = Buffer.from(Y.encodeStateAsUpdate(stephenPrompt)).toString("base64");
+    const kaiUpdate = Buffer.from(Y.encodeStateAsUpdate(kaiPrompt)).toString("base64");
+    const stephenUpdateId = randomUUID();
+    const kaiUpdateId = randomUUID();
+    const updates = [
+      nextFrame(stephenSocket, "prompt.update", frame => frame.updateId === stephenUpdateId),
+      nextFrame(stephenSocket, "prompt.update", frame => frame.updateId === kaiUpdateId),
+      nextFrame(reconnectedKai, "prompt.update", frame => frame.updateId === stephenUpdateId),
+      nextFrame(reconnectedKai, "prompt.update", frame => frame.updateId === kaiUpdateId),
+    ];
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "prompt.update", requestId: randomUUID(), projectId: project.id,
+      updateId: stephenUpdateId, update: stephenUpdate,
+    }));
+    reconnectedKai.send(JSON.stringify({
+      version: 1, type: "prompt.update", requestId: randomUUID(), projectId: project.id,
+      updateId: kaiUpdateId, update: kaiUpdate,
+    }));
+    await Promise.all(updates);
+    Y.applyUpdate(stephenPrompt, Buffer.from(kaiUpdate, "base64"));
+    Y.applyUpdate(kaiPrompt, Buffer.from(stephenUpdate, "base64"));
+    const sharedPromptText = stephenPrompt.getText("prompt").toString();
+    expect(kaiPrompt.getText("prompt").toString()).toBe(sharedPromptText);
+    expect(sharedPromptText).toContain("Stephen ");
+    expect(sharedPromptText).toContain("Kai ");
     await Bun.sleep(1_600);
 
     for (const socket of sockets.splice(0)) socket.close();
@@ -437,6 +478,13 @@ describe("authenticated WSS collaboration", () => {
       status: "running",
       targetDeviceId: kai.id,
     });
+    const recoveredPrompt = nextFrame(restartedKai, "prompt.snapshot");
+    restartedKai.send(JSON.stringify({
+      version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId: project.id,
+    }));
+    const recoveredPromptDocument = new Y.Doc();
+    Y.applyUpdate(recoveredPromptDocument, Buffer.from(String((await recoveredPrompt).update), "base64"));
+    expect(recoveredPromptDocument.getText("prompt").toString()).toBe(sharedPromptText);
     const restartedChat = nextFrame(restartedKai, "chat.snapshot");
     restartedKai.send(JSON.stringify({
       version: 1,

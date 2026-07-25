@@ -29,7 +29,8 @@
     "assets/architecture.png",
     "assets/codex-app-picker.png",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=18"
@@ -46,7 +47,7 @@
     "test:cocodex-server": "cd apps/cocodex-server && bun test",
     "typecheck:cocodex-server": "cd apps/cocodex-server && bun x tsc --noEmit",
     "test": "bun scripts/test.ts",
-    "test:cocodex": "bun test ./packages/cocodex-protocol/tests/protocol.test.ts ./apps/cocodex-server/tests/enrollment.test.ts ./apps/cocodex-server/tests/boundary.test.ts ./apps/cocodex-server/tests/server.test.ts ./apps/cocodex-server/tests/process.test.ts ./apps/cocodex-server/tests/cli-process.test.ts ./apps/cocodex-server/tests/shared-state.test.ts ./apps/cocodex-server/tests/database-migration.test.ts ./apps/cocodex-server/tests/collaboration-server.test.ts ./tests/cocodex-client.test.ts ./tests/cocodex-codex-agent-adapter.test.ts ./tests/cocodex-private-messaging.test.ts ./tests/cocodex-outbox.test.ts ./tests/cocodex-agent-journal.test.ts ./tests/cocodex-agent-bridge-recovery.test.ts ./tests/cocodex-trusted-devices.test.ts ./tests/cocodex-gui-bridge.test.ts ./tests/cocodex-private-alpha-process.test.ts",
+    "test:cocodex": "bun test ./packages/cocodex-protocol/tests/protocol.test.ts ./apps/cocodex-server/tests/enrollment.test.ts ./apps/cocodex-server/tests/boundary.test.ts ./apps/cocodex-server/tests/server.test.ts ./apps/cocodex-server/tests/process.test.ts ./apps/cocodex-server/tests/cli-process.test.ts ./apps/cocodex-server/tests/shared-state.test.ts ./apps/cocodex-server/tests/database-migration.test.ts ./apps/cocodex-server/tests/backup.test.ts ./apps/cocodex-server/tests/collaboration-server.test.ts ./tests/cocodex-client.test.ts ./tests/cocodex-codex-agent-adapter.test.ts ./tests/cocodex-private-messaging.test.ts ./tests/cocodex-outbox.test.ts ./tests/cocodex-agent-journal.test.ts ./tests/cocodex-agent-bridge-recovery.test.ts ./tests/cocodex-trusted-devices.test.ts ./tests/cocodex-gui-bridge.test.ts ./tests/cocodex-routes-security.test.ts ./tests/cocodex-private-alpha-process.test.ts",
     "test:cocodex-private-alpha": "bun test ./tests/cocodex-private-alpha-process.test.ts --timeout 120000",
     "typecheck": "bun x tsc --noEmit",
     "typecheck:cocodex": "bun run --cwd packages/cocodex-protocol typecheck && bun run --cwd apps/cocodex-server typecheck && bun x tsc --noEmit",

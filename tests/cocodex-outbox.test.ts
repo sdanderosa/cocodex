@@ -71,4 +71,23 @@ describe("CoCodex durable offline outbox", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("persists Yjs prompt updates while the collaboration server is offline", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-prompt-outbox-"));
+    const paths = clientPaths(root);
+    const update = {
+      version: 1 as const,
+      type: "prompt.update" as const,
+      requestId: randomUUID(),
+      projectId: randomUUID(),
+      updateId: randomUUID(),
+      update: "AQID",
+    };
+    try {
+      expect(enqueueDurableEvent(paths, update)).toEqual(update);
+      expect(queuedEvents(clientPaths(root))).toEqual([update]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
