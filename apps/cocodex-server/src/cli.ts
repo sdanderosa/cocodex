@@ -103,16 +103,16 @@ async function run(): Promise<void> {
         pid: process.pid,
         serverFingerprint: tlsCertificateFingerprint(config.tlsCertificate),
       }));
-      const shutdown = () => {
-        running.stop(true);
+      const shutdown = async () => {
+        await running.stop(true);
         db.close();
         if (existsSync(paths.pid) && readFileSync(paths.pid, "utf8").trim() === String(process.pid)) {
           rmSync(paths.pid);
         }
         process.exit(0);
       };
-      process.on("SIGINT", shutdown);
-      process.on("SIGTERM", shutdown);
+      process.on("SIGINT", () => void shutdown());
+      process.on("SIGTERM", () => void shutdown());
       await new Promise(() => {});
       return;
     }

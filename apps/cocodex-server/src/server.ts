@@ -1,10 +1,11 @@
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Database } from "bun:sqlite";
-import { decodeInvitation, enrollmentClaimSchema } from "@cocodex/protocol";
+import { clientFrameSchema, decodeInvitation, enrollmentClaimSchema } from "@cocodex/protocol";
 import type { ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
+import { appendChatEvent, chatEventsAfter, listProjects } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
@@ -24,7 +25,7 @@ interface DeviceAuthRow {
 export interface RunningCoCodexServer {
   hostname: string;
   port: number;
-  stop: (closeActiveConnections?: boolean) => void;
+  stop: (closeActiveConnections?: boolean) => Promise<void>;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -132,6 +133,7 @@ export function startCoCodexServer(
       return json({ error: "Not found" }, 404);
     },
     websocket: {
+      maxPayloadLength: MAX_HTTP_BODY_BYTES,
       open(socket) {
         socket.send(JSON.stringify({
           type: "auth.challenge",
@@ -140,34 +142,81 @@ export function startCoCodexServer(
         }));
       },
       message(socket, rawMessage) {
-        if (socket.data.authenticatedDeviceId) {
-          socket.send(JSON.stringify({ type: "error", code: "unsupported_message" }));
-          return;
-        }
+        let requestId: string | undefined;
         try {
-          const message = JSON.parse(String(rawMessage)) as Record<string, unknown>;
-          if (
-            message.type !== "auth.response" ||
-            typeof message.deviceId !== "string" ||
-            typeof message.signature !== "string"
-          ) {
-            throw new Error("Invalid authentication response");
+          const message = clientFrameSchema.parse(JSON.parse(String(rawMessage)));
+          requestId = message.requestId;
+          if (!socket.data.authenticatedDeviceId) {
+            if (message.type !== "auth.response") throw new Error("Authentication is required");
+            const device = deviceForAuthentication(db, message.deviceId);
+            if (!device || device.status !== "approved") throw new Error("Device is not approved");
+            const publicKey = createPublicKey(device.publicKeyPem);
+            const valid = verify(
+              null,
+              Buffer.from(websocketAuthMessage(socket.data.challenge), "utf8"),
+              publicKey,
+              Buffer.from(message.signature, "base64url"),
+            );
+            if (!valid) throw new Error("Invalid device proof");
+            socket.data.authenticatedDeviceId = device.id;
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "auth.ok",
+              requestId,
+              deviceId: device.id,
+            }));
+            return;
           }
-          const device = deviceForAuthentication(db, message.deviceId);
-          if (!device || device.status !== "approved") throw new Error("Device is not approved");
-          const publicKey = createPublicKey(device.publicKeyPem);
-          const valid = verify(
-            null,
-            Buffer.from(websocketAuthMessage(socket.data.challenge), "utf8"),
-            publicKey,
-            Buffer.from(message.signature, "base64url"),
-          );
-          if (!valid) throw new Error("Invalid device proof");
-          socket.data.authenticatedDeviceId = device.id;
-          socket.send(JSON.stringify({ type: "auth.ok", deviceId: device.id }));
+          if (message.type === "auth.response") throw new Error("Device is already authenticated");
+          const deviceId = socket.data.authenticatedDeviceId;
+          if (message.type === "project.list") {
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.list.result",
+              requestId,
+              projects: listProjects(db, deviceId),
+            }));
+            return;
+          }
+          if (message.type === "chat.subscribe") {
+            const events = chatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
+            socket.subscribe(`project:${message.projectId}`);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "chat.snapshot",
+              requestId,
+              projectId: message.projectId,
+              events,
+            }));
+            return;
+          }
+          const event = appendChatEvent(db, {
+            projectId: message.projectId,
+            eventId: message.eventId,
+            senderDeviceId: deviceId,
+            content: message.content,
+            clientCreatedAt: message.clientCreatedAt,
+          });
+          socket.send(JSON.stringify({
+            version: 1,
+            type: "chat.accepted",
+            requestId,
+            event,
+          }));
+          server.publish(`project:${message.projectId}`, JSON.stringify({
+            version: 1,
+            type: "chat.event",
+            event,
+          }));
         } catch (error) {
-          socket.send(JSON.stringify({ type: "auth.error", error: safeErrorMessage(error) }));
-          socket.close(1008, "Authentication failed");
+          const authenticated = Boolean(socket.data.authenticatedDeviceId);
+          socket.send(JSON.stringify({
+            version: 1,
+            type: authenticated ? "error" : "auth.error",
+            requestId,
+            error: safeErrorMessage(error),
+          }));
+          if (!authenticated) socket.close(1008, "Authentication failed");
         }
       },
     },
