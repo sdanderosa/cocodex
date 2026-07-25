@@ -1,6 +1,6 @@
 {
   "name": "@bitkyc08/opencodex",
-  "version": "2.7.39",
+  "version": "2.7.35",
   "description": "Universal provider proxy for OpenAI Codex & Claude Code — use any LLM with Codex CLI/App/SDK and Claude Code",
   "type": "module",
   "workspaces": [
@@ -103,7 +103,7 @@
     "type": "git",
     "url": "git+https://github.com/lidge-jun/opencodex.git"
   },
-  "homepage": "https://lidge-jun.github.io/opencodex/",
+  "homepage": "https://opencodex.me/",
   "bugs": {
     "url": "https://github.com/lidge-jun/opencodex/issues"
   },
