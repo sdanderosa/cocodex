@@ -92,6 +92,33 @@ function parseDependencies(value: string): string[] {
   return parsed as string[];
 }
 
+function normalizeDependencies(value: string[] | undefined, taskId: string): string[] {
+  const dependencies = [...new Set(value ?? [])];
+  if (dependencies.some(dependencyId => dependencyId === taskId)) {
+    throw new Error("Task cannot depend on itself");
+  }
+  if (dependencies.length > 16) throw new Error("Too many task dependencies");
+  return dependencies;
+}
+
+function rejectDependencyCycle(db: Database, projectId: string, taskId: string, dependencies: string[]): void {
+  const pending = [...dependencies];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const dependencyId = pending.pop()!;
+    if (dependencyId === taskId) throw new Error("Task dependency would create a cycle");
+    if (visited.has(dependencyId)) continue;
+    visited.add(dependencyId);
+    if (visited.size > 4_096) throw new Error("Task dependency graph is too large");
+    const row = db.query(`
+      SELECT project_id AS projectId, dependencies_json AS dependenciesJson
+      FROM agent_tasks WHERE id = ?
+    `).get(dependencyId) as { projectId: string; dependenciesJson: string } | null;
+    if (!row || row.projectId !== projectId) continue;
+    pending.push(...parseDependencies(row.dependenciesJson));
+  }
+}
+
 function envelopeJson(value: ProjectContentEnvelope): string {
   return JSON.stringify(Object.fromEntries(
     Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
@@ -159,11 +186,11 @@ function readTask(db: Database, id: string): TaskRow | null {
   `).get(id) as TaskRow | null;
 }
 
-function sameTaskRequest(task: EncryptedAgentTask, input: CreateEncryptedAgentTaskInput, envelope: ProjectContentEnvelope): boolean {
+function sameTaskRequest(task: EncryptedAgentTask, input: CreateEncryptedAgentTaskInput, envelope: ProjectContentEnvelope, dependencies: string[]): boolean {
   return task.projectId === input.projectId && task.requesterDeviceId === input.requesterDeviceId
     && task.agentId === input.agentId && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
-    && JSON.stringify(task.dependencies) === JSON.stringify(input.dependencies ?? [])
+    && JSON.stringify(task.dependencies) === JSON.stringify(dependencies)
     && task.promptEnvelope && envelopeJson(task.promptEnvelope) === envelopeJson(envelope);
 }
 
@@ -174,6 +201,7 @@ export function createEncryptedAgentTask(
   now = new Date(),
 ): { task: EncryptedAgentTask; created: boolean } {
   requireProjectMembership(db, input.projectId, input.requesterDeviceId);
+  const dependencies = normalizeDependencies(input.dependencies, input.id);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted agent prompt belongs to another project");
   if (envelope.recordType !== "task") throw new Error("Encrypted agent prompt must use the task record type");
@@ -187,7 +215,7 @@ export function createEncryptedAgentTask(
   const existing = readTask(db, input.id);
   if (existing) {
     const task = taskFromRow(existing);
-    if (!sameTaskRequest(task, input, envelope)) throw new Error("Task ID was already used for a different request");
+    if (!sameTaskRequest(task, input, envelope, dependencies)) throw new Error("Task ID was already used for a different request");
     return { task, created: false };
   }
   if (db.query("SELECT 1 FROM agent_tasks WHERE id = ?").get(input.id)) {
@@ -201,13 +229,11 @@ export function createEncryptedAgentTask(
   const agent = db.query("SELECT id, project_id AS projectId, host_device_id AS hostDeviceId, enabled FROM agents WHERE id = ?")
     .get(input.agentId) as AgentRow | null;
   if (!agent || agent.projectId !== input.projectId || agent.enabled !== 1) throw new Error("Agent is not available in this project");
-  const dependencies = [...new Set(input.dependencies ?? [])];
-  if (dependencies.includes(input.id)) throw new Error("Task cannot depend on itself");
-  if (dependencies.length > 16) throw new Error("Too many task dependencies");
   for (const dependencyId of dependencies) {
     const dependency = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?").get(dependencyId) as { projectId: string } | null;
     if (!dependency || dependency.projectId !== input.projectId) throw new Error("Task dependency was not found in this project");
   }
+  rejectDependencyCycle(db, input.projectId, input.id, dependencies);
   requireProjectMembership(db, input.projectId, agent.hostDeviceId);
   if (agent.hostDeviceId === input.requesterDeviceId) throw new Error("Remote agent must be hosted by another device");
   const requester = db.query("SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?")

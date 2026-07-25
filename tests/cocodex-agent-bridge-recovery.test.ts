@@ -35,6 +35,7 @@ class AcknowledgingSocket extends EventTarget {
 function signedTask(
   localDeviceId: string,
   status: "queued" | "running" = "running",
+  dependencies: string[] = [],
 ): {
   task: AgentTask;
   requesterFingerprint: string;
@@ -62,6 +63,7 @@ function signedTask(
     nonce,
     issuedAt,
     expiresAt,
+    dependencies,
   };
   const requesterSignature = sign(
     null,
@@ -96,6 +98,7 @@ function signedTask(
       serverSignature,
       status,
       acceptedAt: issuedAt,
+      dependencies,
     },
     requesterFingerprint: publicKeyFingerprint(requester.publicKey),
     serverPublicKeyPem: server.publicKey,
@@ -179,6 +182,48 @@ function signedEncryptedTask(localDeviceId: string): {
 }
 
 describe("CoCodex local agent crash recovery", () => {
+  test("verifies plaintext dependency IDs in both signed task transcripts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-dependency-"));
+    const journalPath = join(root, "agent-journal.json");
+    const localDeviceId = randomUUID();
+    const fixture = signedTask(localDeviceId, "queued", [randomUUID()]);
+    const socket = new AcknowledgingSocket();
+    let executeCount = 0;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute() {
+        executeCount += 1;
+        yield "Dependency task ran.";
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([
+        [fixture.task.requesterDeviceId, fixture.requesterFingerprint],
+      ]),
+      journalPath,
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "agent.task", task: fixture.task }),
+      }));
+      for (let attempt = 0; attempt < 100
+        && !socket.sent.some(frame => frame.type === "agent.result" && frame.final === true); attempt += 1) {
+        await Bun.sleep(5);
+      }
+      expect(socket.sent.find(frame => frame.type === "agent.result" && frame.final === true)).toMatchObject({
+        taskId: fixture.task.id,
+        final: true,
+        status: "completed",
+        content: "Dependency task ran.",
+      });
+      expect(executeCount).toBe(1);
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("fails a server-running task closed after reconnect instead of executing it twice", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-recovery-"));
     const journalPath = join(root, "agent-journal.json");

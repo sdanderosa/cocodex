@@ -29,10 +29,12 @@ import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import {
+  deferPrivateMailboxMessage,
   hasPrivateMailboxReceipt,
   loadPrivateMailbox,
   recordPrivateMailboxReceipt,
   savePrivateMailbox,
+  type PrivateMailboxMessage,
   type PrivateMailboxState,
 } from "./private-mailbox";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
@@ -445,14 +447,13 @@ export async function runJsonLineSession(
       },
     });
   });
-  const openPrivateEnvelope = async (message: {
-    messageId: string;
-    senderDeviceId: string;
-    recipientDeviceId: string;
-    clientCreatedAt: string;
-    ciphertext: string;
-    sequence: number;
-  }): Promise<void> => {
+  const deferPrivateEnvelope = (message: PrivateMailboxMessage): void => {
+    privateMailbox = deferPrivateMailboxMessage(privateMailbox, message);
+    privateCursor = privateMailbox.cursor;
+    savePrivateMailbox(paths.privateMailbox, privateMailbox);
+  };
+
+  const openPrivateEnvelope = async (message: PrivateMailboxMessage): Promise<void> => {
     if (hasPrivateMailboxReceipt(privateMailbox, message.messageId)) return;
     if (message.recipientDeviceId !== connection.deviceId) {
       // The mailbox also includes messages sent by this device. They are not
@@ -472,12 +473,7 @@ export async function runJsonLineSession(
         source: "private",
         error: `Private-message sender ${message.senderDeviceId} is not an approved device`,
       });
-      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
-        messageId: message.messageId,
-        sequence: message.sequence,
-      });
-      privateCursor = privateMailbox.cursor;
-      savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      deferPrivateEnvelope(message);
       return;
     }
     try {
@@ -499,12 +495,7 @@ export async function runJsonLineSession(
         message: { ...message, ciphertext: undefined, text: opened.text },
       });
     } catch (error) {
-      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
-        messageId: message.messageId,
-        sequence: message.sequence,
-      });
-      privateCursor = privateMailbox.cursor;
-      savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      deferPrivateEnvelope(message);
       emitError({
         source: "private",
         error: error instanceof Error ? error.message : String(error),
@@ -512,14 +503,7 @@ export async function runJsonLineSession(
     }
   };
 
-  const queuePrivateEnvelope = (message: {
-    messageId: string;
-    senderDeviceId: string;
-    recipientDeviceId: string;
-    clientCreatedAt: string;
-    ciphertext: string;
-    sequence: number;
-  }): void => {
+  const queuePrivateEnvelope = (message: PrivateMailboxMessage): void => {
     privateProcessing = privateProcessing
       .then(() => openPrivateEnvelope(message))
       .catch(error => {
@@ -528,6 +512,10 @@ export async function runJsonLineSession(
           error: error instanceof Error ? error.message : String(error),
         });
       });
+  };
+
+  const retryDeferredPrivateMessages = async (): Promise<void> => {
+    for (const message of [...privateMailbox.deferred]) await openPrivateEnvelope(message);
   };
 
   const trustedProjectSenderKey = (deviceId: string, senderPublicKeyPem: string): string => {
@@ -1163,7 +1151,7 @@ export async function runJsonLineSession(
             error: error instanceof Error ? error.message : String(error),
           });
         });
-      } else if (frame.type === "private.message") {
+      } else if (frame.type === "private.accepted" || frame.type === "private.message") {
         queuePrivateEnvelope(frame.message);
       } else if (frame.type === "project.key.result") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
@@ -1323,6 +1311,15 @@ export async function runJsonLineSession(
     } catch {
       // The session will retry the persisted report on its next reconnect.
     }
+    privateProcessing = privateProcessing
+      .then(retryDeferredPrivateMessages)
+      .catch(error => {
+        emitError({
+          source: "private",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .then(() => undefined);
     send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
     let detachAgent: (() => void | Promise<void>) | undefined;
     if (existsSync(paths.agentPolicy)) {
@@ -1905,6 +1902,15 @@ export async function runJsonLineSession(
           const deviceId = String(command.deviceId);
           const fingerprint = String(command.fingerprint);
           trustDevice(paths.trustedDevices, deviceId, fingerprint);
+          privateProcessing = privateProcessing
+            .then(retryDeferredPrivateMessages)
+            .catch(error => {
+              emitError({
+                source: "private",
+                error: error instanceof Error ? error.message : String(error),
+              });
+            })
+            .then(() => undefined);
           emit({ source: "control", id: command.id, ok: true, deviceId });
         } else if (command.type === "private.send") {
           const messageId = String(command.messageId ?? randomUUID());

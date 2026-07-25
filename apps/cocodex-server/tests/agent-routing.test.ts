@@ -115,6 +115,19 @@ describe("authoritative agent dependencies", () => {
       };
       const first = make("8661361f-ce2f-4bec-88fd-c4fb32f49704", "Find the bug");
       const second = make("4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e", "Write tests", [first.id]);
+      const replay = createAgentTask(db, identity, {
+        id: second.id,
+        projectId: project.id,
+        requesterDeviceId: stephen.id,
+        agentId: "kai-agent",
+        prompt: second.prompt,
+        nonce: second.nonce,
+        issuedAt: second.issuedAt,
+        expiresAt: second.expiresAt,
+        dependencies: [first.id, first.id],
+        requesterSignature: second.requesterSignature,
+      }, now);
+      expect(replay.created).toBeFalse();
       expect(pendingAgentTasks(db, kai.id)).toEqual([first]);
       db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
       expect(pendingAgentTasks(db, kai.id)).toEqual([]);
@@ -124,6 +137,12 @@ describe("authoritative agent dependencies", () => {
       expect(pendingAgentTasks(db, kai.id)).toEqual([first]);
       appendAgentResult(db, kai.id, first.id, "690d9307-4b83-4ff6-9da8-d816219bea53", "Finding", true, "completed", now);
       expect(pendingAgentTasks(db, kai.id).map(task => task.id)).toEqual([second.id]);
+
+      const cycleId = "e5e0d9f7-0a91-4c1b-a12c-b4ad3e1cf4d4";
+      db.query("UPDATE agent_tasks SET dependencies_json = ? WHERE id = ?")
+        .run(JSON.stringify([cycleId]), first.id);
+      expect(() => make(cycleId, "Cycle must be rejected", [first.id]))
+        .toThrow("cycle");
     } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 

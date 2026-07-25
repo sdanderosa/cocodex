@@ -9,12 +9,33 @@ const privateMailboxReceiptSchema = z.object({
   sequence: z.number().int().positive(),
 }).strict();
 
+const privateMailboxDeferredMessageSchema = z.object({
+  sequence: z.number().int().positive(),
+  messageId: z.uuid(),
+  senderDeviceId: z.uuid(),
+  recipientDeviceId: z.uuid(),
+  ciphertext: z.string().min(64).max(96_000).regex(/^[A-Za-z0-9_-]+$/),
+  clientCreatedAt: z.iso.datetime(),
+  acceptedAt: z.iso.datetime(),
+}).strict();
+
 const privateMailboxFileSchema = z.object({
   version: z.literal(1),
   deviceId: z.uuid(),
   cursor: z.number().int().nonnegative(),
   receipts: z.array(privateMailboxReceiptSchema).max(2_048),
+  deferred: z.array(privateMailboxDeferredMessageSchema).max(256).default([]),
 }).strict();
+
+export interface PrivateMailboxMessage {
+  sequence: number;
+  messageId: string;
+  senderDeviceId: string;
+  recipientDeviceId: string;
+  ciphertext: string;
+  clientCreatedAt: string;
+  acceptedAt: string;
+}
 
 export interface PrivateMailboxReceipt {
   messageId: string;
@@ -26,10 +47,11 @@ export interface PrivateMailboxState {
   deviceId: string;
   cursor: number;
   receipts: PrivateMailboxReceipt[];
+  deferred: PrivateMailboxMessage[];
 }
 
 export function emptyPrivateMailbox(deviceId: string): PrivateMailboxState {
-  return { version: 1, deviceId, cursor: 0, receipts: [] };
+  return { version: 1, deviceId, cursor: 0, receipts: [], deferred: [] };
 }
 
 export function loadPrivateMailbox(path: string, deviceId: string): PrivateMailboxState {
@@ -64,11 +86,33 @@ export function recordPrivateMailboxReceipt(
   state: PrivateMailboxState,
   receipt: PrivateMailboxReceipt,
 ): PrivateMailboxState {
-  if (hasPrivateMailboxReceipt(state, receipt.messageId)) return state;
+  const deferred = state.deferred.filter(message => message.messageId !== receipt.messageId);
+  if (hasPrivateMailboxReceipt(state, receipt.messageId)) {
+    return deferred.length === state.deferred.length ? state : { ...state, deferred };
+  }
   const receipts = [...state.receipts, receipt];
   return {
     ...state,
     cursor: Math.max(state.cursor, receipt.sequence),
     receipts: receipts.length > 2_048 ? receipts.slice(-2_048) : receipts,
+    deferred,
+  };
+}
+
+/**
+ * Advance the server cursor without acknowledging a message that could not
+ * yet be opened. The protected local mailbox keeps the ciphertext so a later
+ * trust/key update can retry it without asking the server to redeliver it.
+ */
+export function deferPrivateMailboxMessage(
+  state: PrivateMailboxState,
+  message: PrivateMailboxMessage,
+): PrivateMailboxState {
+  if (hasPrivateMailboxReceipt(state, message.messageId)) return state;
+  const deferred = [...state.deferred.filter(item => item.messageId !== message.messageId), message];
+  return {
+    ...state,
+    cursor: Math.max(state.cursor, message.sequence),
+    deferred: deferred.length > 256 ? deferred.slice(-256) : deferred,
   };
 }
