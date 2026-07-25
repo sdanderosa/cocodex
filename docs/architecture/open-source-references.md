@@ -17,7 +17,7 @@ reviewed again before release.
 | [Yjs](https://github.com/yjs/yjs) / [threat model](https://github.com/yjs/yjs/blob/main/THREAT_MODEL.md) | Collaborative prompt text, offline updates, convergence, awareness | Commutative and idempotent updates, state vectors, `Y.Text`, and ephemeral awareness | Reuse stable `yjs` 13.6.31 for project prompt documents | MIT; compatible | Yjs supplies convergence, not authentication, authorization, TLS, or safe rendering. Apply project/document ACLs before updates; cap bytes, depth, and rates; support snapshot recovery from malicious authorized edits. |
 | [Hocuspocus](https://github.com/ueberdosis/hocuspocus) / [hooks](https://tiptap.dev/docs/hocuspocus/server/hooks) | Yjs WebSocket transport, auth hooks, reconnection, persistence | Typed TypeScript collaboration server/provider with pre-auth and persistence hooks | Concepts only for private alpha; defer the dependency while the existing authenticated WSS transport remains sufficient | MIT; compatible | Mount on the one TLS listener. Never treat document names or bearer strings as authorization. Persist exact binary Yjs data. Test pre-auth queue exhaustion, cross-project access, payload limits, restart reload, and apply/store crash behavior. |
 | [Syncthing](https://github.com/syncthing/syncthing) / [security model](https://docs.syncthing.net/users/security.html) | Permanent device identity, fingerprints, explicit trust, unknown-device rejection | Device identity derives from cryptographic keys and explicit allowlists, not discovery names or addresses | Concepts only | MPL-2.0; avoid copying implementation files unless obligations are isolated and accepted | Use canonical public-key fingerprints and pending/approved/revoked states. Keep device auth, TLS server, and messaging keys separate. Test canonicalization, clone/key theft, invite replay, live revocation, and unknown devices. |
-| [Matrix Olm/Megolm](https://spec.matrix.org/latest/olm-megolm/) / [vodozemac](https://github.com/matrix-org/vodozemac) | Per-device E2EE, offline delivery, device verification/revocation, replay handling | Signed identity keys, one-time keys, per-device sessions, ratchets, and ciphertext-only homeservers | Evaluate official Matrix crypto state-machine bindings; do not compose primitives by hand | vodozemac and Matrix SDKs are Apache-2.0; compatible with notices and exact-binding review | Server is only a key-bundle and ciphertext mailbox. Never silently downgrade. Test bad signatures, prekey reuse, replay indices, skipped/out-of-order messages, lost session state, new devices, rotation, attachments, and absence of plaintext in DB/logs. |
+| [Matrix Olm/Megolm](https://spec.matrix.org/latest/olm-megolm/) / [vodozemac](https://github.com/matrix-org/vodozemac) | Per-device E2EE, offline delivery, device verification/revocation, replay handling | Signed identity keys, one-time keys, per-device sessions, ratchets, and ciphertext-only homeservers | Evaluated the official `@matrix-org/matrix-sdk-crypto-wasm@18.3.1` and `@matrix-org/matrix-sdk-crypto-nodejs@0.6.1` bindings; no Matrix source or dependency is shipped in this alpha | Apache-2.0; compatible in principle, but each binding's runtime and native-binary obligations still require release review | The Rust SDK exposes a no-network crypto state machine and durable SQLite store, but the WASM binding's durable IndexedDB path failed in Bun and the Node binding requires a native Node runtime. The alpha therefore keeps its reviewed sealed-box envelope and does not silently downgrade or claim Matrix/Signal interoperability. The future migration must test bad signatures, prekey reuse, replay indices, skipped/out-of-order messages, lost session state, new devices, rotation, attachments, and absence of plaintext in DB/logs. |
 | [Signal specifications](https://signal.org/docs/) / [libsignal](https://github.com/signalapp/libsignal) | X3DH, Double Ratchet, Sesame multi-device session management | Asynchronous prekeys, forward secrecy, break-in recovery, offline multi-device delivery, bounded skipped-key state | Specifications and failure cases only; do not use or copy libsignal without accepting its license | libsignal is AGPL-3.0; incompatible with an MIT-only distribution absent an explicit licensing decision | Do not claim Signal Protocol compatibility. Apply its failure cases to the selected maintained Matrix implementation. |
 | [libsodium](https://github.com/jedisct1/libsodium) / [sealed boxes](https://doc.libsodium.org/public-key_cryptography/sealed_boxes) | Private-alpha one-recipient message encryption | Anonymous X25519 sealed boxes provide reviewed authenticated public-key encryption without designing a cipher | Reuse `libsodium-wrappers-sumo` 0.8.2 for the narrow private-alpha envelope | ISC; compatible and notice preserved | Each device has a separate X25519 messaging key and Ed25519 signing identity. The server stores ciphertext envelopes only. Sealed boxes do not provide a Double Ratchet, forward secrecy after recipient-key compromise, multi-device sessions, or key rotation; those remain later Matrix-style requirements and CoCodex does not claim Signal compatibility. |
 | [libsodium AEAD](https://doc.libsodium.org/secret-key_cryptography/aead) / [XChaCha20-Poly1305](https://doc.libsodium.org/secret-key_cryptography/aead/chacha20-poly1305) | Project key epochs and authenticated project records | Random project keys, per-device sealed key envelopes, nonce/AAD-bound ciphertext, and rotation after trust changes | Reuse `libsodium-wrappers-sumo` 0.8.2 for the shipped project-wrap, encrypted-context, encrypted-chat, encrypted-prompt, encrypted-artifact, and keyed-agent slices; do not copy source | ISC; compatible and covered by the existing notice review | The server stores opaque key/context/chat/prompt/artifact/task/result envelopes and validates signatures, membership, revisions, and epoch monotonicity without decrypting. File references and full multi-device message lifecycle remain explicitly incomplete. |
@@ -42,10 +42,14 @@ reviewed again before release.
   its extra service surface is justified.
 - **Private messages:** use libsodium sealed boxes plus signed, metadata-bound
   envelopes for the single-device private alpha. Keep the server
-  ciphertext-only. Evaluate official Apache-2.0 Matrix crypto bindings before
-  claiming forward secrecy, rotation, or full multi-device messaging; do not
-  invent a cipher or use AGPL libsignal in an MIT-only build. The exact
-  boundary and migration conditions are recorded in ADR 0014.
+  ciphertext-only. The current implementation adds strict canonical ciphertext
+  bounds, transactional replay-index insertion, a durable client cursor and
+  bounded receipt set, and an active authorization-revocation sweep. The
+  evaluated official Apache-2.0 Matrix bindings are not silently substituted
+  until a supported Bun/package persistence path exists. Do not claim forward
+  secrecy, rotation, or full multi-device messaging; do not invent a cipher or
+  use AGPL libsignal in an MIT-only build. The exact boundary and migration
+  conditions are recorded in ADR 0014 and ADR 0022.
 - **Project content:** use a separate X25519 project-wrap keypair and random
   per-project keys. Owner-signed sealed key envelopes and XChaCha20-Poly1305
   content envelopes keep the server blind to the shipped Final Goal/context,
@@ -130,6 +134,27 @@ reviewed again before release.
     plaintext. Context is shared project state and may enter agent context only
     through an explicit client-side selection; private ciphertext is never
     decoded by the server.
+
+## Matrix binding evaluation record
+
+The official Matrix Rust SDK documentation describes `OlmMachine` as a
+no-network encryption state machine whose outgoing requests and sync changes
+must be persisted and replayed in order. The JavaScript/WASM binding was
+verified to initialize in Bun only without a durable store; its IndexedDB
+store path failed because the Bun desktop runtime did not provide the required
+IndexedDB implementation. The Node.js binding was verified with its SQLite
+store under the cached Node runtime, but its native binary and Node-version
+requirements are not a safe dependency for the Bun-compiled Client/Server
+artifacts. These are runtime observations, not a license rejection.
+
+Accordingly, the current alpha reuses only the Matrix architecture and failure
+cases. It retains the existing reviewed sealed-box wire format while hardening
+delivery and persistence. A Matrix migration is allowed only after a maintained
+binding (or a separately supported crypto helper) provides durable encrypted
+state, packaged-client support, key upload/claim and sync transport, device
+verification/revocation mapping, and restart/offline/replay tests. The migration
+must be recorded in a new ADR and cannot silently change the security claim of
+existing private messages.
 
 ## Failure cases that become tests
 

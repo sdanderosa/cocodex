@@ -13,6 +13,10 @@ export {
 export {
   clientFrameSchema,
   projectServerFrameSchema,
+  privateSnapshotFrameSchema,
+  privateAcceptedFrameSchema,
+  privateMessageFrameSchema,
+  privateServerFrameSchema,
   projectKeyResultFrameSchema,
   projectKeyAcceptedFrameSchema,
   projectKeyInitializedFrameSchema,
@@ -41,6 +45,10 @@ export {
   type ChatEvent,
   type ClientFrame,
   type ProjectServerFrame,
+  type PrivateMessageEnvelope,
+  type PrivateSnapshotFrame,
+  type PrivateAcceptedFrame,
+  type PrivateMessageFrame,
   type ProjectKeyResultFrame,
   type ProjectKeyAcceptedFrame,
   type ProjectKeyInitializedFrame,
@@ -62,7 +70,6 @@ export {
   type Artifact,
   type ArtifactStatus,
   type ArtifactType,
-  type PrivateMessageEnvelope,
   type SharedProject,
 } from "./collaboration";
 export * from "./agent-signing";

@@ -40,9 +40,10 @@ libsignal source is copied.
   multi-device sessions for sealed boxes.
 - Do not use AGPL `libsignal` in the MIT distribution without an explicit
   licensing decision.
-- Do not add a Matrix/vodozemac dependency until its exact runtime bindings,
-  state persistence, device verification UX, attachment handling, and license
-  notices have been reviewed and tested in this TypeScript/Bun desktop path.
+- The official Matrix bindings were reviewed in the TypeScript/Bun desktop
+  path and did not meet the durable-store/packaged-runtime gate. Do not add
+  them until the replacement runtime conditions in ADR 0022 are demonstrated;
+  do not silently substitute a weaker or unreviewed implementation.
 
 ## Security invariants
 
@@ -59,14 +60,17 @@ libsignal source is copied.
 ## Consequences and migration
 
 This is sufficient for the required private-alpha message flow and its
-ciphertext-only persistence test. Sealed boxes do not provide forward secrecy
-after a recipient-key compromise, message-key rotation, or multi-device
-session management. A later migration must select a maintained Apache-2.0
-Matrix crypto state-machine binding (or another compatible reviewed protocol),
-define durable per-device session state and verification/revocation UX, and
-run interop and failure-case tests before changing the wire format. Until then,
-the client and documentation must continue to label the current path as
-single-device private-alpha messaging.
+ciphertext-only persistence test. The implementation now also bounds and
+canonicalizes ciphertext, commits the replay index transactionally, persists a
+bounded mailbox cursor/receipt set, serializes delivery, and closes active
+sockets after revocation. Sealed boxes do not provide forward secrecy after a
+recipient-key compromise, message-key rotation, or multi-device session
+management. A later migration must satisfy ADR 0022, select a maintained
+Apache-2.0 Matrix crypto state-machine binding (or another compatible reviewed
+protocol), define durable per-device session state and verification/revocation
+UX, and run interop and failure-case tests before changing the wire format.
+Until then, the client and documentation must continue to label the current
+path as single-device private-alpha messaging.
 
 ## Evidence
 

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
+  privateServerFrameSchema,
   projectContentEnvelopeSchema,
   projectKeyEnvelopeSchema,
   publicKeyFingerprint,
@@ -27,6 +28,13 @@ import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identi
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
+import {
+  hasPrivateMailboxReceipt,
+  loadPrivateMailbox,
+  recordPrivateMailboxReceipt,
+  savePrivateMailbox,
+  type PrivateMailboxState,
+} from "./private-mailbox";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 import { loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
 import {
@@ -115,7 +123,9 @@ export async function runJsonLineSession(
   const agentSubscriptions = new Set<string>();
   const agentTaskSubscriptions = new Set<string>();
   const legacyContextSnapshots = new Map<string, { revision: number; finalGoal: string; context: Record<string, unknown> }>();
-  let privateCursor = 0;
+  let privateMailbox: PrivateMailboxState = loadPrivateMailbox(paths.privateMailbox, connection.deviceId);
+  let privateCursor = privateMailbox.cursor;
+  let privateProcessing = Promise.resolve();
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
   let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
@@ -435,36 +445,89 @@ export async function runJsonLineSession(
       },
     });
   });
-  const openPrivateEnvelope = (message: {
+  const openPrivateEnvelope = async (message: {
     messageId: string;
     senderDeviceId: string;
     recipientDeviceId: string;
     clientCreatedAt: string;
     ciphertext: string;
-    sequence?: number;
-  }) => {
-    if (message.recipientDeviceId !== connection.deviceId) return;
+    sequence: number;
+  }): Promise<void> => {
+    if (hasPrivateMailboxReceipt(privateMailbox, message.messageId)) return;
+    if (message.recipientDeviceId !== connection.deviceId) {
+      // The mailbox also includes messages sent by this device. They are not
+      // decryptable inbound deliveries, but still advance the durable cursor
+      // so reconnects do not replay the sender's own history forever.
+      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
+        messageId: message.messageId,
+        sequence: message.sequence,
+      });
+      privateCursor = privateMailbox.cursor;
+      savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      return;
+    }
     const trusted = loadTrustedDevices(paths.trustedDevices)[message.senderDeviceId];
     if (!trusted) {
       emitError({
         source: "private",
         error: `Private-message sender ${message.senderDeviceId} is not an approved device`,
       });
+      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
+        messageId: message.messageId,
+        sequence: message.sequence,
+      });
+      privateCursor = privateMailbox.cursor;
+      savePrivateMailbox(paths.privateMailbox, privateMailbox);
       return;
     }
-    void openSignedPrivateMessage(
-      message.ciphertext,
-      identity.messagingPrivateKeyPem,
-      identity.messagingPublicKeyPem,
-      message,
-      trusted,
-    ).then(opened => emit({
-      source: "private",
-      message: { ...message, ciphertext: undefined, text: opened.text },
-    })).catch(error => emitError({
-      source: "private",
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    try {
+      const opened = await openSignedPrivateMessage(
+        message.ciphertext,
+        identity.messagingPrivateKeyPem,
+        identity.messagingPublicKeyPem,
+        message,
+        trusted,
+      );
+      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
+        messageId: message.messageId,
+        sequence: message.sequence,
+      });
+      privateCursor = privateMailbox.cursor;
+      savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      emit({
+        source: "private",
+        message: { ...message, ciphertext: undefined, text: opened.text },
+      });
+    } catch (error) {
+      privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
+        messageId: message.messageId,
+        sequence: message.sequence,
+      });
+      privateCursor = privateMailbox.cursor;
+      savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      emitError({
+        source: "private",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const queuePrivateEnvelope = (message: {
+    messageId: string;
+    senderDeviceId: string;
+    recipientDeviceId: string;
+    clientCreatedAt: string;
+    ciphertext: string;
+    sequence: number;
+  }): void => {
+    privateProcessing = privateProcessing
+      .then(() => openPrivateEnvelope(message))
+      .catch(error => {
+        emitError({
+          source: "private",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
 
   const trustedProjectSenderKey = (deviceId: string, senderPublicKeyPem: string): string => {
@@ -980,6 +1043,13 @@ export async function runJsonLineSession(
           return;
         }
       }
+      if (frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message") {
+        try { frame = privateServerFrameSchema.parse(frame) as Record<string, any>; }
+        catch (error) {
+          emitError({ source: "protocol", error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
+      }
       if (frame.type === "error" && typeof frame.requestId === "string") {
         const pending = pendingProjectKeyInitializations.get(frame.requestId);
         if (pending) {
@@ -1076,21 +1146,25 @@ export async function runJsonLineSession(
           chatCursors.set(item.projectId, Math.max(chatCursors.get(item.projectId) ?? 0, item.sequence));
         }
       } else if (frame.type === "private.snapshot") {
-        const messages = Array.isArray(frame.messages) ? frame.messages : [];
-        for (const message of messages) openPrivateEnvelope(message);
-        const latest = messages.at(-1)?.sequence;
-        if (typeof latest === "number") privateCursor = Math.max(privateCursor, latest);
-        if (messages.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
-          send({
-            version: 1,
-            type: "private.subscribe",
-            requestId: randomUUID(),
-            afterSequence: latest,
+        const messages = frame.messages;
+        privateProcessing = privateProcessing.then(async () => {
+          for (const message of messages) await openPrivateEnvelope(message);
+          if (messages.length === SNAPSHOT_PAGE_SIZE) {
+            send({
+              version: 1,
+              type: "private.subscribe",
+              requestId: randomUUID(),
+              afterSequence: privateCursor,
+            });
+          }
+        }).catch(error => {
+          emitError({
+            source: "private",
+            error: error instanceof Error ? error.message : String(error),
           });
-        }
-      } else if (frame.type === "private.message" && typeof frame.message?.sequence === "number") {
-        privateCursor = Math.max(privateCursor, frame.message.sequence);
-        openPrivateEnvelope(frame.message);
+        });
+      } else if (frame.type === "private.message") {
+        queuePrivateEnvelope(frame.message);
       } else if (frame.type === "project.key.result") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);

@@ -18,7 +18,7 @@ import {
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { approveDevice, createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
 import { createServerIdentity } from "../src/identity";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
@@ -899,5 +899,32 @@ describe("authenticated WSS collaboration", () => {
     }));
     await removedAtStephen;
     await leaveAtStephen;
+  });
+
+  test("closes an authenticated socket after device revocation without waiting for another frame", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-revocation-sweep-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const socket = await connect(server.port, stephen, fingerprint, false);
+    const closed = new Promise<CloseEvent>(resolve => socket.addEventListener("close", event => resolve(event), { once: true }));
+    expect(revokeDevice(db, publicKeyFingerprint(stephen.publicKey))).toBeTrue();
+    const event = await Promise.race([
+      closed,
+      Bun.sleep(3_000).then(() => { throw new Error("revoked socket was not closed by the authorization sweep"); }),
+    ]);
+    expect(event.code).toBe(1008);
+    expect(event.reason).toContain("revoked");
   });
 });

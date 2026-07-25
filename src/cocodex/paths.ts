@@ -15,6 +15,7 @@ export interface ClientPaths {
   agentSafety: string;
   agentJournal: string;
   trustedDevices: string;
+  privateMailbox: string;
   outbox: string;
   usageReport: string;
 }
@@ -39,6 +40,7 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     agentSafety: resolve(absoluteRoot, "local-agent-safety.json"),
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),
     trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
+    privateMailbox: resolve(absoluteRoot, "private-mailbox.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),
     usageReport: resolve(absoluteRoot, "usage-report.json"),
   };

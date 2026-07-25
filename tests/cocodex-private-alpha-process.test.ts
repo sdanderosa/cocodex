@@ -145,6 +145,24 @@ async function waitForAfter(
   throw new Error(`Timed out after checkpoint. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))}`);
 }
 
+async function waitForMailbox(path: string, expectedMinimumReceipts: number): Promise<{
+  cursor: number;
+  receipts: Array<{ messageId: string; sequence: number }>;
+}> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      const mailbox = JSON.parse(readFileSync(path, "utf8")) as {
+        cursor: number;
+        receipts: Array<{ messageId: string; sequence: number }>;
+      };
+      if (mailbox.receipts.length >= expectedMinimumReceipts) return mailbox;
+    }
+    await Bun.sleep(25);
+  }
+  throw new Error(`Timed out waiting for mailbox ${path}`);
+}
+
 async function buildArtifacts(serverExe: string, clientExe: string, fixtureExe: string): Promise<void> {
   await run(bun, [
     "build", "./apps/cocodex-server/src/cli.ts", "--compile", "--outfile", serverExe,
@@ -495,6 +513,13 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(stephen, line => line.source === "private" && line.message?.text === offlinePrivateS),
       waitFor(kai, line => line.source === "private" && line.message?.text === offlinePrivateK),
     ]);
+    const [stephenPrivateMailbox, kaiPrivateMailbox] = await Promise.all([
+      waitForMailbox(join(stephenRoot, "private-mailbox.json"), 3),
+      waitForMailbox(join(kaiRoot, "private-mailbox.json"), 3),
+    ]);
+    expect(stephenPrivateMailbox.cursor).toBe(kaiPrivateMailbox.cursor);
+    expect(stephenPrivateMailbox.receipts.length).toBeGreaterThanOrEqual(3);
+    expect(kaiPrivateMailbox.receipts.length).toBeGreaterThanOrEqual(3);
     expect(stephen.process.pid).toBe(stephenPid);
     expect(kai.process.pid).toBe(kaiPid);
     traceCheckpoint("clients reconnected");

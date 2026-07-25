@@ -77,6 +77,9 @@ function withoutPrivateCiphertext(value: unknown): unknown {
   if (frame.type === "private.message" && frame.message) {
     return { ...record, frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
   }
+  if (frame.type === "private.accepted" && frame.message) {
+    return { ...record, frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
+  }
   if (frame.type === "private.snapshot" && Array.isArray(frame.messages)) {
     return {
       ...record,

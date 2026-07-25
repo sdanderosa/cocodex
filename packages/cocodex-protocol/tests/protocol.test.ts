@@ -16,6 +16,10 @@ import {
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
+  privateAcceptedFrameSchema,
+  privateMessageFrameSchema,
+  privateServerFrameSchema,
+  privateSnapshotFrameSchema,
   presenceAcceptedFrameSchema,
   presenceLeaveFrameSchema,
   presenceSnapshotFrameSchema,
@@ -500,6 +504,61 @@ describe("CoCodex protocol", () => {
     delete (legacyFrame as Partial<typeof frame>).typing;
     expect(clientFrameSchema.parse(legacyFrame)).toMatchObject({ ...frame, typing: false });
     expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
+  });
+  test("strictly validates private-message ciphertext and server delivery frames", () => {
+    const senderDeviceId = crypto.randomUUID();
+    const recipientDeviceId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    const acceptedAt = "2030-01-01T00:00:00.000Z";
+    const envelope = {
+      sequence: 1,
+      messageId,
+      senderDeviceId,
+      recipientDeviceId,
+      ciphertext: Buffer.alloc(48, 7).toString("base64url"),
+      clientCreatedAt: acceptedAt,
+      acceptedAt,
+    };
+    const send = {
+      version: 1 as const,
+      type: "private.send" as const,
+      requestId: crypto.randomUUID(),
+      messageId,
+      recipientDeviceId,
+      ciphertext: envelope.ciphertext,
+      clientCreatedAt: acceptedAt,
+    };
+    expect(clientFrameSchema.parse(send)).toEqual(send);
+    const snapshot = privateSnapshotFrameSchema.parse({
+      version: 1,
+      type: "private.snapshot",
+      requestId: crypto.randomUUID(),
+      messages: [envelope],
+    });
+    expect(snapshot.messages).toEqual([envelope]);
+    expect(privateAcceptedFrameSchema.parse({
+      version: 1,
+      type: "private.accepted",
+      requestId: send.requestId,
+      message: envelope,
+    })).toMatchObject({ type: "private.accepted", message: envelope });
+    expect(privateServerFrameSchema.parse({
+      version: 1,
+      type: "private.message",
+      message: envelope,
+    })).toMatchObject({ type: "private.message", message: envelope });
+    expect(() => clientFrameSchema.parse({ ...send, ciphertext: "%%%" })).toThrow("canonical base64url");
+    expect(() => privateSnapshotFrameSchema.parse({
+      version: 1,
+      type: "private.snapshot",
+      requestId: crypto.randomUUID(),
+      messages: [{ ...envelope, ciphertext: Buffer.alloc(48, 0xfb).toString("base64") }],
+    })).toThrow();
+    expect(() => privateServerFrameSchema.parse({
+      version: 1,
+      type: "private.message",
+      message: { ...envelope, sequence: 0 },
+    })).toThrow();
   });
   test("strictly validates the authoritative agent roster", () => {
     const projectId = crypto.randomUUID();

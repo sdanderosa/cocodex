@@ -9,6 +9,9 @@ import {
   agentListFrameSchema,
   agentTaskListFrameSchema,
   projectKeyRotationRequiredFrameSchema,
+  privateAcceptedFrameSchema,
+  privateMessageFrameSchema,
+  privateSnapshotFrameSchema,
   presenceAcceptedFrameSchema,
   presenceLeaveFrameSchema,
   presenceSnapshotFrameSchema,
@@ -60,6 +63,7 @@ const MAX_UNAUTHENTICATED_SOCKETS = 64;
 const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 8;
 const MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE = 30;
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
+const AUTHORIZATION_SWEEP_INTERVAL_MS = 1_000;
 const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRESENCE_MEMBERS = 128;
@@ -966,12 +970,12 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "private.subscribe") {
-            socket.send(JSON.stringify({
+            socket.send(JSON.stringify(privateSnapshotFrameSchema.parse({
               version: 1,
               type: "private.snapshot",
               requestId,
               messages: privateMessagesAfter(db, deviceId, message.afterSequence),
-            }));
+            })));
             return;
           }
           if (message.type === "private.send") {
@@ -982,18 +986,18 @@ export function startCoCodexServer(
               ciphertext: message.ciphertext,
               clientCreatedAt: message.clientCreatedAt,
             });
-            socket.send(JSON.stringify({
+            socket.send(JSON.stringify(privateAcceptedFrameSchema.parse({
               version: 1,
               type: "private.accepted",
               requestId,
               message: appended.envelope,
-            }));
+            })));
             if (appended.created) {
-              sendToDevice(appended.envelope.recipientDeviceId, {
+              sendToDevice(appended.envelope.recipientDeviceId, privateMessageFrameSchema.parse({
                 version: 1,
                 type: "private.message",
                 message: appended.envelope,
-              });
+              }));
             }
             return;
           }
@@ -1404,6 +1408,16 @@ export function startCoCodexServer(
     },
   });
   const presencePruneTimer = setInterval(() => prunePresence(), presencePruneIntervalMs);
+  const authorizationSweepTimer = setInterval(() => {
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+      }
+    }
+  }, AUTHORIZATION_SWEEP_INTERVAL_MS);
   return {
     hostname: server.hostname ?? config.hostname,
     port: server.port ?? config.port,
@@ -1413,6 +1427,7 @@ export function startCoCodexServer(
         sockets.clear();
       }
       clearInterval(presencePruneTimer);
+      clearInterval(authorizationSweepTimer);
       const stopping = server.stop(closeActiveConnections);
       if (!closeActiveConnections) {
         await stopping;

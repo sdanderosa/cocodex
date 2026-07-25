@@ -36,6 +36,27 @@ import {
 const requestId = z.uuid();
 const projectId = z.uuid();
 const deviceId = z.uuid();
+const privateMessageId = z.uuid();
+const PRIVATE_MESSAGE_CIPHERTEXT_MAX_BYTES = 72 * 1024;
+const privateCiphertext = z.string().min(64).max(96_000).superRefine((value, refinement) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    refinement.addIssue({ code: "custom", message: "Private-message ciphertext must be canonical base64url" });
+    return;
+  }
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value || decoded.byteLength < 48 || decoded.byteLength > PRIVATE_MESSAGE_CIPHERTEXT_MAX_BYTES) {
+    refinement.addIssue({ code: "custom", message: "Private-message ciphertext is outside the supported bounds" });
+  }
+});
+const privateMessageEnvelopeSchema = z.object({
+  sequence: z.number().int().positive(),
+  messageId: privateMessageId,
+  senderDeviceId: deviceId,
+  recipientDeviceId: deviceId,
+  ciphertext: privateCiphertext,
+  clientCreatedAt: z.iso.datetime(),
+  acceptedAt: z.iso.datetime(),
+}).strict();
 export const PROJECT_CONTEXT_MAX_BYTES = 48 * 1024;
 const projectContext = z.record(z.string(), z.unknown()).superRefine((value, refinement) => {
   try {
@@ -192,9 +213,9 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     version: z.literal(1),
     type: z.literal("private.send"),
     requestId,
-    messageId: z.uuid(),
-    recipientDeviceId: z.uuid(),
-    ciphertext: z.string().min(64).max(96_000),
+    messageId: privateMessageId,
+    recipientDeviceId: deviceId,
+    ciphertext: privateCiphertext,
     clientCreatedAt: z.iso.datetime(),
   }).strict(),
   encryptedChatSubscribeFrameSchema,
@@ -521,7 +542,37 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   presenceAcceptedFrameSchema,
 ]);
 
+export const privateSnapshotFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.snapshot"),
+  requestId,
+  messages: z.array(privateMessageEnvelopeSchema).max(500),
+}).strict();
+
+export const privateAcceptedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.accepted"),
+  requestId,
+  message: privateMessageEnvelopeSchema,
+}).strict();
+
+export const privateMessageFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.message"),
+  message: privateMessageEnvelopeSchema,
+}).strict();
+
+export const privateServerFrameSchema = z.discriminatedUnion("type", [
+  privateSnapshotFrameSchema,
+  privateAcceptedFrameSchema,
+  privateMessageFrameSchema,
+]);
+
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
+export type PrivateMessageEnvelope = z.infer<typeof privateMessageEnvelopeSchema>;
+export type PrivateSnapshotFrame = z.infer<typeof privateSnapshotFrameSchema>;
+export type PrivateAcceptedFrame = z.infer<typeof privateAcceptedFrameSchema>;
+export type PrivateMessageFrame = z.infer<typeof privateMessageFrameSchema>;
 export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
 export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
 export type ProjectKeyInitializedFrame = z.infer<typeof projectKeyInitializedFrameSchema>;
@@ -626,16 +677,6 @@ export interface AgentDefinition {
   name: string;
   hostDeviceId: string;
   enabled: boolean;
-}
-
-export interface PrivateMessageEnvelope {
-  sequence: number;
-  messageId: string;
-  senderDeviceId: string;
-  recipientDeviceId: string;
-  ciphertext: string;
-  clientCreatedAt: string;
-  acceptedAt: string;
 }
 
 export type { UsageReport, UsageReportView } from "./usage";
