@@ -21,6 +21,7 @@ import {
 import { tlsCertificateFingerprint } from "./tls";
 import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
+import { serverEpoch } from "./server-state";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -194,6 +195,7 @@ export function startCoCodexServer(
           protocol: 1,
           identityFingerprint: identity.fingerprint,
           certificateFingerprint,
+          serverEpoch: serverEpoch(db),
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/enrollment/challenge") {
@@ -230,7 +232,7 @@ export function startCoCodexServer(
             messagingPublicKeyPem: body.messagingPublicKeyPem,
             signature: body.signature,
           });
-          return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem }, 202);
+          return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem, serverEpoch: serverEpoch(db) }, 202);
         } catch (error) {
           return json({ error: safeErrorMessage(error) }, 400);
         }
@@ -315,6 +317,7 @@ export function startCoCodexServer(
               requestId,
               deviceId: device.id,
               serverIdentityPublicKeyPem: identity.publicKeyPem,
+              serverEpoch: serverEpoch(db),
             }));
             return;
           }

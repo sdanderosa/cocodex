@@ -140,4 +140,13 @@ CREATE TABLE shared_prompt_updates (
 CREATE INDEX shared_prompt_updates_project_time
   ON shared_prompt_updates(project_id, accepted_at);`,
   },
+  {
+    version: 5,
+    sql: `
+CREATE TABLE server_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT INTO server_state (key, value) VALUES ('epoch', '1');`,
+  },
 ];

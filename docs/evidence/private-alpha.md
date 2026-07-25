@@ -107,7 +107,7 @@ Relevant output:
 ```text
 37 pass
 0 fail
-276 expect() calls
+282 expect() calls
 Ran 37 tests across 21 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
@@ -116,6 +116,12 @@ GUI production build completed
 
 The GUI lint reported one pre-existing hook dependency warning and no errors.
 The production GUI build reported a bundle-size warning and completed.
+
+The server transfer slice is covered by the signed-backup path: backups bind the
+database to the server identity and current epoch; `transfer-import` restores a
+verified snapshot and advances the persisted epoch so clients can detect a
+controlled server handoff. The server exposes that epoch through `/v1/server-info`,
+enrollment, and `auth.ok`.
 
 Additional successful gates:
 

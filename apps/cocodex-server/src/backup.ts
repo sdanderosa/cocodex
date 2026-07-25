@@ -3,6 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import type { ServerIdentity } from "./identity";
 import type { ServerPaths } from "./paths";
+import { serverEpoch } from "./server-state";
 
 const BACKUP_VERSION = 1 as const;
 
@@ -10,6 +11,7 @@ export interface ServerBackup {
   version: typeof BACKUP_VERSION;
   createdAt: string;
   serverFingerprint: string;
+  serverEpoch: number;
   databaseSha256: string;
   databaseBase64: string;
   signature: string;
@@ -20,6 +22,7 @@ function transcript(backup: Omit<ServerBackup, "signature">): Buffer {
     version: backup.version,
     createdAt: backup.createdAt,
     serverFingerprint: backup.serverFingerprint,
+    serverEpoch: backup.serverEpoch,
     databaseSha256: backup.databaseSha256,
     databaseBase64: backup.databaseBase64,
   }), "utf8");
@@ -31,6 +34,7 @@ function assertBackup(value: unknown): asserts value is ServerBackup {
   if (backup.version !== BACKUP_VERSION
     || typeof backup.createdAt !== "string"
     || typeof backup.serverFingerprint !== "string"
+    || !Number.isSafeInteger(backup.serverEpoch) || (backup.serverEpoch as number) < 1
     || typeof backup.databaseSha256 !== "string"
     || typeof backup.databaseBase64 !== "string"
     || typeof backup.signature !== "string") {
@@ -48,10 +52,15 @@ export function createServerBackup(paths: ServerPaths, identity: ServerIdentity,
   try { checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
   finally { checkpoint.close(); }
   const database = readFileSync(paths.database);
+  const epochDb = new Database(paths.database, { strict: true });
+  let epoch: number;
+  try { epoch = serverEpoch(epochDb); }
+  finally { epochDb.close(); }
   const unsigned: Omit<ServerBackup, "signature"> = {
     version: BACKUP_VERSION,
     createdAt: new Date().toISOString(),
     serverFingerprint: identity.fingerprint,
+    serverEpoch: epoch,
     databaseSha256: createHash("sha256").update(database).digest("hex"),
     databaseBase64: database.toString("base64"),
   };

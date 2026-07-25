@@ -17,6 +17,7 @@ describe("CoCodex Server backups", () => {
       const backupPath = join(root, "state.cocodex-backup.json");
       const backup = createServerBackup(paths, identity, backupPath);
       expect(backup.databaseSha256.length).toBe(64);
+      expect(backup.serverEpoch).toBe(1);
       expect(existsSync(backupPath)).toBeTrue();
 
       const decoded = JSON.parse(readFileSync(backupPath, "utf8"));

@@ -12,6 +12,7 @@ import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
+import { advanceServerEpoch } from "./server-state";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -58,6 +59,8 @@ Usage:
   cocodex-server status [--state-root PATH]
   cocodex-server backup --output FILE [--state-root PATH]
   cocodex-server restore --input FILE [--state-root PATH]
+  cocodex-server transfer-export --output FILE [--state-root PATH]
+  cocodex-server transfer-import --input FILE [--state-root PATH]
   cocodex-server migrate [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
@@ -174,6 +177,23 @@ async function run(): Promise<void> {
       const backup = restoreServerBackup(paths, identity, requiredOption("--input"));
       openDatabase(paths.database).close();
       console.log(JSON.stringify({ restored: true, createdAt: backup.createdAt, databaseSha256: backup.databaseSha256 }));
+      return;
+    }
+    case "transfer-export": {
+      requireStopped(paths);
+      const identity = loadServerIdentity(paths);
+      const backup = createServerBackup(paths, identity, requiredOption("--output"));
+      console.log(JSON.stringify({ transferred: true, direction: "export", serverEpoch: backup.serverEpoch, databaseSha256: backup.databaseSha256 }));
+      return;
+    }
+    case "transfer-import": {
+      requireStopped(paths);
+      const identity = loadServerIdentity(paths);
+      const backup = restoreServerBackup(paths, identity, requiredOption("--input"));
+      const db = openDatabase(paths.database);
+      const epoch = advanceServerEpoch(db);
+      db.close();
+      console.log(JSON.stringify({ transferred: true, direction: "import", previousServerEpoch: backup.serverEpoch, serverEpoch: epoch, databaseSha256: backup.databaseSha256 }));
       return;
     }
     case "migrate": {
