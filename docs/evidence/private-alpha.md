@@ -10,8 +10,8 @@
   encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
-  lifecycle timeout hardening `0f09345f`, followed by encrypted project
-  artifacts (current implementation commit recorded below).
+  lifecycle timeout hardening `0f09345f`, and encrypted project artifacts
+  `ba32d995`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -408,8 +408,7 @@ Exit status: `0`; relevant output: `68 pass`, `0 fail`, `594 expect() calls`.
 
 ## Encrypted project artifacts
 
-Implementation commit: recorded in the Git checkpoint that follows this
-evidence update.
+Implementation commit: `ba32d995`
 
 The `project.artifact.*` transport encrypts the complete artifact record on the
 client when a project key is available. The server stores only a signed opaque
