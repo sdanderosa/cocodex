@@ -261,6 +261,8 @@ covered by the port-mapping tests. PCP remains a later compatibility extension.
 
 ## Project-wrap identity and encrypted Final Goal/context
 
+Implementation commit: `81532e6e`
+
 The first project-encryption slice is now connected end to end. Each client
 creates a separate X25519 project-wrap keypair; the owner can send signed,
 per-device sealed project-key envelopes. The server validates owner authority,
