@@ -27,6 +27,13 @@ sender/recipient devices, message IDs, timestamps, replay hashes, and size
 bounds, assigns a delivery sequence, and stores ciphertext plus routing
 metadata only. Private plaintext is never included in project chat or agent
 context automatically. The client keeps a durable outbox for offline delivery.
+An explicit local `private.share` command can select one decrypted resident
+message and one project agent. It is rejected unless that message was opened by
+the resident session and the project has a local encryption key; the client
+then embeds the message text in the already-encrypted task prompt and binds the
+message ID into the requester and server dispatch signatures. The server may
+permit same-device execution only for that explicit marker, while still storing
+only the encrypted task/result envelopes.
 
 The implementation uses the ISC-licensed libsodium dependency already selected
 in the lockfile. No RustDesk, MeshCentral, Syncthing, Matrix, Signal, or
@@ -56,11 +63,16 @@ libsignal source is copied.
   ciphertext delivery under a different message ID.
 - Decryption failures are fail-closed and do not reveal whether a key or
   payload field was wrong.
+- Private plaintext stays outside agent context until the local host explicitly
+  selects a resident message and agent.
+- Explicit-share task markers are signed, persisted for audit, and do not carry
+  the private text; the project envelope remains the confidentiality boundary.
 
 ## Consequences and migration
 
-This is sufficient for the required private-alpha message flow and its
-ciphertext-only persistence test. The implementation now also bounds and
+This is sufficient for the required private-alpha message flow, its
+ciphertext-only persistence test, and the explicit private-message-to-agent
+share path. The implementation now also bounds and
 canonicalizes ciphertext, commits the replay index transactionally, persists a
 bounded mailbox cursor/receipt/deferred-ciphertext set, retries messages after
 trust/key recovery, accounts for self-sent accepted frames, serializes delivery,
@@ -83,3 +95,6 @@ path as single-device private-alpha messaging.
   by cursor.
 - `tests/cocodex-private-mailbox.test.ts` covers bounded deferred ciphertext,
   retry-state persistence, and receipt removal after successful opening.
+- `tests/cocodex-private-alpha-process.test.ts` covers the explicit-share
+  command, same-device local execution, streamed result delivery, local
+  plaintext isolation, and ciphertext-only task/result storage.

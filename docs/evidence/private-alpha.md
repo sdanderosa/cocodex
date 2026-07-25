@@ -1051,3 +1051,64 @@ and verifies exact 500/1 pages and sequence boundaries for both streams.
 Exit status: `0`; relevant output: `1 pass`, `0 fail`, `12 expect()` calls in
 `2.84s`; the complete collaboration-server file also passed (`4 pass`, `0
 fail`, `86 expect()` calls).
+
+## Explicit private-message sharing into an agent
+
+Implementation commit: `3790c771`
+
+The private-alpha client now retains successfully decrypted private text only
+in the resident process. A local host can explicitly issue `private.share` with
+one project, one agent, and one message ID. The client requires the message to
+be present in that resident session and the project to have an encryption key,
+then sends the text through the existing signed encrypted-agent envelope. The
+message ID is bound into requester/server dispatch signatures and persisted as
+an audit marker; the server never receives the private text. The local bridge
+adds the client’s own enrolled key to its trust map so this explicitly marked
+same-device task can be approved and executed, while ordinary same-device
+agent requests remain rejected.
+
+Focused real-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `67 expect()` calls.
+The harness built separate compiled Server and Client executables, enrolled
+and approved Stephen and Kai, delivered a real encrypted private message,
+initialized a keyed project, explicitly shared the message with Stephen’s
+agent, observed local approval and execution, and streamed the result to Kai.
+It also asserted the private canary appears in Stephen’s local execution
+result, is absent from Kai’s workspace, and is absent from the server SQLite
+private-message ciphertext, task prompt envelope, result envelope, and raw
+database bytes. The same process run then completed the remaining encrypted
+agent tasks, offline queues, server restart, and recovery checks.
+
+Focused protocol/routing/migration/bridge/UI command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `31 pass`, `0 fail`, `239 expect()` calls.
+The migration assertion covers schema version 19 and the new
+`private_share_message_id` column. Static/build verification after the slice:
+`typecheck`, `typecheck:cocodex`, `privacy:scan`, GUI build, Client compile,
+and Server compile each exited `0`; GUI lint exited `0` with only the existing
+`use-app-route-state.ts:84` hook warning.
+
+The package-level `bun run test:cocodex` was also attempted after the slice and
+returned `94 pass`, `1 fail`, `890 expect()` calls because the existing
+`cocodex-agent-safety-cli` child-process test hit its 20-second Windows
+load-sensitive timeout. That test passes in isolation (`1 pass`, `0 fail`,
+`10 expect()` calls, about 1.3s), and a direct serialized invocation of the
+same 30-file suite passed with `95 pass`, `0 fail`, and `890 expect()` calls in
+`46.65s`. The default package wrapper remains explicitly non-authoritative
+under this host’s process-load behavior; no test is skipped or disabled.

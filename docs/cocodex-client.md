@@ -88,7 +88,21 @@ To instruct a local or remote named agent through the JSON-line session:
 The destination client validates the signed task, its server authorization, and
 its local agent policy before invoking the local Codex runtime. Agent results
 are streamed back into the authoritative project chat. Private messages are
-decrypted locally and are never automatically added to an agent prompt.
+decrypted locally and are never automatically added to an agent prompt. A host
+may explicitly share one already-decrypted private message with one selected
+project agent:
+
+```json
+{"id":"share-1","type":"private.share","projectId":"PROJECT_ID","agentId":"lucas","messageId":"PRIVATE_MESSAGE_ID"}
+```
+
+The command resolves only a message retained by the resident client, requires
+an encrypted project, and sends the resulting prompt through the existing
+signed/encrypted agent route. The server records the explicit-share marker and
+opaque task/result envelopes, never the private text. A same-device task is
+accepted only with this explicit marker; ordinary same-device agent requests
+remain rejected. The GUI exposes the same action beside each private message
+when an agent is selected.
 
 The same session can request the project-scoped `agent.list` roster. The
 server supplies the approved host name, readiness-derived status, and task
