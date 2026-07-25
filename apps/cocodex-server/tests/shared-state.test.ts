@@ -14,6 +14,7 @@ import {
 } from "../src/shared-state";
 import { listArtifacts, publishArtifact } from "../src/artifacts";
 import { appendPrivateMessage } from "../src/private-messages";
+import { getSharedProjectContext, updateSharedProjectContext } from "../src/shared-context";
 
 function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: Date): string {
   const pair = generateKeyPairSync("ed25519", {
@@ -95,6 +96,62 @@ describe("authoritative shared state", () => {
         clientCreatedAt: first.clientCreatedAt,
       })).toEqual({ event: first, created: false });
       expect(chatEventsAfter(db, project.id, kai, first.sequence)).toEqual([second]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("stores a revisioned shared project context and rejects stale writers", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = approvedDevice(db, "Stephen", now);
+      const kai = approvedDevice(db, "Kai", now);
+      const outsider = approvedDevice(db, "Outsider", now);
+      const project = createProject(db, "Context recovery", stephen, now);
+      addProjectMember(db, project.id, stephen, kai, now);
+
+      expect(getSharedProjectContext(db, project.id, stephen)).toEqual({
+        projectId: project.id,
+        finalGoal: "",
+        context: {},
+        revision: 0,
+        updatedByDeviceId: null,
+        updatedAt: null,
+      });
+
+      const first = updateSharedProjectContext(
+        db,
+        project.id,
+        kai,
+        0,
+        "Build the private alpha",
+        { acceptance: ["enrollment", "reconnect"], owner: "Stephen" },
+        new Date("2027-01-01T00:01:00.000Z"),
+      );
+      expect(first).toMatchObject({
+        projectId: project.id,
+        finalGoal: "Build the private alpha",
+        context: { acceptance: ["enrollment", "reconnect"], owner: "Stephen" },
+        revision: 1,
+        updatedByDeviceId: kai,
+        updatedAt: "2027-01-01T00:01:00.000Z",
+      });
+      expect(getSharedProjectContext(db, project.id, stephen)).toEqual(first);
+
+      expect(() => updateSharedProjectContext(
+        db,
+        project.id,
+        stephen,
+        0,
+        "A stale overwrite",
+        {},
+        new Date("2027-01-01T00:02:00.000Z"),
+      )).toThrow("revision conflict");
+      expect(getSharedProjectContext(db, project.id, stephen)).toEqual(first);
+
+      expect(() => getSharedProjectContext(db, project.id, outsider))
+        .toThrow("approved project member");
     } finally {
       db.close();
     }

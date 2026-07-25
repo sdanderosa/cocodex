@@ -2,6 +2,17 @@ import { z } from "zod";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+export const PROJECT_CONTEXT_MAX_BYTES = 48 * 1024;
+const projectContext = z.record(z.string(), z.unknown()).superRefine((value, refinement) => {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== "string" || Buffer.byteLength(serialized, "utf8") > PROJECT_CONTEXT_MAX_BYTES) {
+      refinement.addIssue({ code: "custom", message: "Project context is too large" });
+    }
+  } catch {
+    refinement.addIssue({ code: "custom", message: "Project context must be JSON-serializable" });
+  }
+});
 const cursorPosition = z.object({
   x: z.number().finite().min(0).max(1),
   y: z.number().finite().min(0).max(1),
@@ -150,6 +161,21 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     summary: z.string().trim().min(1).max(4_000),
     content: z.string().min(1).max(256_000),
     status: z.enum(["draft", "ready", "accepted", "rejected", "superseded", "integrated"]),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("context.get"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("context.update"),
+    requestId,
+    projectId,
+    expectedRevision: z.number().int().nonnegative(),
+    finalGoal: z.string().max(32_768),
+    context: projectContext,
   }).strict(),
   z.object({
     version: z.literal(1),

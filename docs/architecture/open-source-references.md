@@ -42,6 +42,14 @@ reviewed again before release.
   invent a cipher or use AGPL libsignal in an MIT-only build.
 - **Agent events:** reuse OpenCodex and official Codex runtime behavior;
   borrow only typed event and isolation concepts from OpenHands.
+- **Authoritative project context:** keep the pinned Final Goal and structured
+  project context in SQLite beside the server's project/chat state. Clients use
+  an explicit `context.get`/`context.update` protocol with a monotonic revision;
+  stale optimistic writers receive a conflict instead of overwriting another
+  member. Context updates are durable in the client outbox while offline, and
+  the server broadcasts the accepted revision to project members. This is
+  ordinary server-authoritative state, not a second CRDT system; Yjs remains
+  reserved for concurrent prompt text.
 - **Future connect layer:** defer libp2p, automatic NAT traversal, and relays
   until the direct server path is complete.
 - **Structured CRDT:** do not add Automerge to the private alpha.
@@ -66,6 +74,10 @@ reviewed again before release.
    decision accepts the obligations.
 10. Generate a lockfile license report or SBOM before shipping and review
     every resolved transitive dependency.
+11. Keep project context and Final Goal separate from private-message
+    plaintext. Context is shared project state and may enter agent context only
+    through an explicit client-side selection; private ciphertext is never
+    decoded by the server.
 
 ## Failure cases that become tests
 

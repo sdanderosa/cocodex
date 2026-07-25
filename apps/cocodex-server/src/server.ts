@@ -23,6 +23,7 @@ import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 import { serverEpoch } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
+import { getSharedProjectContext, updateSharedProjectContext } from "./shared-context";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -38,6 +39,7 @@ interface SocketData {
   remoteAddress: string;
   subscribedProjects: Set<string>;
   subscribedPrompts: Set<string>;
+  subscribedContexts: Set<string>;
   agentReady: boolean;
 }
 
@@ -174,6 +176,25 @@ export function startCoCodexServer(
     }
   }
 
+  function sendToContext(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedContexts.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedContexts.delete(projectId);
+      }
+    }
+  }
+
   function sendPresence(projectId: string, frame: unknown): void {
     sendToProject(projectId, frame);
   }
@@ -281,6 +302,7 @@ export function startCoCodexServer(
           remoteAddress,
           subscribedProjects: new Set(),
           subscribedPrompts: new Set(),
+          subscribedContexts: new Set(),
           agentReady: false,
         };
         if (bunServer.upgrade(request, { data })) return;
@@ -530,6 +552,19 @@ export function startCoCodexServer(
             });
             socket.send(JSON.stringify({ version: 1, type: "artifact.accepted", requestId, artifact: published.artifact }));
             if (published.created) sendToProject(message.projectId, { version: 1, type: "artifact.published", artifact: published.artifact });
+            return;
+          }
+          if (message.type === "context.get") {
+            requireProjectMembership(db, message.projectId, deviceId);
+            socket.data.subscribedContexts.add(message.projectId);
+            socket.send(JSON.stringify({ version: 1, type: "context.result", requestId, context: getSharedProjectContext(db, message.projectId, deviceId) }));
+            return;
+          }
+          if (message.type === "context.update") {
+            const context = updateSharedProjectContext(db, message.projectId, deviceId, message.expectedRevision, message.finalGoal, message.context);
+            socket.data.subscribedContexts.add(message.projectId);
+            socket.send(JSON.stringify({ version: 1, type: "context.updated", requestId, context }));
+            sendToContext(message.projectId, { version: 1, type: "context.changed", context });
             return;
           }
           if (message.type === "artifact.list") {

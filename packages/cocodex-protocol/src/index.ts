@@ -12,6 +12,7 @@ export {
 } from "./enrollment";
 export {
   clientFrameSchema,
+  PROJECT_CONTEXT_MAX_BYTES,
   agentTaskSchema,
   agentTaskFrameSchema,
   agentCancelFrameSchema,

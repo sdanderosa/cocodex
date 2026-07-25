@@ -179,4 +179,16 @@ CREATE TABLE private_message_replays (
   PRIMARY KEY (sender_device_id, recipient_device_id, ciphertext_hash)
 );`,
   },
+  {
+    version: 8,
+    sql: `
+CREATE TABLE shared_project_context (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  final_goal TEXT NOT NULL DEFAULT '',
+  context_json TEXT NOT NULL DEFAULT '{}',
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_by_device_id TEXT REFERENCES devices(id),
+  updated_at TEXT NOT NULL
+);`,
+  },
 ];

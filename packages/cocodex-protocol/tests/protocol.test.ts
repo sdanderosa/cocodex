@@ -6,6 +6,7 @@ import {
   decodeInvitation,
   encodeInvitation,
   enrollmentSigningTranscript,
+  PROJECT_CONTEXT_MAX_BYTES,
   publicKeyFingerprint,
   websocketAuthTranscript,
 } from "../src";
@@ -65,6 +66,22 @@ describe("CoCodex protocol", () => {
     };
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
     expect(() => clientFrameSchema.parse({ ...frame, targetDeviceId: crypto.randomUUID() })).toThrow();
+  });
+  test("accepts revisioned project-context updates and rejects invalid revisions", () => {
+    const frame = {
+      version: 1 as const,
+      type: "context.update" as const,
+      requestId: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      expectedRevision: 0,
+      finalGoal: "Build the private alpha",
+      context: { owner: "Stephen", phase: "alpha" },
+    };
+    expect(clientFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => clientFrameSchema.parse({ ...frame, expectedRevision: -1 })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...frame, finalGoal: "x".repeat(32_769) })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...frame, context: [] })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...frame, context: { blob: "x".repeat(PROJECT_CONTEXT_MAX_BYTES) } })).toThrow();
   });
   test("bounds presence cursor and caret frames", () => {
     const frame = {

@@ -43,6 +43,7 @@ export async function runJsonLineSession(
   const controller = new AbortController();
   const chatCursors = new Map<string, number>();
   const promptSubscriptions = new Set<string>();
+  const contextSubscriptions = new Set<string>();
   let privateCursor = 0;
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
@@ -169,6 +170,9 @@ export async function runJsonLineSession(
     for (const projectId of promptSubscriptions) {
       send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
     }
+    for (const projectId of contextSubscriptions) {
+      send({ version: 1, type: "context.get", requestId: randomUUID(), projectId });
+    }
     send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
     let detachAgent: (() => void | Promise<void>) | undefined;
     if (existsSync(paths.agentPolicy)) {
@@ -243,6 +247,29 @@ export async function runJsonLineSession(
             requestId: controlRequestId(command.id),
             projectId,
           });
+        } else if (command.type === "context.get") {
+          const projectId = String(command.projectId);
+          contextSubscriptions.add(projectId);
+          send({
+            version: 1,
+            type: "context.get",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
+        } else if (command.type === "context.update") {
+          const projectId = String(command.projectId);
+          contextSubscriptions.add(projectId);
+          enqueueDurableEvent(paths, {
+            version: 1,
+            type: "context.update",
+            requestId: controlRequestId(command.id),
+            projectId,
+            expectedRevision: Number(command.expectedRevision ?? 0),
+            finalGoal: String(command.finalGoal ?? ""),
+            context: command.context ?? {},
+          });
+          const delivered = await flush();
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, projectId });
         } else if (command.type === "prompt.update") {
           const updateId = String(command.updateId ?? randomUUID());
           enqueueDurableEvent(paths, {

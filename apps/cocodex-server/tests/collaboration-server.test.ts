@@ -247,6 +247,50 @@ describe("authenticated WSS collaboration", () => {
     expect((await stephenAtKai).event).toEqual(second);
     expect(second.sequence).toBeGreaterThan(first.sequence);
 
+    const contextRequestId = randomUUID();
+    const initialContext = nextFrame(stephenSocket, "context.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "context.get",
+      requestId: contextRequestId,
+      projectId: project.id,
+    }));
+    expect(await initialContext).toMatchObject({
+      requestId: contextRequestId,
+      context: {
+        projectId: project.id,
+        finalGoal: "",
+        context: {},
+        revision: 0,
+      },
+    });
+
+    const contextChangedAtStephen = nextFrame(stephenSocket, "context.changed");
+    const contextChangedAtKai = nextFrame(kaiSocket, "context.changed");
+    const contextUpdatedAtKai = nextFrame(kaiSocket, "context.updated");
+    const contextUpdateRequestId = randomUUID();
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "context.update",
+      requestId: contextUpdateRequestId,
+      projectId: project.id,
+      expectedRevision: 0,
+      finalGoal: "Build the private alpha",
+      context: { acceptance: ["enrollment", "reconnect"], owner: "Stephen" },
+    }));
+    expect(await contextUpdatedAtKai).toMatchObject({
+      requestId: contextUpdateRequestId,
+      context: {
+        projectId: project.id,
+        finalGoal: "Build the private alpha",
+        context: { acceptance: ["enrollment", "reconnect"], owner: "Stephen" },
+        revision: 1,
+        updatedByDeviceId: kai.id,
+      },
+    });
+    expect((await contextChangedAtStephen).context).toMatchObject({ revision: 1, updatedByDeviceId: kai.id });
+    expect((await contextChangedAtKai).context).toMatchObject({ revision: 1, updatedByDeviceId: kai.id });
+
     const privatePlaintext = "Stephen-only recovery phrase";
     const privateMessageId = randomUUID();
     const privateCreatedAt = new Date().toISOString();
@@ -510,6 +554,20 @@ describe("authenticated WSS collaboration", () => {
     servers.push(restartedServer);
     const restartedStephen = await connect(restartedServer.port, stephen, fingerprint);
     const restartedKai = await connect(restartedServer.port, kai, fingerprint, false);
+    const recoveredContext = nextFrame(restartedKai, "context.result");
+    restartedKai.send(JSON.stringify({
+      version: 1,
+      type: "context.get",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await recoveredContext).context).toMatchObject({
+      projectId: project.id,
+      finalGoal: "Build the private alpha",
+      context: { acceptance: ["enrollment", "reconnect"], owner: "Stephen" },
+      revision: 1,
+      updatedByDeviceId: kai.id,
+    });
     const recoveredRunningTask = nextFrame(restartedKai, "agent.task");
     restartedKai.send(JSON.stringify({
       version: 1,

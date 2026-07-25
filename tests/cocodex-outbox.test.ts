@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { clientPaths } from "../src/cocodex/paths";
-import { drainDurableOutbox, enqueueDurableEvent, queuedEvents } from "../src/cocodex/outbox";
+import { drainDurableOutbox, enqueueDurableEvent, flushDurableOutbox, queuedEvents } from "../src/cocodex/outbox";
 
 describe("CoCodex durable offline outbox", () => {
   test("survives reload and drains acknowledged events in original order", async () => {
@@ -86,6 +86,68 @@ describe("CoCodex durable offline outbox", () => {
     try {
       expect(enqueueDurableEvent(paths, update)).toEqual(update);
       expect(queuedEvents(clientPaths(root))).toEqual([update]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("persists project-context updates while the collaboration server is offline", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-context-outbox-"));
+    const paths = clientPaths(root);
+    const update = {
+      version: 1 as const,
+      type: "context.update" as const,
+      requestId: randomUUID(),
+      projectId: randomUUID(),
+      expectedRevision: 0,
+      finalGoal: "Complete the private alpha",
+      context: { source: "offline" },
+    };
+    try {
+      expect(enqueueDurableEvent(paths, update)).toEqual(update);
+      expect(queuedEvents(clientPaths(root))).toEqual([update]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not let a stale project-context update block future outbox work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-context-conflict-"));
+    const paths = clientPaths(root);
+    const update = {
+      version: 1 as const,
+      type: "context.update" as const,
+      requestId: randomUUID(),
+      projectId: randomUUID(),
+      expectedRevision: 0,
+      finalGoal: "Stale write",
+      context: {},
+    };
+    class ErrorSocket {
+      readyState = 1;
+      private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+      addEventListener(type: string, listener: (event: unknown) => void): void {
+        const listeners = this.listeners.get(type) ?? new Set<(event: unknown) => void>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+      removeEventListener(type: string, listener: (event: unknown) => void): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+      send(value: string): void {
+        const requestId = (JSON.parse(value) as { requestId: string }).requestId;
+        setTimeout(() => {
+          for (const listener of this.listeners.get("message") ?? []) {
+            listener({ data: JSON.stringify({ type: "error", requestId, error: "Shared project context revision conflict" }) });
+          }
+        }, 0);
+      }
+    }
+    try {
+      enqueueDurableEvent(paths, update);
+      await expect(flushDurableOutbox(new ErrorSocket() as unknown as WebSocket, paths))
+        .rejects.toThrow("revision conflict");
+      expect(queuedEvents(paths)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
