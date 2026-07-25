@@ -845,3 +845,92 @@ The following also remain deferred or insufficiently evidenced:
 
 Accordingly, the connected deterministic private-alpha path works, but this
 report does not authorize a production or complete-private-alpha release claim.
+
+## Private mailbox delivery hardening checkpoint
+
+Implementation commit: `8ca7c5e8f675181e7e317559dcf360e6d8f25e5b`
+
+This checkpoint keeps the private-alpha sealed-box format while adding strict
+canonical ciphertext/frame bounds, an immediate SQLite transaction for the
+message and replay index, a protected atomic client mailbox cursor with bounded
+receipts, serialized snapshot/live delivery, GUI ciphertext redaction for
+accepted frames, and an active WSS authorization-revocation sweep. The
+mailbox test also proves that a client's own sent messages advance its cursor,
+so reconnects do not replay sender history indefinitely.
+
+Focused protocol, crypto, mailbox, and real three-process harness:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `25 pass`, `0 fail`, `156 expect()` calls.
+The alpha harness launched one compiled CoCodex Server process and isolated
+Stephen and Kai Client processes with separate roots, identities, databases,
+ports, and workspaces. It observed local agent execution, encrypted private
+delivery, server termination, offline queueing, reconnect, and recovery while
+both client PIDs remained resident.
+
+Focused WSS authorization/revocation test:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `74 expect()` calls.
+The revocation case uses a real authenticated socket, revokes its device in
+SQLite, and observes close code `1008` with the revocation reason without
+requiring another client frame.
+
+Complete CoCodex suite (serialized to avoid the known Windows process-load
+race):
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex -- --max-concurrency=1
+```
+
+Exit status: `0`; relevant output: `91 pass`, `0 fail`, `823 expect()` calls
+across 30 files. The same suite's unbounded parallel invocation is not used as
+release evidence: it reached `89 pass` and exposed two load-sensitive failures
+(the repository's existing 20-second agent-safety CLI timeout and a mailbox
+timing assertion); the serial retry reached `90 pass` with only the CLI
+timeout, and a clean serialized retry then passed. The CLI test passes alone
+in `1.3s`.
+
+Build and static checks:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run lint:gui
+```
+
+Every command exited `0`. The GUI lint produced one existing
+`react-hooks/exhaustive-deps` warning and no errors. The separate client and
+server compile artifacts were produced, and the privacy scan found no private
+plaintext leak.
+
+Files: `packages/cocodex-protocol/src/collaboration.ts`,
+`packages/cocodex-protocol/src/index.ts`,
+`packages/cocodex-protocol/tests/protocol.test.ts`,
+`apps/cocodex-server/src/private-messages.ts`,
+`apps/cocodex-server/src/server.ts`,
+`apps/cocodex-server/tests/collaboration-server.test.ts`,
+`src/cocodex/private-mailbox.ts`, `src/cocodex/session.ts`,
+`src/cocodex/gui-bridge.ts`, `src/cocodex/paths.ts`,
+`tests/cocodex-private-mailbox.test.ts`,
+`tests/cocodex-private-alpha-process.test.ts`, ADR 0014, ADR 0022, and the
+open-source reference matrix.
+
+The Matrix binding audit is recorded in ADR 0022. The evaluated packages were
+Apache-2.0 references only and were removed from `package.json`/`bun.lock`
+because the Bun durable-store and packaged native-runtime gates were not met.
+The alpha therefore makes no forward-secrecy, ratchet, or multi-device claim.
