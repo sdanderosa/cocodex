@@ -828,8 +828,6 @@ The following also remain deferred or insufficiently evidenced:
 - two separately authenticated real Stephen and Kai Codex accounts;
 - complete cross-PC transfer orchestration for installing the transferred server
   identity/endpoint, reconnecting both clients, and retiring the old authority;
-- a dedicated 501-event network recovery test for both chat and private
-  message pagination;
 - whole-project encryption is not implemented yet: keyed task prompts and
   agent results now use explicit encrypted frames, but file references remain
   server-readable and legacy plaintext compatibility routes remain for
@@ -841,7 +839,7 @@ The following also remain deferred or insufficiently evidenced:
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
   document, but it does not yet provide a full Hocuspocus deployment or
-  network pagination-gap UX.
+  pagination-gap UX beyond the tested cursor protocol.
 
 Accordingly, the connected deterministic private-alpha path works, but this
 report does not authorize a production or complete-private-alpha release claim.
@@ -994,8 +992,8 @@ existing-suite gate therefore remains open and is not claimed as green.
 
 ## Final verification after recovery checkpoint
 
-Implementation checkpoint for this verification: `c55c1ac5`. The final focused
-integration/security command was:
+Implementation checkpoints for this verification: `c55c1ac5` and pagination
+test commit `b04f18a9`. The final focused integration/security command was:
 
 ```powershell
 .\node_modules\.bin\bun.exe test --max-concurrency=1 `
@@ -1008,7 +1006,7 @@ integration/security command was:
   .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
 ```
 
-Exit status: `0`; relevant output: `39 pass`, `0 fail`, `287 expect()` calls
+Exit status: `0`; relevant output: `40 pass`, `0 fail`, `299 expect()` calls
 across seven files. This includes the real WSS revocation test, dependency
 cycle/idempotency and signed-host tests, bounded deferred-mailbox tests, and
 the three-process restart/offline/private-alpha harness.
@@ -1028,3 +1026,19 @@ Every command exited `0`. The separate Client and Server executables compiled,
 the privacy scan passed, and GUI lint reported one existing
 `react-hooks/exhaustive-deps` warning with no errors. No CoCodex server/client
 process or listener was left running after verification.
+
+The previously deferred 501-event cursor check is now covered by
+`authenticated WSS collaboration > paginates 501 chat and private events over
+the real WSS cursor protocol`. It launches the real TLS/WSS server, writes 501
+authoritative chat events and 501 encrypted private messages, reconnects Kai,
+and verifies exact 500/1 pages and sequence boundaries for both streams.
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  --test-name-pattern "paginates 501"
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `12 expect()` calls in
+`2.84s`; the complete collaboration-server file also passed (`4 pass`, `0
+fail`, `86 expect()` calls).
