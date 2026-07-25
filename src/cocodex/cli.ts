@@ -1,12 +1,19 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync } from "node:fs";
-import { connectAuthenticatedClient, enrollClient, loadClientConnection, sendAgentRequest } from "./client";
+import {
+  connectAuthenticatedClient,
+  enrollClient,
+  loadClientConnection,
+  maintainAuthenticatedClient,
+  sendAgentRequest,
+} from "./client";
 import { attachLocalAgentBridge } from "./agent-bridge";
 import { CodexAgentAdapter } from "./codex-agent-adapter";
 import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
 import { clientPaths } from "./paths";
 import { loadOrCreateClientIdentity } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
+import { flushDurableOutbox } from "./outbox";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -129,26 +136,36 @@ async function run(): Promise<void> {
       socket.close();
       return;
     }    case "connect": {
-      const socket = await connectAuthenticatedClient(paths);
       const connection = loadClientConnection(paths);
-      let detachAgentBridge: (() => void) | undefined;
-      if (existsSync(paths.agentPolicy)) {
-        const policy = loadLocalAgentPolicy(paths.agentPolicy);
-        const adapter = new CodexAgentAdapter({
-          projectId: policy.projectId,
-          agentId: policy.agentId,
-          workspaceRoot: policy.workspaceRoot,
-          sandbox: policy.sandbox,
-        });
-        detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
-          localDeviceId: connection.deviceId,
-          serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-          trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
-        });
-      }
-      console.log(JSON.stringify({ connected: true, deviceId: connection.deviceId, agentEnabled: Boolean(detachAgentBridge) }));
-      await new Promise<void>(resolve => socket.addEventListener("close", () => resolve(), { once: true }));
-      detachAgentBridge?.();
+      await maintainAuthenticatedClient(paths, async socket => {
+        const flushedEvents = await flushDurableOutbox(socket, paths);
+        let detachAgentBridge: (() => void) | undefined;
+        if (existsSync(paths.agentPolicy)) {
+          const policy = loadLocalAgentPolicy(paths.agentPolicy);
+          const adapter = new CodexAgentAdapter({
+            projectId: policy.projectId,
+            agentId: policy.agentId,
+            workspaceRoot: policy.workspaceRoot,
+            sandbox: policy.sandbox,
+          });
+          detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
+            localDeviceId: connection.deviceId,
+            serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
+            trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+          });
+        }
+        console.log(JSON.stringify({
+          connected: true,
+          deviceId: connection.deviceId,
+          agentEnabled: Boolean(detachAgentBridge),
+          flushedEvents,
+        }));
+        return detachAgentBridge;
+      }, {
+        onConnectionError: error => {
+          console.error(JSON.stringify({ connected: false, retrying: true, error: error.message }));
+        },
+      });
       return;
     }
     default:

@@ -158,6 +158,47 @@ export async function connectAuthenticatedClient(paths: ClientPaths = clientPath
   });
 }
 
+export interface ReconnectingClientOptions {
+  signal?: AbortSignal;
+  retryDelayMs?: number;
+  connect?: (paths: ClientPaths) => Promise<WebSocket>;
+  onConnectionError?: (error: Error) => void;
+}
+
+export async function maintainAuthenticatedClient(
+  paths: ClientPaths,
+  onConnected: (socket: WebSocket) => void | (() => void) | Promise<void | (() => void)>,
+  options: ReconnectingClientOptions = {},
+): Promise<void> {
+  const connect = options.connect ?? connectAuthenticatedClient;
+  const retryDelayMs = Math.max(100, options.retryDelayMs ?? 1_000);
+  while (!options.signal?.aborted) {
+    let socket: WebSocket | undefined;
+    let cleanup: void | (() => void) = undefined;
+    try {
+      socket = await connect(paths);
+      cleanup = await onConnected(socket);
+      await new Promise<void>(resolve => {
+        if (socket!.readyState === WebSocket.CLOSED) resolve();
+        else socket!.addEventListener("close", () => resolve(), { once: true });
+      });
+    } catch (error) {
+      options.onConnectionError?.(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      cleanup?.();
+      if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+    }
+    if (options.signal?.aborted) break;
+    await new Promise<void>(resolve => {
+      const timeout = setTimeout(resolve, retryDelayMs);
+      options.signal?.addEventListener("abort", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+    });
+  }
+}
+
 export function sendAgentRequest(
   socket: WebSocket,
   projectId: string,

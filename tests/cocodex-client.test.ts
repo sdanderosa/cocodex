@@ -15,6 +15,7 @@ import { createTlsIdentity, tlsCertificateFingerprint } from "../apps/cocodex-se
 import {
   connectAuthenticatedClient,
   enrollClient,
+  maintainAuthenticatedClient,
 } from "../src/cocodex/client";
 import { clientPaths } from "../src/cocodex/paths";
 
@@ -31,6 +32,34 @@ afterEach(async () => {
 });
 
 describe("CoCodex Client direct enrollment", () => {
+  test("reconnects a resident client session after transport closure", async () => {
+    const controller = new AbortController();
+    const connected: number[] = [];
+    let attempts = 0;
+    const fakeSocket = (): WebSocket => {
+      const target = new EventTarget() as WebSocket;
+      Object.defineProperty(target, "readyState", { value: WebSocket.OPEN, writable: true });
+      target.close = (() => {
+        Object.defineProperty(target, "readyState", { value: WebSocket.CLOSED });
+        target.dispatchEvent(new CloseEvent("close"));
+      }) as WebSocket["close"];
+      return target;
+    };
+    await maintainAuthenticatedClient(clientPaths("unused"), socket => {
+      connected.push(++attempts);
+      if (attempts === 1) queueMicrotask(() => socket.close());
+      else {
+        controller.abort();
+        queueMicrotask(() => socket.close());
+      }
+    }, {
+      signal: controller.signal,
+      retryDelayMs: 100,
+      connect: async () => fakeSocket(),
+    });
+    expect(connected).toEqual([1, 2]);
+  });
+
   test("pins TLS before enrollment, reconnects after approval, and rejects a wrong pin without consuming it", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-client-server-"));
     const clientRoot = mkdtempSync(join(tmpdir(), "cocodex-client-device-"));

@@ -32,6 +32,7 @@ const sockets: WebSocket[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.close();
   await Promise.all(servers.splice(0).map(server => server.stop(true)));
+  for (const database of databases.splice(0)) database.close();
 
   Bun.gc(true);
   for (const root of roots.splice(0)) {
@@ -164,7 +165,8 @@ describe("authenticated WSS collaboration", () => {
     const identity = createServerIdentity(paths);
     await createTlsIdentity(paths);
     const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
-    const db = openDatabase(":memory:");
+    const db = openDatabase(paths.database);
+    databases.push(db);
     const stephen = approvedDevice(db, fingerprint, "Stephen");
     const kai = approvedDevice(db, fingerprint, "Kai");
     const project = createProject(db, "Nocturne Launcher", stephen.id);
@@ -379,5 +381,41 @@ describe("authenticated WSS collaboration", () => {
       requesterDeviceId: stephen.id,
       targetDeviceId: kai.id,
     });
+
+    for (const socket of sockets.splice(0)) socket.close();
+    await Bun.sleep(25);
+    const originalPort = server.port;
+    expect(servers.pop()).toBe(server);
+    await server.stop(true);
+    expect(databases.pop()).toBe(db);
+    db.close();
+
+    const restartedDb = openDatabase(paths.database);
+    databases.push(restartedDb);
+    config.port = originalPort;
+    const restartedServer = startCoCodexServer(config, restartedDb, identity);
+    servers.push(restartedServer);
+    const restartedStephen = await connect(restartedServer.port, stephen, fingerprint);
+    const restartedKai = await connect(restartedServer.port, kai, fingerprint);
+    const restartedChat = nextFrame(restartedKai, "chat.snapshot");
+    restartedKai.send(JSON.stringify({
+      version: 1,
+      type: "chat.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      afterSequence: 0,
+    }));
+    expect(((await restartedChat).events as ChatEvent[]).map(event => event.sequence))
+      .toEqual([first.sequence, second.sequence, expect.any(Number)]);
+    const restartedPrivate = nextFrame(restartedStephen, "private.snapshot");
+    restartedStephen.send(JSON.stringify({
+      version: 1,
+      type: "private.subscribe",
+      requestId: randomUUID(),
+      afterSequence: 0,
+    }));
+    expect((await restartedPrivate).messages).toEqual([
+      expect.objectContaining({ ciphertext: privateCiphertext }),
+    ]);
   }, 15_000);
 });
