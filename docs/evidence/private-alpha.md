@@ -2,7 +2,8 @@
 
 - Evidence date: 2026-07-25
 - Implementation commits: `37d344d4`, plus running-task recovery fix
-  `72ce0f41` and trust/recovery-state validation fix `cc206faa`
+  `72ce0f41`, trust/recovery-state validation fix `cc206faa`, and focused
+  recovery tests `13850eed` / `5230f979`
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -84,10 +85,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-24 pass
+26 pass
 0 fail
-195 expect() calls
-Ran 24 tests across 16 files.
+206 expect() calls
+Ran 26 tests across 18 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
