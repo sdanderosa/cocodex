@@ -4,7 +4,8 @@
 - Implementation commits: foundation `37d344d4`, recovery and trust hardening
   `72ce0f41` / `cc206faa` / `5230f979`, shared-prompt and lifecycle work
   `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
-  `d730d3dd`, and authoritative cancellation `bc7951cb`.
+  `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
+  context `b70f5675`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -142,6 +143,52 @@ anthropic-image-retry-e2e.test.ts     exit 0: 3 pass, 0 fail
 Private-message replay protection is covered by the server shared-state tests:
 the same ciphertext cannot be accepted again under a different message ID,
 while approved-device checks continue to gate both sender and recipient.
+
+## Revisioned shared project context
+
+Commit: `b70f5675`
+
+Command:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\shared-state.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-outbox.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+19 pass
+0 fail
+111 expect() calls
+Ran 19 tests across 5 files.
+```
+
+This run proves migration v8, default and revision-one Final Goal/context
+state, stale-writer rejection, membership enforcement, strict protocol and
+serialized-size bounds, real authenticated WSS get/update/broadcast, context
+recovery after a server restart, offline outbox replay, and removal of a
+non-retryable stale update so it cannot block later events. The server routes
+context broadcasts to clients that explicitly requested that project's context;
+chat subscription alone is not treated as context authorization.
+
+The post-change rerun of the full three-process harness was attempted with:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test --timeout 60000 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+It exited `124` after the outer 120-second command timeout without test output
+and left no live CoCodex process. This is recorded as an incomplete rerun, not
+as evidence of a private-alpha pass; the previously recorded isolated
+three-process result above remains the last successful process-harness result.
 
 Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
 fallback; packet encoding/response validation and diagnostic classification are
