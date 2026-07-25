@@ -107,6 +107,8 @@ export const en = {
   "cocodex.private.key": "Recipient device key certificate",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "Share with agent",
+  "cocodex.private.shared": "Private message shared with the selected agent.",
   "nav.startup": "Startup",
   "nav.providers": "Providers",
   "nav.models": "Models",

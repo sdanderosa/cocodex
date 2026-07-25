@@ -581,6 +581,24 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const sharePrivate = async (message: PrivateMessage) => {
+    if (!projectId || !agentId.trim()) {
+      setNotice("Select an agent in the shared-chat composer before sharing a private message.");
+      return;
+    }
+    try {
+      await command({
+        type: "private.share",
+        projectId,
+        agentId: agentId.trim(),
+        messageId: message.messageId,
+      });
+      setNotice(t("cocodex.private.shared"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const localSafetyCommand = async (type: string, confirm = false) => {
     try {
       await command({ type, ...(confirm ? { confirm: true } : {}) });
@@ -950,6 +968,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <article key={message.messageId}>
                   <strong>{message.senderDeviceId === status.deviceId ? t("cocodex.you") : message.senderDeviceId.slice(0, 8)}</strong>
                   <p>{message.text}</p>
+                  <button className="btn btn-ghost" type="button" disabled={status.state !== "connected" || !agentId.trim()}
+                    onClick={() => void sharePrivate(message)}>{t("cocodex.private.share")}</button>
                 </article>
               ))}
               {!privateMessages.length && <p className="muted">{t("cocodex.private.empty")}</p>}

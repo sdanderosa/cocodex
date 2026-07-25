@@ -24,6 +24,7 @@ export const encryptedAgentRequestFrameSchema = z.object({
   agentId,
   ...taskLifetime,
   dependencies,
+  privateShareMessageId: z.uuid().optional(),
   envelope: projectContentEnvelopeSchema,
 }).strict();
 
@@ -48,6 +49,7 @@ export const encryptedAgentTaskSchema = z.object({
   promptEnvelope: projectContentEnvelopeSchema,
   ...taskLifetime,
   dependencies,
+  privateShareMessageId: z.uuid().optional(),
   requesterSignature: z.string().min(64).max(256),
   requesterPublicKeyPem: z.string().min(64).max(2048),
   serverSignature: z.string().min(64).max(256),

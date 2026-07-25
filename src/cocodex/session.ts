@@ -128,6 +128,15 @@ export async function runJsonLineSession(
   let privateMailbox: PrivateMailboxState = loadPrivateMailbox(paths.privateMailbox, connection.deviceId);
   let privateCursor = privateMailbox.cursor;
   let privateProcessing = Promise.resolve();
+  // Decrypted private text is retained only in this resident process. It is
+  // never written to the mailbox or sent anywhere until the host explicitly
+  // issues `private.share` for one message and one project agent.
+  const decryptedPrivateMessages = new Map<string, {
+    text: string;
+    senderDeviceId: string;
+    recipientDeviceId: string;
+    clientCreatedAt: string;
+  }>();
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
   let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
@@ -365,6 +374,7 @@ export async function runJsonLineSession(
     expiresAt: string,
     dependencies: string[],
     requestId: string,
+    privateShareMessageId?: string,
   ) => {
     if (prompt.length < 1 || prompt.length > 32_768) throw new Error("Agent prompt must be 1-32768 characters");
     const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
@@ -391,8 +401,34 @@ export async function runJsonLineSession(
       issuedAt,
       expiresAt,
       dependencies,
+      ...(privateShareMessageId ? { privateShareMessageId } : {}),
       envelope,
     };
+  };
+  const queueAgentRequest = async (request: ReturnType<typeof createAgentRequest>): Promise<{
+    queued: boolean;
+    encrypted: boolean;
+  }> => {
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, request.projectId);
+    if (stored) {
+      enqueueDurableEvent(paths, await encryptedAgentRequestFrame(
+        request.projectId,
+        request.taskId,
+        request.agentId,
+        request.prompt,
+        request.nonce,
+        request.issuedAt,
+        request.expiresAt,
+        request.dependencies,
+        request.requestId,
+        request.privateShareMessageId,
+      ));
+    } else {
+      assertLegacyProjectFallbackAllowed(request.projectId);
+      enqueueDurableEvent(paths, { ...request });
+    }
+    const delivered = await flush();
+    return { queued: delivered === 0, encrypted: Boolean(stored) };
   };
   const publishUsage = (changes: Partial<typeof usageReport> = {}) => {
     usageReport = {
@@ -490,6 +526,17 @@ export async function runJsonLineSession(
       });
       privateCursor = privateMailbox.cursor;
       savePrivateMailbox(paths.privateMailbox, privateMailbox);
+      decryptedPrivateMessages.set(message.messageId, {
+        text: opened.text,
+        senderDeviceId: message.senderDeviceId,
+        recipientDeviceId: message.recipientDeviceId,
+        clientCreatedAt: message.clientCreatedAt,
+      });
+      while (decryptedPrivateMessages.size > 256) {
+        const oldest = decryptedPrivateMessages.keys().next().value;
+        if (typeof oldest !== "string") break;
+        decryptedPrivateMessages.delete(oldest);
+      }
       emit({
         source: "private",
         message: { ...message, ciphertext: undefined, text: opened.text },
@@ -1353,7 +1400,10 @@ export async function runJsonLineSession(
         localDeviceId: connection.deviceId,
         agentId: policy.agentId,
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-        trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+        trustedRequesterFingerprints: new Map([
+          ...Object.entries(policy.trustedRequesterFingerprints),
+          [connection.deviceId, publicKeyFingerprint(identity.publicKeyPem)],
+        ]),
         journalPath: paths.agentJournal,
         onActiveAgents: activeAgents => publishUsage({ activeAgents }),
         decryptTaskPrompt: decryptEncryptedAgentPrompt,
@@ -1817,31 +1867,14 @@ export async function runJsonLineSession(
             paths,
             Array.isArray(command.dependencies) ? command.dependencies.map(String) : [],
           );
-          const stored = loadProjectKeyForEncryption(paths.projectKeys, request.projectId);
-          if (stored) {
-            enqueueDurableEvent(paths, await encryptedAgentRequestFrame(
-              request.projectId,
-              request.taskId,
-              request.agentId,
-              request.prompt,
-              request.nonce,
-              request.issuedAt,
-              request.expiresAt,
-              request.dependencies,
-              request.requestId,
-            ));
-          } else {
-            assertLegacyProjectFallbackAllowed(request.projectId);
-            enqueueDurableEvent(paths, { ...request });
-          }
-          const delivered = await flush();
+          const delivery = await queueAgentRequest(request);
           emit({
             source: "control",
             id: command.id,
             ok: true,
-            queued: delivered === 0,
+            queued: delivery.queued,
             taskId: request.taskId,
-            encrypted: Boolean(stored),
+            encrypted: delivery.encrypted,
           });
         } else if (command.type === "agent.approval") {
           const taskId = String(command.taskId);
@@ -1887,6 +1920,28 @@ export async function runJsonLineSession(
           localAgentBridge?.emergencyStop("Full-computer access disabled locally.");
           emitAgentSafety(command.id);
           emit({ source: "control", id: command.id, ok: true, fullComputerEnabled: false });
+        } else if (command.type === "private.share") {
+          const projectId = String(command.projectId);
+          const agentId = String(command.agentId).trim();
+          const messageId = String(command.messageId);
+          if (!agentId) throw new Error("Private-message sharing requires an agent ID");
+          const shared = decryptedPrivateMessages.get(messageId);
+          if (!shared) throw new Error("Private message is not available in this resident session");
+          if (!loadProjectKeyForEncryption(paths.projectKeys, projectId)) {
+            throw new Error("Private-message sharing requires an encrypted project");
+          }
+          const prompt = `Shared private message ${messageId}:\n\n${shared.text}`;
+          const request = createAgentRequest(projectId, agentId, prompt, paths, [], messageId);
+          const delivery = await queueAgentRequest(request);
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            queued: delivery.queued,
+            encrypted: delivery.encrypted,
+            taskId: request.taskId,
+            sharedPrivateMessageId: messageId,
+          });
         } else if (command.type === "presence.update") {
           send({
             version: 1,

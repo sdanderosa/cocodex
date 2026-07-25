@@ -107,6 +107,8 @@ export const ja: Record<TKey, string> = {
   "cocodex.private.key": "受信者デバイス鍵証明書",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "エージェントと共有",
+  "cocodex.private.shared": "選択したエージェントとプライベートメッセージを共有しました。",
   "nav.startup": "起動安全性",
   "nav.providers": "プロバイダー",
   "nav.models": "モデル",

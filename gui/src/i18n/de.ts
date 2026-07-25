@@ -105,6 +105,8 @@ export const de = {
   "cocodex.private.key": "Empfänger-Geräteschlüsselzertifikat",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "Mit Agent teilen",
+  "cocodex.private.shared": "Private Nachricht mit dem ausgewählten Agenten geteilt.",
   "nav.startup": "Startsicherheit",
   "nav.providers": "Anbieter",
   "nav.models": "Modelle",

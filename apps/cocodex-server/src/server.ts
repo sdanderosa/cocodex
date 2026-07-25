@@ -1257,6 +1257,7 @@ export function startCoCodexServer(
               issuedAt: message.issuedAt,
               expiresAt: message.expiresAt,
               dependencies: message.dependencies,
+              privateShareMessageId: message.privateShareMessageId,
               requesterSignature: message.signature,
             });
             if (created && pendingAgentTasks(db, task.targetDeviceId, new Date(), task.agentId).some(ready => ready.id === task.id)) {
@@ -1284,6 +1285,7 @@ export function startCoCodexServer(
               issuedAt: message.issuedAt,
               expiresAt: message.expiresAt,
               dependencies: message.dependencies,
+              privateShareMessageId: message.privateShareMessageId,
               envelope: message.envelope,
             });
             if (created && pendingEncryptedAgentTasks(db, task.targetDeviceId, new Date(), task.agentId).some(ready => ready.id === task.id)) {

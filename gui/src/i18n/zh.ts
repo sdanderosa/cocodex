@@ -107,6 +107,8 @@ export const zh: Record<TKey, string> = {
   "cocodex.private.key": "收件人设备密钥证书",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "与代理共享",
+  "cocodex.private.shared": "已与所选代理共享私密消息。",
   "nav.startup": "启动安全",
   "nav.providers": "提供方",
   "nav.models": "模型",

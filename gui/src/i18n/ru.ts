@@ -107,6 +107,8 @@ export const ru: Record<TKey, string> = {
   "cocodex.private.key": "Сертификат ключа устройства получателя",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "Поделиться с агентом",
+  "cocodex.private.shared": "Личное сообщение передано выбранному агенту.",
   "nav.startup": "Безопасность запуска",
   "nav.providers": "Провайдеры",
   "nav.models": "Модели",

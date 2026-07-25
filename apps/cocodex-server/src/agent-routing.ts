@@ -186,6 +186,7 @@ export interface CreateAgentTaskInput {
   issuedAt: string;
   expiresAt: string;
   dependencies?: string[];
+  privateShareMessageId?: string;
   requesterSignature: string;
 }
 
@@ -238,7 +239,8 @@ function taskById(db: Database, id: string): AgentTask | null {
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
-    t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
+    t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson,
+    t.private_share_message_id AS privateShareMessageId
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id WHERE t.id = ?`).get(id) as TaskRow | null;
   if (!row) return null;
   const { dependenciesJson, ...task } = row;
@@ -250,6 +252,7 @@ function sameRequest(task: AgentTask, input: CreateAgentTaskInput, dependencies:
     && task.agentId === input.agentId && task.prompt === input.prompt && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
     && JSON.stringify(task.dependencies) === JSON.stringify(dependencies)
+    && (task.privateShareMessageId ?? undefined) === input.privateShareMessageId
     && task.requesterSignature === input.requesterSignature;
 }
 
@@ -281,7 +284,9 @@ export function createAgentTask(
   }
   rejectDependencyCycle(db, input.projectId, input.id, dependencies);
   requireProjectMembership(db, input.projectId, agent.hostDeviceId);
-  if (agent.hostDeviceId === input.requesterDeviceId) throw new Error("Remote agent must be hosted by another device");
+  if (agent.hostDeviceId === input.requesterDeviceId && !input.privateShareMessageId) {
+    throw new Error("Remote agent must be hosted by another device");
+  }
   const requester = db.query(`SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?`)
     .get(input.requesterDeviceId) as DeviceKeyRow | null;
   if (!requester || requester.status !== "approved") throw new Error("Requester device is not approved");
@@ -301,6 +306,7 @@ export function createAgentTask(
     issuedAt: input.issuedAt,
     expiresAt: input.expiresAt,
     dependencies,
+    privateShareMessageId: input.privateShareMessageId,
   }), createPublicKey(requester.publicKeyPem), Buffer.from(input.requesterSignature, "base64url"));
   if (!requestValid) throw new Error("Invalid agent request signature");
   const acceptedAt = now.toISOString();
@@ -317,17 +323,19 @@ export function createAgentTask(
     requesterSignature: input.requesterSignature,
     requesterPublicKeyPem: requester.publicKeyPem,
     dependencies,
+    ...(input.privateShareMessageId ? { privateShareMessageId: input.privateShareMessageId } : {}),
   };
   const serverSignature = sign(null, agentDispatchSigningTranscript(unsigned), identity.privateKeyPem).toString("base64url");
   const { taskId: _signedTaskId, ...dispatch } = unsigned;
   const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies };
   db.query(`INSERT INTO agent_tasks (
     id, project_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
-    issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`).run(
+    issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json,
+    private_share_message_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
     task.id, task.projectId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
     task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
-    task.serverSignature, task.acceptedAt, JSON.stringify(dependencies),
+    task.serverSignature, task.acceptedAt, JSON.stringify(dependencies), input.privateShareMessageId ?? null,
   );
   return { task, created: true };
 }

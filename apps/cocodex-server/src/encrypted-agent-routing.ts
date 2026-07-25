@@ -29,6 +29,7 @@ export interface CreateEncryptedAgentTaskInput {
   issuedAt: string;
   expiresAt: string;
   dependencies?: string[];
+  privateShareMessageId?: string;
   envelope: unknown;
 }
 
@@ -70,6 +71,7 @@ interface TaskRow {
   status: EncryptedAgentTask["status"];
   acceptedAt: string;
   dependenciesJson: string;
+  privateShareMessageId?: string;
 }
 interface EventRow {
   sequence: number;
@@ -165,6 +167,7 @@ function taskFromRow(row: TaskRow): EncryptedAgentTask {
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
     dependencies: parseDependencies(row.dependenciesJson),
+    ...(row.privateShareMessageId ? { privateShareMessageId: row.privateShareMessageId } : {}),
     requesterSignature: row.requesterSignature,
     requesterPublicKeyPem: row.requesterPublicKeyPem,
     serverSignature: row.serverSignature,
@@ -180,7 +183,8 @@ function readTask(db: Database, id: string): TaskRow | null {
       t.prompt_envelope_json AS promptEnvelopeJson, t.nonce, t.issued_at AS issuedAt,
       t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
       t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
-      t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
+      t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson,
+      t.private_share_message_id AS privateShareMessageId
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
     WHERE t.id = ? AND t.prompt_envelope_json IS NOT NULL
   `).get(id) as TaskRow | null;
@@ -191,6 +195,7 @@ function sameTaskRequest(task: EncryptedAgentTask, input: CreateEncryptedAgentTa
     && task.agentId === input.agentId && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
     && JSON.stringify(task.dependencies) === JSON.stringify(dependencies)
+    && task.privateShareMessageId === input.privateShareMessageId
     && task.promptEnvelope && envelopeJson(task.promptEnvelope) === envelopeJson(envelope);
 }
 
@@ -235,7 +240,9 @@ export function createEncryptedAgentTask(
   }
   rejectDependencyCycle(db, input.projectId, input.id, dependencies);
   requireProjectMembership(db, input.projectId, agent.hostDeviceId);
-  if (agent.hostDeviceId === input.requesterDeviceId) throw new Error("Remote agent must be hosted by another device");
+  if (agent.hostDeviceId === input.requesterDeviceId && !input.privateShareMessageId) {
+    throw new Error("Remote agent must be hosted by another device");
+  }
   const requester = db.query("SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?")
     .get(input.requesterDeviceId) as DeviceKeyRow | null;
   if (!requester || requester.status !== "approved") throw new Error("Requester device is not approved");
@@ -262,17 +269,18 @@ export function createEncryptedAgentTask(
     envelopeSenderDeviceId: envelope.senderDeviceId,
     envelopeSenderPublicKeyPem: envelope.senderPublicKeyPem,
     envelopeSignature: envelope.signature,
+    ...(input.privateShareMessageId ? { privateShareMessageId: input.privateShareMessageId } : {}),
   };
   const serverSignature = signDispatch(identity.privateKeyPem, unsigned);
   const acceptedAt = now.toISOString();
   db.query(`INSERT INTO agent_tasks (
     id, project_id, requester_device_id, target_device_id, agent_id, prompt,
     prompt_envelope_json, nonce, issued_at, expires_at, requester_signature,
-    server_signature, status, accepted_at, dependencies_json
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`).run(
+    server_signature, status, accepted_at, dependencies_json, private_share_message_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
     input.id, input.projectId, input.requesterDeviceId, agent.hostDeviceId, input.agentId,
     ENCRYPTED_PROMPT_PLACEHOLDER, envelopeJson(envelope), input.nonce, input.issuedAt,
-    input.expiresAt, envelope.signature, serverSignature, acceptedAt, JSON.stringify(dependencies),
+    input.expiresAt, envelope.signature, serverSignature, acceptedAt, JSON.stringify(dependencies), input.privateShareMessageId ?? null,
   );
   return { task: taskFromRow(readTask(db, input.id)!), created: true };
 }
@@ -289,7 +297,8 @@ export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string,
       t.prompt_envelope_json AS promptEnvelopeJson, t.nonce, t.issued_at AS issuedAt,
       t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
       t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
-      t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
+      t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson,
+      t.private_share_message_id AS privateShareMessageId
     FROM agent_tasks t
     JOIN devices d ON d.id = t.requester_device_id
     JOIN agents a ON a.id = t.agent_id

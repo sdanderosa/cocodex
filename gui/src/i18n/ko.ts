@@ -107,6 +107,8 @@ export const ko: Record<TKey, string> = {
   "cocodex.private.key": "수신자 기기 키 인증서",
   "cocodex.private.message": "Private message…",
   "cocodex.private.send": "Send encrypted",
+  "cocodex.private.share": "에이전트와 공유",
+  "cocodex.private.shared": "선택한 에이전트와 비공개 메시지를 공유했습니다.",
   "nav.startup": "시작 안전성",
   "nav.providers": "프로바이더",
   "nav.models": "모델",

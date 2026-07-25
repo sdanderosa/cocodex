@@ -318,4 +318,10 @@ INSERT OR IGNORE INTO server_state (key, value) VALUES ('identity_fingerprint', 
     sql: `
 ALTER TABLE project_key_epochs ADD COLUMN rotation_required INTEGER NOT NULL DEFAULT 0 CHECK (rotation_required IN (0, 1));`,
   },
+  {
+    version: 19,
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN private_share_message_id TEXT;
+CREATE INDEX agent_tasks_private_share ON agent_tasks(private_share_message_id);`,
+  },
 ];

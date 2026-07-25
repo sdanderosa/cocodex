@@ -367,6 +367,18 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("Kai agent completed");
     expect(existsSync(join(kaiWorkspace, "kai-account-execution.json"))).toBeTrue();
 
+    const privateCanary = "PRIVATE-CANARY-7cLw9";
+    kai.send({
+      id: randomUUID(),
+      type: "private.send",
+      recipientDeviceId: stephenDevice.id,
+      recipientKeyCertificate: stephenKeyCertificate,
+      text: privateCanary,
+    });
+    const privateDelivery = await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);
+    const privateMessageId = String(privateDelivery.message.messageId);
+    traceCheckpoint("private message decrypted");
+
     const keyInitialize = randomUUID();
     stephen.send({
       id: keyInitialize,
@@ -396,6 +408,25 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(stephen, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === encryptedChatSubS),
       waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === encryptedChatSubK),
     ]);
+
+    const sharedPrivateRequest = randomUUID();
+    stephen.send({
+      id: sharedPrivateRequest,
+      type: "private.share",
+      projectId: project.id,
+      agentId: "stephen-agent",
+      messageId: privateMessageId,
+    });
+    const sharedPrivateControl = await waitFor(stephen, line => line.source === "control"
+      && line.id === sharedPrivateRequest && line.ok === true && line.encrypted === true
+      && line.sharedPrivateMessageId === privateMessageId);
+    const sharedPrivateApproval = await waitFor(stephen, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === sharedPrivateControl.taskId);
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: sharedPrivateApproval.task.id, approved: true });
+    await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.taskId === sharedPrivateControl.taskId
+      && line.frame.final === true && line.frame.event?.content?.includes(privateCanary));
+    expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).toContain(privateCanary);
+    traceCheckpoint("private message explicitly shared with agent");
 
     const encryptedStephenPrompt = "encrypted Stephen prompt never stored in server plaintext";
     const encryptedStephenRequest = randomUUID();
@@ -445,24 +476,13 @@ describe("three-process CoCodex private alpha", () => {
     const usageReportsS = usageS.frame.reports as any[];
     const usageReportsK = usageK.frame.reports as any[];
     expect(usageReportsS).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 3 }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
     expect(usageReportsK).toEqual(expect.arrayContaining([
       expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ inputTokens: expect.any(Number) }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ outputTokens: expect.any(Number) }) }),
     ]));
-
-    const privateCanary = "PRIVATE-CANARY-7cLw9";
-    kai.send({
-      id: randomUUID(),
-      type: "private.send",
-      recipientDeviceId: stephenDevice.id,
-      recipientKeyCertificate: stephenKeyCertificate,
-      text: privateCanary,
-    });
-    await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);
-    traceCheckpoint("private message decrypted");
 
     traceCheckpoint("stopping first server");
     server.process.kill();
@@ -562,7 +582,7 @@ describe("three-process CoCodex private alpha", () => {
       line => line.frame?.type === "usage.result" && line.frame.requestId === recoveredUsageRequest,
     );
     expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 3 }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
 
@@ -581,16 +601,16 @@ describe("three-process CoCodex private alpha", () => {
     const ciphertext = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };
     const encryptedTasks = db.query(`
       SELECT id, prompt, prompt_envelope_json AS promptEnvelopeJson
-      FROM agent_tasks WHERE id IN (?, ?)
+      FROM agent_tasks WHERE id IN (?, ?, ?)
       ORDER BY id
-    `).all(encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+    `).all(sharedPrivateControl.taskId, encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
       id: string; prompt: string; promptEnvelopeJson: string;
     }>;
     const encryptedResults = db.query(`
       SELECT task_id AS taskId, envelope_json AS envelopeJson
-      FROM project_chat_events WHERE task_id IN (?, ?)
+      FROM project_chat_events WHERE task_id IN (?, ?, ?)
       ORDER BY task_id, sequence
-    `).all(encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+    `).all(sharedPrivateControl.taskId, encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
       taskId: string; envelopeJson: string;
     }>;
     const duplicateCounts = db.query(`
@@ -600,19 +620,20 @@ describe("three-process CoCodex private alpha", () => {
     expect(ciphertext.ciphertext).not.toContain(privateCanary);
     expect(readFileSync(join(serverRoot, "server.sqlite3")).includes(Buffer.from(privateCanary))).toBeFalse();
     expect(duplicateCounts.total).toBe(duplicateCounts.uniqueIds);
-    expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).not.toContain(privateCanary);
     expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).not.toContain(privateCanary);
-    expect(encryptedTasks).toHaveLength(2);
+    expect(encryptedTasks).toHaveLength(3);
     for (const task of encryptedTasks) {
       expect(task.prompt).toBe("[encrypted]");
       expect(task.promptEnvelopeJson).not.toContain(encryptedStephenPrompt);
       expect(task.promptEnvelopeJson).not.toContain(encryptedKaiPrompt);
+      expect(task.promptEnvelopeJson).not.toContain(privateCanary);
       expect(task.promptEnvelopeJson).toContain("ciphertext");
     }
-    expect(encryptedResults.length).toBeGreaterThanOrEqual(2);
+    expect(encryptedResults.length).toBeGreaterThanOrEqual(3);
     for (const result of encryptedResults) {
       expect(result.envelopeJson).not.toContain(encryptedStephenPrompt);
       expect(result.envelopeJson).not.toContain(encryptedKaiPrompt);
+      expect(result.envelopeJson).not.toContain(privateCanary);
       expect(result.envelopeJson).toContain("ciphertext");
     }
   }, 120_000);

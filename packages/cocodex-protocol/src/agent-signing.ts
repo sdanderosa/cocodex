@@ -9,6 +9,7 @@ export interface AgentRequestTranscriptInput {
   issuedAt: string;
   expiresAt: string;
   dependencies?: string[];
+  privateShareMessageId?: string;
 }
 
 export interface AgentDispatchTranscriptInput extends AgentRequestTranscriptInput {
@@ -26,6 +27,7 @@ export interface AgentEncryptedDispatchTranscriptInput {
   issuedAt: string;
   expiresAt: string;
   dependencies?: string[];
+  privateShareMessageId?: string;
   requesterDeviceId: string;
   targetDeviceId: string;
   envelopeProjectId: string;
@@ -63,6 +65,7 @@ export function agentRequestSigningTranscript(input: AgentRequestTranscriptInput
     input.issuedAt,
     input.expiresAt,
     JSON.stringify(input.dependencies ?? []),
+    input.privateShareMessageId ?? "",
   ]);
 }
 
@@ -81,6 +84,7 @@ export function agentDispatchSigningTranscript(input: AgentDispatchTranscriptInp
     input.targetDeviceId,
     input.requesterSignature,
     createHash("sha256").update(input.requesterPublicKeyPem, "utf8").digest("base64url"),
+    input.privateShareMessageId ?? "",
   ]);
 }
 
@@ -101,6 +105,7 @@ export function agentEncryptedDispatchSigningTranscript(input: AgentEncryptedDis
     JSON.stringify(input.dependencies ?? []),
     input.requesterDeviceId,
     input.targetDeviceId,
+    input.privateShareMessageId ?? "",
     input.envelopeProjectId,
     String(input.envelopeKeyEpoch),
     input.envelopeRecordId,

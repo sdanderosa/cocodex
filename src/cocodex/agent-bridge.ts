@@ -67,6 +67,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
       issuedAt: task.issuedAt,
       expiresAt: task.expiresAt,
       dependencies: task.dependencies,
+      privateShareMessageId: task.privateShareMessageId,
       requesterDeviceId: task.requesterDeviceId,
       targetDeviceId: task.targetDeviceId,
       envelopeProjectId: task.promptEnvelope.projectId,
@@ -89,6 +90,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     issuedAt: task.issuedAt,
     expiresAt: task.expiresAt,
     dependencies: task.dependencies,
+    privateShareMessageId: task.privateShareMessageId,
   }), createPublicKey(task.requesterPublicKeyPem), Buffer.from(task.requesterSignature, "base64url"));
   if (!requestValid) return null;
   const dispatchValid = verify(null, agentDispatchSigningTranscript({
@@ -100,6 +102,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     issuedAt: task.issuedAt,
     expiresAt: task.expiresAt,
     dependencies: task.dependencies,
+    privateShareMessageId: task.privateShareMessageId,
     requesterDeviceId: task.requesterDeviceId,
     targetDeviceId: task.targetDeviceId,
     requesterSignature: task.requesterSignature,

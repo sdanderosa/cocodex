@@ -155,6 +155,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     issuedAt: z.iso.datetime(),
     expiresAt: z.iso.datetime(),
     dependencies: z.array(z.uuid()).max(16).default([]),
+    privateShareMessageId: z.uuid().optional(),
     signature: z.string().min(64).max(256),
   }).strict(),
   z.object({
@@ -601,6 +602,7 @@ export const agentTaskSchema = z.object({
   issuedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
   dependencies: z.array(z.uuid()).max(16).default([]),
+  privateShareMessageId: z.uuid().optional(),
   requesterSignature: z.string().min(64).max(256),
   requesterPublicKeyPem: z.string().min(64).max(2048),
   serverSignature: z.string().min(64).max(256),
@@ -648,6 +650,7 @@ export interface AgentTask {
   issuedAt: string;
   expiresAt: string;
   dependencies: string[];
+  privateShareMessageId?: string;
   requesterSignature: string;
   requesterPublicKeyPem: string;
   serverSignature: string;
