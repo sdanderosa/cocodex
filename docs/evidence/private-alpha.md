@@ -13,7 +13,8 @@
   lifecycle timeout hardening `0f09345f`, encrypted project artifacts
   `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`.
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
-  evidence `0cd1ec49` and client/server guidance `48f8aef3`.
+  evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
+  presence, and disconnected-UI hardening `76647c34`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -93,7 +94,7 @@ and graceful stop against the real TLS server process.
 
 ## Authenticated prompt awareness
 
-Implementation commit: `203dc406`
+Implementation commit: `203dc406`; hardening commit: `76647c34`
 
 Test names:
 
@@ -117,7 +118,7 @@ Relevant output:
 ```text
 17 pass
 0 fail
-129 expect() calls
+130 expect() calls
 Ran 17 tests across 2 files.
 ```
 
@@ -125,8 +126,12 @@ The WSS coverage exercises both the legacy and encrypted chat subscription
 routes. It proves that cursor, caret/selection, and typing state are delivered
 without clobbering one another; typing-only updates remain visible; duplicate
 sockets for one device do not clear the surviving device state; and removing a
-project member emits `presence.leave`. The protocol schemas bound coordinates,
-caret offsets, display names, timestamps, member counts, and unknown fields.
+project member emits the strict minimal `presence.leave` frame. The server now
+validates every emitted presence frame, enforces both per-device and per-project
+update limits, caps runtime members at 128, prunes stale or revoked members on
+a bounded timer, and the resident client rejects malformed presence frames.
+The protocol schemas bound coordinates, caret offsets, display names, timestamps,
+member counts, and unknown fields.
 The GUI keeps local channels merged, batches typing updates at 100 ms, clears
 typing after 1.5 seconds of inactivity or blur, resends the cached state after
 reconnect, filters events from an old project, and renders advisory named
@@ -178,11 +183,12 @@ Relevant output:
 ```text
 77 pass
 0 fail
-716 expect() calls
+717 expect() calls
 Ran 77 tests across 27 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
+Typecheck completed; privacy scan passed
 ```
 
 The GUI lint reported one pre-existing hook dependency warning and no errors.
