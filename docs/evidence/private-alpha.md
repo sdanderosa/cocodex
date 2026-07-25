@@ -6,7 +6,8 @@
   `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
   `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
   context `b70f5675`, client Final Goal/docs `7010d6ec`, and signed usage
-  reports `b2c124f9`.
+  reports `b2c124f9`, encrypted project chat/key lifecycle `02d24e16`, and
+  encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -334,6 +335,48 @@ fail`, and `555 expect() calls`. The focused WSS test includes tampered
 signature rejection and a SQLite canary proving that the chat plaintext is
 absent.
 
+## Encrypted shared prompt updates
+
+Implementation commits: `2be9f7d0`, `e15cc537`
+
+The new `project.prompt.*` transport encrypts each bounded Yjs update on the
+client with the current project key and signs the envelope. The server checks
+membership, the current key epoch, the enrolled sender key, the record binding,
+and replay/idempotency, then assigns an authoritative sequence and stores only
+the opaque envelope in `project_prompt_updates`. It never applies Yjs. Both
+clients decrypt the accepted/changed update locally and feed it to the existing
+prompt document; the durable outbox and reconnect cursor cover offline replay.
+
+Focused command and evidence:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts `
+  .\tests\cocodex-outbox.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `33 pass`, `0 fail`, `233 expect() calls`.
+The session test creates a real Yjs document, encrypts its binary update, and
+applies the decrypted update on the receiving client. The WSS test also proves
+that the stored prompt envelope contains ciphertext but neither the update
+bytes nor prompt text. The encrypted-session teardown uses bounded Windows
+cleanup retries so concurrent test files do not turn a passed assertion into a
+spurious `EBUSY` failure.
+
+Full CoCodex command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `67 pass`, `0 fail`, `575 expect() calls`.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
@@ -381,11 +424,11 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- whole-project encryption is not implemented yet: prompts, tasks, agent
-  results, artifacts, and file references remain server-readable; Final
-  Goal/context and shared chat are encrypted only through their explicit new
-  frames. Automatic post-removal rotation orchestration and revocation UI are
-  still incomplete.
+- whole-project encryption is not implemented yet: tasks, agent results,
+  artifacts, and file references remain server-readable; Final Goal/context,
+  shared chat, and shared prompt updates are encrypted only through their
+  explicit new frames. Automatic post-removal rotation orchestration and
+  revocation UI are still incomplete.
 - NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
