@@ -204,4 +204,9 @@ CREATE TABLE usage_reports (
 );
 CREATE INDEX usage_reports_updated ON usage_reports(updated_at);`,
   },
+  {
+    version: 10,
+    sql: `
+ALTER TABLE devices ADD COLUMN project_wrap_public_key_pem TEXT;`,
+  },
 ];

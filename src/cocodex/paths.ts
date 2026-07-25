@@ -7,6 +7,8 @@ export interface ClientPaths {
   identityPublicKey: string;
   messagingPrivateKey: string;
   messagingPublicKey: string;
+  projectWrapPrivateKey: string;
+  projectWrapPublicKey: string;
   connection: string;
   agentPolicy: string;
   agentJournal: string;
@@ -27,6 +29,8 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     identityPublicKey: resolve(absoluteRoot, "device-ed25519-public.pem"),
     messagingPrivateKey: resolve(absoluteRoot, "messaging-x25519-private.pem"),
     messagingPublicKey: resolve(absoluteRoot, "messaging-x25519-public.pem"),
+    projectWrapPrivateKey: resolve(absoluteRoot, "project-wrap-x25519-private.pem"),
+    projectWrapPublicKey: resolve(absoluteRoot, "project-wrap-x25519-public.pem"),
     connection: resolve(absoluteRoot, "connection.json"),
     agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),

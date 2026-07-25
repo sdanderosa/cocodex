@@ -9,6 +9,7 @@ export const enrollmentClaimSchema = z
     displayName: z.string().trim().min(1).max(80),
     devicePublicKeyPem: z.string().min(64).max(2048),
     messagingPublicKeyPem: z.string().min(64).max(2048),
+    projectWrapPublicKeyPem: z.string().min(64).max(2048).optional(),
     signature: z.string().min(64).max(256),
   })
   .strict();
@@ -23,6 +24,7 @@ interface EnrollmentTranscriptInput {
   displayName: string;
   devicePublicKeyPem: string;
   messagingPublicKeyPem: string;
+  projectWrapPublicKeyPem?: string;
 }
 
 function lengthPrefix(value: string): Buffer {
@@ -43,5 +45,6 @@ export function enrollmentSigningTranscript(input: EnrollmentTranscriptInput): B
     lengthPrefix(input.displayName.trim()),
     lengthPrefix(input.devicePublicKeyPem),
     lengthPrefix(input.messagingPublicKeyPem),
+    lengthPrefix(input.projectWrapPublicKeyPem ?? ""),
   ]);
 }

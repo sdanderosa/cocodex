@@ -21,6 +21,7 @@ export interface EnrollmentRequest {
   displayName: string;
   devicePublicKeyPem: string;
   messagingPublicKeyPem: string;
+  projectWrapPublicKeyPem?: string;
   signature: string;
 }
 
@@ -48,9 +49,9 @@ function validateDisplayName(value: string): string {
   return normalized;
 }
 
-function canonicalX25519PublicKey(value: string): string {
+function canonicalX25519PublicKey(value: string, label: string): string {
   const key = createPublicKey(value);
-  if (key.asymmetricKeyType !== "x25519") throw new Error("Messaging key must be X25519");
+  if (key.asymmetricKeyType !== "x25519") throw new Error(`${label} key must be X25519`);
   return key.export({ type: "spki", format: "pem" }).toString();
 }
 
@@ -103,7 +104,10 @@ export function createEnrollmentChallenge(
 export function enrollDevice(db: Database, request: EnrollmentRequest, now = new Date()): DeviceRecord {
   const displayName = validateDisplayName(request.displayName);
   const canonicalPublicKey = canonicalEd25519PublicKey(request.devicePublicKeyPem);
-  const messagingPublicKeyPem = canonicalX25519PublicKey(request.messagingPublicKeyPem);
+  const messagingPublicKeyPem = canonicalX25519PublicKey(request.messagingPublicKeyPem, "Messaging");
+  const projectWrapPublicKeyPem = request.projectWrapPublicKeyPem
+    ? canonicalX25519PublicKey(request.projectWrapPublicKeyPem, "Project-wrap")
+    : null;
   const transaction = db.transaction(() => {
     const challenge = db.query(`
       SELECT
@@ -133,6 +137,7 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
       displayName,
       devicePublicKeyPem: canonicalPublicKey,
       messagingPublicKeyPem,
+      projectWrapPublicKeyPem: projectWrapPublicKeyPem ?? undefined,
     });
     const signature = Buffer.from(request.signature, "base64url");
     if (!verify(null, proof, canonicalPublicKey, signature)) {
@@ -151,13 +156,14 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
     };
     db.query(`
       INSERT INTO devices (
-        id, public_key_pem, messaging_public_key_pem, fingerprint, display_name,
+        id, public_key_pem, messaging_public_key_pem, project_wrap_public_key_pem, fingerprint, display_name,
         status, invitation_id, enrolled_at
-      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `).run(
       record.id,
       canonicalPublicKey,
       messagingPublicKeyPem,
+      projectWrapPublicKeyPem,
       record.fingerprint,
       record.displayName,
       request.invitation.invitationId,
@@ -213,12 +219,21 @@ export function devicePublicKeys(db: Database, deviceId: string): {
   fingerprint: string;
   devicePublicKeyPem: string;
   messagingPublicKeyPem: string;
+  projectWrapPublicKeyPem?: string;
 } {
   const row = db.query(`SELECT id AS deviceId, fingerprint,
-    public_key_pem AS devicePublicKeyPem, messaging_public_key_pem AS messagingPublicKeyPem
+    public_key_pem AS devicePublicKeyPem, messaging_public_key_pem AS messagingPublicKeyPem,
+    project_wrap_public_key_pem AS projectWrapPublicKeyPem
     FROM devices WHERE id = ? AND status = 'approved'`).get(deviceId) as {
       deviceId: string; fingerprint: string; devicePublicKeyPem: string; messagingPublicKeyPem: string | null;
+      projectWrapPublicKeyPem: string | null;
     } | null;
   if (!row || !row.messagingPublicKeyPem) throw new Error("Approved device messaging keys were not found");
-  return { ...row, messagingPublicKeyPem: row.messagingPublicKeyPem };
+  return {
+    deviceId: row.deviceId,
+    fingerprint: row.fingerprint,
+    devicePublicKeyPem: row.devicePublicKeyPem,
+    messagingPublicKeyPem: row.messagingPublicKeyPem,
+    ...(row.projectWrapPublicKeyPem ? { projectWrapPublicKeyPem: row.projectWrapPublicKeyPem } : {}),
+  };
 }

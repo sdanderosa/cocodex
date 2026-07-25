@@ -291,6 +291,7 @@ export function startCoCodexServer(
             displayName: body.displayName,
             devicePublicKeyPem: body.devicePublicKeyPem,
             messagingPublicKeyPem: body.messagingPublicKeyPem,
+            projectWrapPublicKeyPem: body.projectWrapPublicKeyPem,
             signature: body.signature,
           });
           return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem, serverEpoch: serverEpoch(db) }, 202);
