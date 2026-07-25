@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   PROJECT_CONTEXT_MAX_BYTES,
+  projectServerFrameSchema,
   projectContentEnvelopeSchema,
   projectKeyEnvelopeSchema,
   publicKeyFingerprint,
@@ -830,6 +831,14 @@ export async function runJsonLineSession(
       let frame: Record<string, any>;
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
+      if (frame.type === "presence.snapshot" || frame.type === "presence.update"
+        || frame.type === "presence.leave" || frame.type === "presence.accepted") {
+        try { frame = projectServerFrameSchema.parse(frame) as Record<string, any>; }
+        catch (error) {
+          emitError({ source: "protocol", error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
+      }
       if (frame.type === "project.chat.snapshot" || frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
         void openEncryptedChatFrame(frame);
         return;

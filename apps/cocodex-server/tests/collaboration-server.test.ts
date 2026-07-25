@@ -615,7 +615,12 @@ describe("authenticated WSS collaboration", () => {
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
       cursor: null, caret: null, typing: false,
     }));
-    await presenceLeave;
+    expect(await presenceLeave).toEqual({
+      version: 1,
+      type: "presence.leave",
+      projectId: project.id,
+      deviceId: stephen.id,
+    });
     await Bun.sleep(1_600);
 
     for (const socket of sockets.splice(0)) socket.close();

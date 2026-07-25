@@ -6,6 +6,10 @@ import {
   clientFrameSchema,
   decodeInvitation,
   enrollmentClaimSchema,
+  presenceAcceptedFrameSchema,
+  presenceLeaveFrameSchema,
+  presenceSnapshotFrameSchema,
+  presenceUpdateFrameSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
 import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
@@ -50,6 +54,9 @@ const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 8;
 const MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE = 30;
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
+const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
+const MAX_PRESENCE_MEMBERS = 128;
+const PRESENCE_TTL_MS = 15_000;
 
 interface SocketData {
   challenge: string;
@@ -143,6 +150,8 @@ export function startCoCodexServer(
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const presenceByProject = new Map<string, Map<string, PresenceState>>();
   const presenceUpdateTimes = new Map<string, number[]>();
+  const presenceProjectUpdateTimes = new Map<string, number[]>();
+  const presencePruneIntervalMs = Math.min(5_000, Math.max(1_000, Math.floor(PRESENCE_TTL_MS / 3)));
   let unauthenticatedSocketCount = 0;
   const unauthenticatedByIp = new Map<string, number>();
   const connectionAttemptsByIp = new Map<string, number[]>();
@@ -325,7 +334,13 @@ export function startCoCodexServer(
   }
 
   function sendPresence(projectId: string, frame: unknown): void {
-    const encoded = JSON.stringify(frame);
+    const type = (frame as { type?: unknown } | null)?.type;
+    const parsed = type === "presence.update"
+      ? presenceUpdateFrameSchema.parse(frame)
+      : type === "presence.leave"
+        ? presenceLeaveFrameSchema.parse(frame)
+        : (() => { throw new Error("Invalid presence frame type"); })();
+    const encoded = JSON.stringify(parsed);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
       if (!deviceId || !socket.data.subscribedPresenceProjects.has(projectId)) continue;
@@ -346,14 +361,16 @@ export function startCoCodexServer(
   function sendPresenceSnapshot(socket: ServerWebSocket<SocketData>, projectId: string, requestId: string, deviceId: string): void {
     requireProjectMembership(db, projectId, deviceId);
     socket.data.subscribedPresenceProjects.add(projectId);
-    socket.send(JSON.stringify({
+    prunePresence();
+    socket.send(JSON.stringify(presenceSnapshotFrameSchema.parse({
       version: 1,
       type: "presence.snapshot",
       requestId,
       projectId,
       members: [...(presenceByProject.get(projectId)?.values() ?? [])]
-        .filter(member => member.deviceId !== deviceId),
-    }));
+        .filter(member => member.deviceId !== deviceId)
+        .slice(0, MAX_PRESENCE_MEMBERS),
+    })));
   }
 
   function clearPresence(deviceId: string): void {
@@ -365,7 +382,23 @@ export function startCoCodexServer(
     const members = presenceByProject.get(projectId);
     if (!members?.delete(deviceId)) return;
     sendPresence(projectId, { version: 1, type: "presence.leave", projectId, deviceId });
-    if (members.size === 0) presenceByProject.delete(projectId);
+    if (members.size === 0) {
+      presenceByProject.delete(projectId);
+      presenceProjectUpdateTimes.delete(projectId);
+    }
+  }
+
+  function prunePresence(now = Date.now()): void {
+    const cutoff = now - PRESENCE_TTL_MS;
+    for (const [projectId, members] of presenceByProject) {
+      for (const member of members.values()) {
+        const updatedAt = Date.parse(member.updatedAt);
+        const device = deviceForAuthentication(db, member.deviceId);
+        if (!Number.isFinite(updatedAt) || updatedAt < cutoff || device?.status !== "approved") {
+          clearProjectPresence(projectId, member.deviceId);
+        }
+      }
+    }
   }
 
   const server = Bun.serve<SocketData>({
@@ -739,6 +772,7 @@ export function startCoCodexServer(
           }
           if (message.type === "presence.update") {
             requireProjectMembership(db, message.projectId, deviceId);
+            prunePresence();
             const now = Date.now();
             const recentUpdates = (presenceUpdateTimes.get(deviceId) ?? [])
               .filter(timestamp => timestamp > now - 1_000);
@@ -752,6 +786,20 @@ export function startCoCodexServer(
               }));
               return;
             }
+            const projectRecentUpdates = (presenceProjectUpdateTimes.get(message.projectId) ?? [])
+              .filter(timestamp => timestamp > now - 1_000);
+            if (projectRecentUpdates.length >= MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND) {
+              presenceProjectUpdateTimes.set(message.projectId, projectRecentUpdates);
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "error",
+                requestId,
+                error: "Project presence update rate limit exceeded",
+              }));
+              return;
+            }
+            projectRecentUpdates.push(now);
+            presenceProjectUpdateTimes.set(message.projectId, projectRecentUpdates);
             recentUpdates.push(now);
             presenceUpdateTimes.set(deviceId, recentUpdates);
             const member = {
@@ -764,17 +812,37 @@ export function startCoCodexServer(
             } satisfies PresenceState;
             const members = presenceByProject.get(message.projectId) ?? new Map<string, PresenceState>();
             const active = Boolean(message.cursor || message.caret || message.typing);
+            if (active && !members.has(deviceId) && members.size >= MAX_PRESENCE_MEMBERS) {
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "error",
+                requestId,
+                error: "Project presence member limit exceeded",
+              }));
+              return;
+            }
             if (!active) members.delete(deviceId);
             else members.set(deviceId, member);
-            if (members.size === 0) presenceByProject.delete(message.projectId);
-            else presenceByProject.set(message.projectId, members);
-            sendPresence(message.projectId, {
-              version: 1,
-              type: active ? "presence.update" : "presence.leave",
-              projectId: message.projectId,
-              ...member,
-            });
-            socket.send(JSON.stringify({ version: 1, type: "presence.accepted", requestId, projectId: message.projectId }));
+            if (members.size === 0) {
+              presenceByProject.delete(message.projectId);
+              presenceProjectUpdateTimes.delete(message.projectId);
+            } else presenceByProject.set(message.projectId, members);
+            if (active) {
+              sendPresence(message.projectId, {
+                version: 1,
+                type: "presence.update",
+                projectId: message.projectId,
+                ...member,
+              });
+            } else {
+              sendPresence(message.projectId, {
+                version: 1,
+                type: "presence.leave",
+                projectId: message.projectId,
+                deviceId,
+              });
+            }
+            socket.send(JSON.stringify(presenceAcceptedFrameSchema.parse({ version: 1, type: "presence.accepted", requestId, projectId: message.projectId })));
             return;
           }
           if (message.type === "prompt.subscribe") {
@@ -1190,6 +1258,7 @@ export function startCoCodexServer(
       },
     },
   });
+  const presencePruneTimer = setInterval(() => prunePresence(), presencePruneIntervalMs);
   return {
     hostname: server.hostname ?? config.hostname,
     port: server.port ?? config.port,
@@ -1198,6 +1267,7 @@ export function startCoCodexServer(
         for (const socket of sockets) socket.close(1001, "Server shutting down");
         sockets.clear();
       }
+      clearInterval(presencePruneTimer);
       const stopping = server.stop(closeActiveConnections);
       if (!closeActiveConnections) {
         await stopping;

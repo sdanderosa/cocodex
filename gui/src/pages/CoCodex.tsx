@@ -543,7 +543,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     sendPresenceState(projectId, localPresence.current);
   }, [projectId, sendPresenceState, status?.state]);
 
-  const remotePromptPresence = presence.filter(member => member.deviceId !== status?.deviceId
+  const visiblePresence = status?.state === "connected" ? presence : [];
+  const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
 
   return (
@@ -602,7 +603,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           } });
         }} onMouseLeave={() => publishPresence({ cursor: null })}>
           <div className="cocodex-presence-layer" aria-hidden="true">
-            {presence.filter(member => member.deviceId !== status.deviceId && member.cursor).map(member => (
+            {visiblePresence.filter(member => member.deviceId !== status.deviceId && member.cursor).map(member => (
               <span key={member.deviceId} className="cocodex-presence-cursor"
                 style={{ left: `${(member.cursor?.x ?? 0) * 100}%`, top: `${(member.cursor?.y ?? 0) * 100}%` }}>
                 <i />{member.displayName}
