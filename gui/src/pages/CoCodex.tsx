@@ -48,6 +48,15 @@ interface AgentApproval {
   prompt: string;
 }
 
+interface SharedProjectContext {
+  projectId: string;
+  finalGoal: string;
+  context: Record<string, unknown>;
+  revision: number;
+  updatedByDeviceId: string | null;
+  updatedAt: string | null;
+}
+
 interface PresenceMember {
   deviceId: string;
   displayName: string;
@@ -75,6 +84,7 @@ interface SessionValue {
     projects?: Project[];
     events?: ChatEvent[];
     event?: ChatEvent;
+    context?: SharedProjectContext;
   };
 }
 
@@ -140,6 +150,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
   const [draft, setDraft] = useState("");
   const [sharedPrompt, setSharedPrompt] = useState("");
+  const [sharedContext, setSharedContext] = useState<SharedProjectContext>();
+  const [finalGoalDraft, setFinalGoalDraft] = useState("");
   const [agentId, setAgentId] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -215,6 +227,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         && frame.projectId && frame.update) {
         try { Y.applyUpdate(ensurePromptDocument(frame.projectId), updateFromBase64(frame.update), "server"); }
         catch { setNotice(t("cocodex.prompt.invalid")); }
+      }
+      if ((frame?.type === "context.result" || frame?.type === "context.updated" || frame?.type === "context.changed")
+        && frame.context?.projectId) {
+        setSharedContext(frame.context);
+        setFinalGoalDraft(frame.context.finalGoal);
       }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
@@ -293,9 +310,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     subscribedProject.current = projectId;
     setChat([]);
     setPresence([]);
+    setSharedContext(undefined);
+    setFinalGoalDraft("");
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
+    void command({ type: "context.get", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
 
   const enroll = async (event: FormEvent) => {
@@ -382,6 +402,23 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     try {
       await command({ type: "agent.approval", taskId, approved });
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const saveFinalGoal = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId || !sharedContext || status?.state !== "connected") return;
+    try {
+      await command({
+        type: "context.update",
+        projectId,
+        expectedRevision: sharedContext.revision,
+        finalGoal: finalGoalDraft,
+        context: sharedContext.context,
+      });
+      setNotice(t("cocodex.goal.queued"));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -496,6 +533,19 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </div>
               <span className="cocodex-lock"><IconLock /> {t("cocodex.chat.transport")}</span>
             </div>
+            <form className="cocodex-final-goal" onSubmit={saveFinalGoal}>
+              <div className="cocodex-final-goal-head">
+                <span><strong>{t("cocodex.goal.title")}</strong><small>{t("cocodex.goal.subtitle")}</small></span>
+                <span className="cocodex-goal-revision">{t("cocodex.goal.revision", { revision: sharedContext?.revision ?? 0 })}</span>
+              </div>
+              <textarea className="input" value={finalGoalDraft} onChange={event => setFinalGoalDraft(event.target.value)}
+                placeholder={t("cocodex.goal.placeholder")} rows={2} maxLength={32_768}
+                disabled={!status.running || !projectId || !sharedContext} />
+              <button type="submit" className="btn btn-ghost cocodex-goal-save"
+                disabled={!sharedContext || status.state !== "connected" || finalGoalDraft === sharedContext.finalGoal}>
+                {t("cocodex.goal.save")}
+              </button>
+            </form>
             <label className="cocodex-shared-prompt">
               <span><strong>{t("cocodex.prompt.title")}</strong><small>{t("cocodex.prompt.crdt")}</small></span>
               <textarea className="input" value={sharedPrompt} onChange={event => editSharedPrompt(event.target.value)}

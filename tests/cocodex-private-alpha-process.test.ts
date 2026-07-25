@@ -248,6 +248,34 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === subK),
     ]);
 
+    const contextGetS = randomUUID();
+    const contextGetK = randomUUID();
+    stephen.send({ id: contextGetS, type: "context.get", projectId: project.id });
+    kai.send({ id: contextGetK, type: "context.get", projectId: project.id });
+    const [initialContextS, initialContextK] = await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "context.result" && line.frame.requestId === contextGetS),
+      waitFor(kai, line => line.frame?.type === "context.result" && line.frame.requestId === contextGetK),
+    ]);
+    expect(initialContextS.frame.context.revision).toBe(0);
+    expect(initialContextK.frame.context.finalGoal).toBe("");
+    const contextUpdate = randomUUID();
+    stephen.send({
+      id: contextUpdate,
+      type: "context.update",
+      projectId: project.id,
+      expectedRevision: 0,
+      finalGoal: "Complete the private alpha path",
+      context: { acceptance: "three-process" },
+    });
+    const acceptedContext = await waitFor(
+      stephen,
+      line => line.frame?.type === "context.updated" && line.frame.requestId === contextUpdate,
+    );
+    expect(acceptedContext.frame.context.revision).toBe(1);
+    expect(acceptedContext.frame.context.finalGoal).toBe("Complete the private alpha path");
+    await waitFor(kai, line => line.frame?.type === "context.changed"
+      && line.frame.context?.revision === 1 && line.frame.context?.finalGoal === "Complete the private alpha path");
+
     kai.send({ id: randomUUID(), type: "chat.send", projectId: project.id, content: "Kai online" });
     const onlineAtStephen = await waitFor(
       stephen,
@@ -345,6 +373,18 @@ describe("three-process CoCodex private alpha", () => {
         && line.frame.events?.some((item: any) => item.content === "Stephen offline queued"))
         || (line.frame?.type === "chat.event" && line.frame.event?.content === "Stephen offline queued")),
     ]);
+
+    const recoveredContextRequest = randomUUID();
+    kai.send({ id: recoveredContextRequest, type: "context.get", projectId: project.id });
+    const recoveredContext = await waitFor(
+      kai,
+      line => line.frame?.type === "context.result" && line.frame.requestId === recoveredContextRequest,
+    );
+    expect(recoveredContext.frame.context).toMatchObject({
+      revision: 1,
+      finalGoal: "Complete the private alpha path",
+      context: { acceptance: "three-process" },
+    });
 
     traceCheckpoint("recovered snapshots received");
     stephen.send({ id: "stop-s", type: "shutdown" });
