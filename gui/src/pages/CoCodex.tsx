@@ -89,6 +89,13 @@ interface PresenceMember {
   displayName: string;
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
+  typing: boolean;
+}
+
+interface LocalPresence {
+  cursor: { x: number; y: number } | null;
+  caret: { anchor: number; head: number } | null;
+  typing: boolean;
 }
 
 interface SessionValue {
@@ -107,6 +114,7 @@ interface SessionValue {
     displayName?: string;
     cursor?: { x: number; y: number } | null;
     caret?: { anchor: number; head: number } | null;
+    typing?: boolean;
     members?: PresenceMember[];
     projects?: Project[];
     events?: ChatEvent[];
@@ -205,6 +213,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const projectListRequested = useRef(false);
   const subscribedProject = useRef("");
   const presenceSentAt = useRef(0);
+  const presenceProject = useRef("");
+  const presenceConnectionState = useRef<ConnectionState | undefined>(undefined);
+  const localPresence = useRef<LocalPresence>({ cursor: null, caret: null, typing: false });
+  const presenceSendTimer = useRef<number | undefined>(undefined);
+  const typingIdleTimer = useRef<number | undefined>(undefined);
   const promptDoc = useRef<Y.Doc | undefined>(undefined);
   const promptProject = useRef("");
 
@@ -284,13 +297,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setProjects(listedProjects);
         setProjectId(previous => previous || listedProjects[0]?.id || "");
       }
-      if (frame?.type === "presence.snapshot" && Array.isArray(frame.members)) {
-        setPresence(frame.members);
-      } else if (frame?.type === "presence.update" && frame.deviceId && frame.displayName) {
+      if (frame?.projectId === projectId && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
+        setPresence(frame.members.map(member => ({ ...member, typing: member.typing === true })));
+      } else if (frame?.projectId === projectId && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
         setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
-          deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null, caret: frame.caret ?? null,
+          deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null,
+          caret: frame.caret ?? null, typing: frame.typing === true,
         }]);
-      } else if (frame?.type === "presence.leave" && frame.deviceId) {
+      } else if (frame?.projectId === projectId && frame.type === "presence.leave" && frame.deviceId) {
         setPresence(previous => previous.filter(member => member.deviceId !== frame.deviceId));
       }
       const incoming: ChatEvent[] = frame?.type === "chat.snapshot"
@@ -312,7 +326,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           : [...previous, privateMessage]);
       }
     }
-  }, [ensurePromptDocument, t]);
+  }, [ensurePromptDocument, projectId, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -365,6 +379,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     void command({ type: "context.get", projectId });
     void command({ type: "usage.get", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
+
+  useEffect(() => {
+    presenceConnectionState.current = status?.state;
+  }, [status?.state]);
+
+  useEffect(() => {
+    return () => {
+      if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
+      if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
+    };
+  }, []);
 
   const enroll = async (event: FormEvent) => {
     event.preventDefault();
@@ -472,10 +497,54 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const publishPresence = (cursorValue: { x: number; y: number } | null, caret: { anchor: number; head: number } | null = null) => {
+  const sendPresenceState = useCallback((targetProjectId: string, state: LocalPresence) => {
+    if (presenceConnectionState.current !== "connected" || !targetProjectId) return;
+    void command({ type: "presence.update", projectId: targetProjectId, ...state });
+  }, [command]);
+
+  const publishPresence = useCallback((patch: Partial<LocalPresence>, immediate = true) => {
+    if (!projectId) return;
+    const targetProjectId = projectId;
+    const next = { ...localPresence.current, ...patch };
+    localPresence.current = next;
+    if (next.typing) {
+      if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
+      typingIdleTimer.current = window.setTimeout(() => {
+        if (presenceProject.current !== targetProjectId) return;
+        const idle = { ...localPresence.current, typing: false };
+        localPresence.current = idle;
+        sendPresenceState(targetProjectId, idle);
+      }, 1_500);
+    }
+    if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
+    if (immediate) {
+      sendPresenceState(targetProjectId, next);
+    } else {
+      presenceSendTimer.current = window.setTimeout(() => {
+        sendPresenceState(targetProjectId, localPresence.current);
+      }, 100);
+    }
+  }, [projectId, sendPresenceState]);
+
+  useEffect(() => {
+    const previousProjectId = presenceProject.current;
+    if (previousProjectId && previousProjectId !== projectId && presenceConnectionState.current === "connected") {
+      sendPresenceState(previousProjectId, { cursor: null, caret: null, typing: false });
+    }
+    presenceProject.current = projectId;
+    localPresence.current = { cursor: null, caret: null, typing: false };
+    if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
+    if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
+  }, [projectId, sendPresenceState]);
+
+  useEffect(() => {
     if (status?.state !== "connected" || !projectId) return;
-    void command({ type: "presence.update", projectId, cursor: cursorValue, caret });
-  };
+    presenceProject.current = projectId;
+    sendPresenceState(projectId, localPresence.current);
+  }, [projectId, sendPresenceState, status?.state]);
+
+  const remotePromptPresence = presence.filter(member => member.deviceId !== status?.deviceId
+    && (member.typing || member.caret));
 
   return (
     <div className="cocodex-page">
@@ -527,11 +596,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           if (Date.now() - presenceSentAt.current < 80) return;
           presenceSentAt.current = Date.now();
           const rect = event.currentTarget.getBoundingClientRect();
-          publishPresence({
+          publishPresence({ cursor: {
             x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
             y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
-          });
-        }} onMouseLeave={() => publishPresence(null)}>
+          } });
+        }} onMouseLeave={() => publishPresence({ cursor: null })}>
           <div className="cocodex-presence-layer" aria-hidden="true">
             {presence.filter(member => member.deviceId !== status.deviceId && member.cursor).map(member => (
               <span key={member.deviceId} className="cocodex-presence-cursor"
@@ -596,9 +665,40 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             </form>
             <label className="cocodex-shared-prompt">
               <span><strong>{t("cocodex.prompt.title")}</strong><small>{t("cocodex.prompt.crdt")}</small></span>
-              <textarea className="input" value={sharedPrompt} onChange={event => editSharedPrompt(event.target.value)}
-                onSelect={event => publishPresence(null, { anchor: event.currentTarget.selectionStart, head: event.currentTarget.selectionEnd })}
+              <textarea className="input" value={sharedPrompt}
+                onChange={event => {
+                  editSharedPrompt(event.target.value);
+                  publishPresence({ caret: {
+                    anchor: event.currentTarget.selectionStart,
+                    head: event.currentTarget.selectionEnd,
+                  }, typing: true }, false);
+                }}
+                onFocus={event => publishPresence({ caret: {
+                  anchor: event.currentTarget.selectionStart,
+                  head: event.currentTarget.selectionEnd,
+                } })}
+                onSelect={event => publishPresence({ caret: {
+                  anchor: event.currentTarget.selectionStart,
+                  head: event.currentTarget.selectionEnd,
+                } })}
+                onBlur={() => publishPresence({ caret: null, typing: false })}
                 placeholder={t("cocodex.prompt.placeholder")} rows={3} disabled={!status.running || !projectId} />
+              {remotePromptPresence.length > 0 && <div className="cocodex-prompt-presence" aria-live="polite">
+                {remotePromptPresence.map(member => {
+                  const caret = member.caret;
+                  const start = caret ? Math.min(caret.anchor, caret.head) : 0;
+                  const end = caret ? Math.max(caret.anchor, caret.head) : start;
+                  const statusLabel = member.typing
+                    ? t("cocodex.prompt.typing")
+                    : start === end
+                      ? t("cocodex.prompt.caret", { position: start })
+                      : t("cocodex.prompt.selection", { start, end });
+                  return <span key={member.deviceId} className="cocodex-prompt-presence-member">
+                    <i aria-hidden="true" className={member.typing ? "typing" : "caret"} />
+                    <strong>{member.displayName}</strong><small>{statusLabel}</small>
+                  </span>;
+                })}
+              </div>}
             </label>
             <div className="cocodex-message-list" aria-live="polite">
               {chat.map(message => (

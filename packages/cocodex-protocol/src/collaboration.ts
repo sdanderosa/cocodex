@@ -159,6 +159,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     projectId,
     cursor: cursorPosition.nullable(),
     caret: textCaret.nullable(),
+    typing: z.boolean().default(false),
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -355,6 +356,51 @@ export const projectContextChangedFrameSchema = z.object({
   updatedAt: z.iso.datetime(),
 }).strict();
 
+const presenceMemberSchema = z.object({
+  deviceId: z.uuid(),
+  displayName: z.string().trim().min(1).max(80),
+  cursor: cursorPosition.nullable(),
+  caret: textCaret.nullable(),
+  typing: z.boolean().default(false),
+  updatedAt: z.iso.datetime(),
+}).strict();
+
+export const presenceSnapshotFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("presence.snapshot"),
+  requestId: requestId.optional(),
+  projectId,
+  members: z.array(presenceMemberSchema).max(128),
+}).strict();
+
+export const presenceUpdateFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("presence.update"),
+  requestId: requestId.optional(),
+  projectId,
+  deviceId: z.uuid(),
+  displayName: z.string().trim().min(1).max(80),
+  cursor: cursorPosition.nullable(),
+  caret: textCaret.nullable(),
+  typing: z.boolean().default(false),
+  updatedAt: z.iso.datetime(),
+}).strict();
+
+export const presenceLeaveFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("presence.leave"),
+  requestId: requestId.optional(),
+  projectId,
+  deviceId: z.uuid(),
+}).strict();
+
+export const presenceAcceptedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("presence.accepted"),
+  requestId,
+  projectId,
+}).strict();
+
 export const projectServerFrameSchema = z.discriminatedUnion("type", [
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
@@ -375,6 +421,10 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectContextResultFrameSchema,
   projectContextUpdatedFrameSchema,
   projectContextChangedFrameSchema,
+  presenceSnapshotFrameSchema,
+  presenceUpdateFrameSchema,
+  presenceLeaveFrameSchema,
+  presenceAcceptedFrameSchema,
 ]);
 
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;

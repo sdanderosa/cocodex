@@ -1439,6 +1439,7 @@ export async function runJsonLineSession(
             projectId: String(command.projectId),
             cursor: command.cursor ?? null,
             caret: command.caret ?? null,
+            typing: command.typing === true,
           });
           emit({ source: "control", id: command.id, ok: true });
         } else if (command.type === "device.trust") {

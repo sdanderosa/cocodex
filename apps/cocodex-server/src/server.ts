@@ -49,6 +49,7 @@ const MAX_UNAUTHENTICATED_SOCKETS = 64;
 const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 8;
 const MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE = 30;
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
+const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 
 interface SocketData {
   challenge: string;
@@ -58,6 +59,7 @@ interface SocketData {
   remoteAddress: string;
   subscribedProjects: Set<string>;
   subscribedEncryptedChats: Set<string>;
+  subscribedPresenceProjects: Set<string>;
   subscribedEncryptedPrompts: Set<string>;
   subscribedEncryptedArtifacts: Set<string>;
   subscribedPrompts: Set<string>;
@@ -79,6 +81,7 @@ interface PresenceState {
   displayName: string;
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
+  typing: boolean;
   updatedAt: string;
 }
 
@@ -139,6 +142,7 @@ export function startCoCodexServer(
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const presenceByProject = new Map<string, Map<string, PresenceState>>();
+  const presenceUpdateTimes = new Map<string, number[]>();
   let unauthenticatedSocketCount = 0;
   const unauthenticatedByIp = new Map<string, number>();
   const connectionAttemptsByIp = new Map<string, number[]>();
@@ -321,15 +325,47 @@ export function startCoCodexServer(
   }
 
   function sendPresence(projectId: string, frame: unknown): void {
-    sendToProject(projectId, frame);
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedPresenceProjects.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedPresenceProjects.delete(projectId);
+      }
+    }
+  }
+
+  function sendPresenceSnapshot(socket: ServerWebSocket<SocketData>, projectId: string, requestId: string, deviceId: string): void {
+    requireProjectMembership(db, projectId, deviceId);
+    socket.data.subscribedPresenceProjects.add(projectId);
+    socket.send(JSON.stringify({
+      version: 1,
+      type: "presence.snapshot",
+      requestId,
+      projectId,
+      members: [...(presenceByProject.get(projectId)?.values() ?? [])]
+        .filter(member => member.deviceId !== deviceId),
+    }));
   }
 
   function clearPresence(deviceId: string): void {
-    for (const [projectId, members] of presenceByProject) {
-      if (!members.delete(deviceId)) continue;
-      sendPresence(projectId, { version: 1, type: "presence.leave", projectId, deviceId });
-      if (members.size === 0) presenceByProject.delete(projectId);
-    }
+    presenceUpdateTimes.delete(deviceId);
+    for (const projectId of presenceByProject.keys()) clearProjectPresence(projectId, deviceId);
+  }
+
+  function clearProjectPresence(projectId: string, deviceId: string): void {
+    const members = presenceByProject.get(projectId);
+    if (!members?.delete(deviceId)) return;
+    sendPresence(projectId, { version: 1, type: "presence.leave", projectId, deviceId });
+    if (members.size === 0) presenceByProject.delete(projectId);
   }
 
   const server = Bun.serve<SocketData>({
@@ -428,6 +464,7 @@ export function startCoCodexServer(
           remoteAddress,
           subscribedProjects: new Set(),
           subscribedEncryptedChats: new Set(),
+          subscribedPresenceProjects: new Set(),
           subscribedEncryptedPrompts: new Set(),
           subscribedEncryptedArtifacts: new Set(),
           subscribedPrompts: new Set(),
@@ -537,6 +574,7 @@ export function startCoCodexServer(
           if (message.type === "project.chat.subscribe") {
             const events = encryptedChatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
             socket.data.subscribedEncryptedChats.add(message.projectId);
+            sendPresenceSnapshot(socket, message.projectId, requestId, deviceId);
             socket.send(JSON.stringify({
               version: 1,
               type: "project.chat.snapshot",
@@ -653,15 +691,7 @@ export function startCoCodexServer(
               projectId: message.projectId,
               events,
             }));
-            const presence = [...(presenceByProject.get(message.projectId)?.values() ?? [])]
-              .filter(member => member.deviceId !== deviceId);
-            socket.send(JSON.stringify({
-              version: 1,
-              type: "presence.snapshot",
-              requestId,
-              projectId: message.projectId,
-              members: presence,
-            }));
+            sendPresenceSnapshot(socket, message.projectId, requestId, deviceId);
             return;
           }
           if (message.type === "agent.cancel") {
@@ -709,21 +739,38 @@ export function startCoCodexServer(
           }
           if (message.type === "presence.update") {
             requireProjectMembership(db, message.projectId, deviceId);
+            const now = Date.now();
+            const recentUpdates = (presenceUpdateTimes.get(deviceId) ?? [])
+              .filter(timestamp => timestamp > now - 1_000);
+            if (recentUpdates.length >= MAX_PRESENCE_UPDATES_PER_SECOND) {
+              presenceUpdateTimes.set(deviceId, recentUpdates);
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "error",
+                requestId,
+                error: "Presence update rate limit exceeded",
+              }));
+              return;
+            }
+            recentUpdates.push(now);
+            presenceUpdateTimes.set(deviceId, recentUpdates);
             const member = {
               deviceId,
               displayName: currentDevice.displayName,
               cursor: message.cursor,
               caret: message.caret,
+              typing: message.typing,
               updatedAt: new Date().toISOString(),
             } satisfies PresenceState;
             const members = presenceByProject.get(message.projectId) ?? new Map<string, PresenceState>();
-            if (!message.cursor && !message.caret) members.delete(deviceId);
+            const active = Boolean(message.cursor || message.caret || message.typing);
+            if (!active) members.delete(deviceId);
             else members.set(deviceId, member);
             if (members.size === 0) presenceByProject.delete(message.projectId);
             else presenceByProject.set(message.projectId, members);
             sendPresence(message.projectId, {
               version: 1,
-              type: message.cursor || message.caret ? "presence.update" : "presence.leave",
+              type: active ? "presence.update" : "presence.leave",
               projectId: message.projectId,
               ...member,
             });
@@ -875,6 +922,7 @@ export function startCoCodexServer(
           }
           if (message.type === "project.member.remove") {
             removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
+            clearProjectPresence(message.projectId, message.deviceId);
             socket.send(JSON.stringify({
               version: 1,
               type: "project.member.removed",
@@ -1134,8 +1182,11 @@ export function startCoCodexServer(
       },
       close(socket) {
         clearPreAuth(socket);
-        if (socket.data.authenticatedDeviceId) clearPresence(socket.data.authenticatedDeviceId);
         sockets.delete(socket);
+        const deviceId = socket.data.authenticatedDeviceId;
+        if (deviceId && ![...sockets].some(other => other.data.authenticatedDeviceId === deviceId)) {
+          clearPresence(deviceId);
+        }
       },
     },
   });

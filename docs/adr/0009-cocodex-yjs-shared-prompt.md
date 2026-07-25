@@ -45,9 +45,12 @@ prompt text to 32,768 characters. Update IDs are scoped to immutable sender,
 project, and bytes. The server stores no executable interpretation of prompt
 text.
 
-The current slice synchronizes prompt text and offline updates. Remote carets,
-selections, named awareness states, historical revision UI, and compaction are
-later product requirements.
+The current slice synchronizes prompt text and offline updates. Presence now
+publishes ephemeral named typing state and bounded caret/selection positions
+alongside the existing mouse cursor. A rich inline text-decoration overlay,
+historical revision UI, and compaction remain later product requirements.
+The current status chips intentionally treat caret offsets as advisory rather
+than pretending they are stable Yjs positions after concurrent edits.
 
 ## Evidence
 

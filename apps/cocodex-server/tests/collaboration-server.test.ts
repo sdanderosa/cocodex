@@ -595,16 +595,25 @@ describe("authenticated WSS collaboration", () => {
     const remotePresence = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
-      cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 },
+      cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 }, typing: true,
     }));
     const presenceUpdate = await remotePresence;
     expect(presenceUpdate.displayName).toBe("Stephen");
     expect(presenceUpdate.cursor).toEqual({ x: 0.42, y: 0.73 });
     expect(presenceUpdate.caret).toEqual({ anchor: 4, head: 9 });
+    expect(presenceUpdate.typing).toBe(true);
+    const typingOnly = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: null, caret: null, typing: true,
+    }));
+    expect(await typingOnly).toMatchObject({
+      deviceId: stephen.id, cursor: null, caret: null, typing: true,
+    });
     const presenceLeave = nextFrame(reconnectedKai, "presence.leave", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
-      cursor: null, caret: null,
+      cursor: null, caret: null, typing: false,
     }));
     await presenceLeave;
     await Bun.sleep(1_600);
@@ -755,4 +764,92 @@ describe("authenticated WSS collaboration", () => {
       event: { content: "Agent request expired before the host client accepted it." },
     });
   }, 15_000);
+
+  test("encrypted chat subscriptions also carry independent presence awareness", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-encrypted-presence-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Encrypted awareness", stephen.id);
+    addProjectMember(db, project.id, stephen.id, kai.id);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false);
+    const stephenSnapshot = nextFrame(stephenSocket, "project.chat.snapshot");
+    const stephenPresence = nextFrame(stephenSocket, "presence.snapshot");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+    }));
+    expect((await stephenSnapshot).events).toEqual([]);
+    expect((await stephenPresence).members).toEqual([]);
+
+    const initialPresence = nextFrame(stephenSocket, "presence.accepted");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: { x: 0.18, y: 0.61 }, caret: { anchor: 6, head: 6 }, typing: false,
+    }));
+    await initialPresence;
+
+    const kaiSocket = await connect(server.port, kai, fingerprint, false);
+    const kaiSnapshot = nextFrame(kaiSocket, "project.chat.snapshot");
+    const kaiPresence = nextFrame(kaiSocket, "presence.snapshot");
+    kaiSocket.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+    }));
+    expect((await kaiSnapshot).events).toEqual([]);
+    expect((await kaiPresence).members).toEqual([expect.objectContaining({
+      deviceId: stephen.id,
+      cursor: { x: 0.18, y: 0.61 },
+      caret: { anchor: 6, head: 6 },
+      typing: false,
+    })]);
+
+    const typingOnly = nextFrame(kaiSocket, "presence.update", frame => frame.deviceId === stephen.id);
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: null, caret: null, typing: true,
+    }));
+    expect(await typingOnly).toMatchObject({ deviceId: stephen.id, cursor: null, caret: null, typing: true });
+
+    const duplicateStephen = await connect(server.port, stephen, fingerprint, false);
+    const duplicateSnapshot = nextFrame(duplicateStephen, "project.chat.snapshot");
+    const duplicatePresence = nextFrame(duplicateStephen, "presence.snapshot");
+    duplicateStephen.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+    }));
+    await duplicateSnapshot;
+    expect((await duplicatePresence).members).toEqual([]);
+    const originalClosed = new Promise<void>(resolve => stephenSocket.addEventListener("close", () => resolve(), { once: true }));
+    stephenSocket.close();
+    await originalClosed;
+    const retainedPresence = nextFrame(kaiSocket, "presence.snapshot");
+    kaiSocket.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+    }));
+    expect((await retainedPresence).members).toEqual([expect.objectContaining({ deviceId: stephen.id, typing: true })]);
+
+    const kaiPresenceUpdate = nextFrame(duplicateStephen, "presence.update", frame => frame.deviceId === kai.id);
+    kaiSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      cursor: null, caret: { anchor: 1, head: 4 }, typing: false,
+    }));
+    expect(await kaiPresenceUpdate).toMatchObject({ deviceId: kai.id, caret: { anchor: 1, head: 4 } });
+    const removedAtStephen = nextFrame(duplicateStephen, "project.member.removed", frame => frame.deviceId === kai.id);
+    const leaveAtStephen = nextFrame(duplicateStephen, "presence.leave", frame => frame.deviceId === kai.id);
+    duplicateStephen.send(JSON.stringify({
+      version: 1, type: "project.member.remove", requestId: randomUUID(), projectId: project.id, deviceId: kai.id,
+    }));
+    await removedAtStephen;
+    await leaveAtStephen;
+  });
 });

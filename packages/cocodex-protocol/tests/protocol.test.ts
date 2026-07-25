@@ -12,6 +12,10 @@ import {
   projectKeyRotatedFrameSchema,
   projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
+  presenceAcceptedFrameSchema,
+  presenceLeaveFrameSchema,
+  presenceSnapshotFrameSchema,
+  presenceUpdateFrameSchema,
   publicKeyFingerprint,
   usageReportSchema,
   usageReportSigningTranscript,
@@ -457,9 +461,41 @@ describe("CoCodex protocol", () => {
       projectId: crypto.randomUUID(),
       cursor: { x: 0.25, y: 0.75 },
       caret: { anchor: 3, head: 8 },
+      typing: true,
     };
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
+    const legacyFrame = { ...frame };
+    delete (legacyFrame as Partial<typeof frame>).typing;
+    expect(clientFrameSchema.parse(legacyFrame)).toMatchObject({ ...frame, typing: false });
     expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
+  });
+  test("strictly validates server presence snapshots, updates, and leaves", () => {
+    const projectId = crypto.randomUUID();
+    const deviceId = crypto.randomUUID();
+    const updatedAt = "2030-01-01T00:00:00.000Z";
+    const member = {
+      deviceId,
+      displayName: "Kai",
+      cursor: null,
+      caret: { anchor: 2, head: 7 },
+      typing: true,
+      updatedAt,
+    };
+    expect(presenceSnapshotFrameSchema.parse({
+      version: 1, type: "presence.snapshot", projectId, members: [member],
+    })).toMatchObject({ members: [member] });
+    expect(presenceUpdateFrameSchema.parse({
+      version: 1, type: "presence.update", projectId, ...member,
+    })).toMatchObject(member);
+    expect(presenceLeaveFrameSchema.parse({
+      version: 1, type: "presence.leave", projectId, deviceId,
+    })).toEqual({ version: 1, type: "presence.leave", projectId, deviceId });
+    expect(presenceAcceptedFrameSchema.parse({
+      version: 1, type: "presence.accepted", requestId: crypto.randomUUID(), projectId,
+    })).toBeTruthy();
+    expect(() => projectServerFrameSchema.parse({
+      version: 1, type: "presence.update", projectId, ...member, extra: true,
+    })).toThrow();
   });
   test("requires a bounded reason for agent cancellation", () => {
     const frame = {
