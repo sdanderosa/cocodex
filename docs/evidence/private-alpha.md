@@ -1,10 +1,10 @@
 # CoCodex private-alpha evidence
 
 - Evidence date: 2026-07-25
-- Implementation commits: `37d344d4`, plus running-task recovery fix
-  `72ce0f41`, trust/recovery-state validation fix `cc206faa`, focused recovery
-  tests `13850eed` / `5230f979`, and the current hardening changes pending
-  commit.
+- Implementation commits: foundation `37d344d4`, recovery and trust hardening
+  `72ce0f41` / `cc206faa` / `5230f979`, shared-prompt and lifecycle work
+  `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
+  `d730d3dd`, and authoritative cancellation `bc7951cb`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -171,7 +171,7 @@ The following also remain deferred or insufficiently evidenced:
 - two separately authenticated real Stephen and Kai Codex accounts;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- automatic UPnP/NAT-PMP/PCP, CGNAT detection, relay, libp2p,
+- NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
   document, but it does not yet provide a full Hocuspocus deployment or
