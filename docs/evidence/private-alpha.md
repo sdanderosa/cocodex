@@ -15,7 +15,8 @@
   authoritative roster and revocation-safe key hardening in `7942452f`, and
   atomic project-key initialization in `f80dc082`, followed by durable key
   recovery and offline-recipient replay hardening in `f58490be`, with atomic
-  local key-store persistence in `90f03548`.
+  local key-store persistence in `90f03548`, and local full-computer safety
+  controls in `b07923db`.
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
   evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
   presence, and disconnected-UI hardening `76647c34`.
@@ -84,10 +85,10 @@ Files:
 The full CoCodex suite was rerun after the slice and encryption hardening:
 
 ```text
-82 pass
+87 pass
 0 fail
-765 expect() calls
-Ran 81 tests across 27 files.  (exit 0)
+801 expect() calls
+Ran 87 tests across 29 files.  (exit 0)
 test:cocodex-dependencies             (exit 0: 7 pass, 0 fail, 46 expectations)
 typecheck:cocodex                 (exit 0)
 lint:gui                          (exit 0; one pre-existing warning)
@@ -159,7 +160,7 @@ Ran 32 tests across 4 files.
 
 The focused run includes the durable pending-intent store test and a
 project-scoped idempotency test. The full CoCodex suite after this checkpoint
-is green: `82 pass`, `0 fail`, `765 expect() calls` across 27 files (exit `0`).
+is green: `87 pass`, `0 fail`, `801 expect() calls` across 29 files (exit `0`).
 This checkpoint does not close
 the documented whole-project historical migration, ratcheted private messaging,
 file-reference encryption, or full-computer/browser requirements.
@@ -810,7 +811,7 @@ Files: `src/cocodex/agent-policy.ts`, `src/cocodex/agent-safety.ts`,
 `src/cocodex/session.ts`, `src/cocodex/cli.ts`, `src/cocodex/gui-bridge.ts`,
 `src/cocodex/paths.ts`, ADR 0021, and the five focused test files.
 
-The commit SHA will be recorded here after the implementation is committed.
+Implementation commit: `b07923db`.
 
 ## Incomplete release gate
 
