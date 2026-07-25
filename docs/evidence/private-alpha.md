@@ -143,6 +143,10 @@ Private-message replay protection is covered by the server shared-state tests:
 the same ciphertext cannot be accepted again under a different message ID,
 while approved-device checks continue to gate both sender and recipient.
 
+Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
+fallback; packet encoding/response validation and diagnostic classification are
+covered by the port-mapping tests. PCP remains a later compatibility extension.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:

@@ -3,7 +3,7 @@ import { networkInterfaces } from "node:os";
 
 export interface PortMappingResult {
   status: "mapped" | "unavailable" | "failed";
-  method: "upnp" | "none";
+  method: "upnp" | "nat-pmp" | "none";
   message: string;
   gateway?: string;
   internalHost?: string;
@@ -28,6 +28,8 @@ const REQUEST = [
   "",
   "",
 ].join("\r\n");
+const NAT_PMP_PORT = 5351;
+const NAT_PMP_TIMEOUT_MS = 800;
 
 export function localIpv4(): string | undefined {
   for (const entries of Object.values(networkInterfaces())) {
@@ -108,6 +110,62 @@ function soapBody(port: number, internalHost: string): string {
 </u:AddPortMapping></s:Body></s:Envelope>`;
 }
 
+export function natPmpMappingRequest(port: number, lifetimeSeconds = 7 * 24 * 60 * 60): Buffer {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid NAT-PMP port");
+  const request = Buffer.alloc(12);
+  request.writeUInt8(0, 0);
+  request.writeUInt8(2, 1); // TCP mapping opcode
+  request.writeUInt16BE(0, 2); // any private port
+  request.writeUInt16BE(port, 4);
+  request.writeUInt32BE(Math.max(0, Math.min(0xffffffff, Math.trunc(lifetimeSeconds))), 8);
+  return request;
+}
+
+export function parseNatPmpMappingResponse(response: Uint8Array): { publicPort: number; lifetimeSeconds: number } {
+  if (response.byteLength < 16 || response[0] !== 0 || response[1] !== 130) throw new Error("Invalid NAT-PMP response");
+  const view = new DataView(response.buffer, response.byteOffset, response.byteLength);
+  const resultCode = view.getUint16(2);
+  if (resultCode !== 0) throw new Error(`NAT-PMP gateway rejected mapping (code ${resultCode})`);
+  return { publicPort: view.getUint16(10), lifetimeSeconds: view.getUint32(12) };
+}
+
+function natPmpGateways(internalHost: string): string[] {
+  const configured = process.env.COCODEX_NATPMP_GATEWAY?.trim();
+  if (configured) return [configured];
+  const parts = internalHost.split(".");
+  if (parts.length !== 4) return [];
+  return [`${parts[0]}.${parts[1]}.${parts[2]}.1`, `${parts[0]}.${parts[1]}.${parts[2]}.254`];
+}
+
+async function tryNatPmpMapping(port: number, internalHost: string): Promise<PortMappingResult | undefined> {
+  for (const gateway of natPmpGateways(internalHost)) {
+    const socket = dgram.createSocket("udp4");
+    const result = await new Promise<PortMappingResult | undefined>(resolve => {
+      let settled = false;
+      const finish = (value?: PortMappingResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.close();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(), NAT_PMP_TIMEOUT_MS);
+      socket.on("error", () => finish());
+      socket.on("message", message => {
+        try {
+          const mapping = parseNatPmpMappingResponse(message);
+          finish({ status: "mapped", method: "nat-pmp", gateway, internalHost, message: `NAT-PMP mapped TCP ${mapping.publicPort} to ${internalHost}:${port}.` });
+        } catch (error) {
+          finish({ status: "failed", method: "nat-pmp", gateway, internalHost, message: error instanceof Error ? error.message : String(error) });
+        }
+      });
+      socket.bind(0, () => socket.send(natPmpMappingRequest(port), NAT_PMP_PORT, gateway, error => { if (error) finish(); }));
+    });
+    if (result) return result;
+  }
+  return undefined;
+}
+
 export async function tryAutomaticPortMapping(port: number): Promise<PortMappingResult> {
   if (process.env.COCODEX_DISABLE_PORT_MAPPING === "1") {
     return { status: "unavailable", method: "none", message: "Automatic port mapping disabled by configuration." };
@@ -119,6 +177,8 @@ export async function tryAutomaticPortMapping(port: number): Promise<PortMapping
   try {
     const descriptionUrl = await discoverGateway();
     if (!descriptionUrl) {
+      const natPmp = await tryNatPmpMapping(port, internalHost);
+      if (natPmp) return natPmp;
       return {
         status: "unavailable", method: "none", internalHost,
         message: "No UPnP gateway responded. Check CGNAT/router settings or forward the TCP port manually.",
@@ -144,6 +204,8 @@ export async function tryAutomaticPortMapping(port: number): Promise<PortMapping
       message: `UPnP mapped TCP ${port} to ${internalHost}:${port}.`,
     };
   } catch (error) {
+    const natPmp = await tryNatPmpMapping(port, internalHost);
+    if (natPmp) return natPmp;
     return {
       status: "failed", method: "upnp", internalHost,
       message: `Automatic UPnP mapping failed (${error instanceof Error ? error.message : String(error)}). Manual forwarding or CGNAT troubleshooting is required.`,

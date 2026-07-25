@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { classifyDirectHosting, controlUrl, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
+import { classifyDirectHosting, controlUrl, natPmpMappingRequest, parseNatPmpMappingResponse, soapBody, tryAutomaticPortMapping } from "../src/port-mapping";
 
 const previous = process.env.COCODEX_DISABLE_PORT_MAPPING;
 afterEach(() => {
@@ -29,5 +29,18 @@ describe("CoCodex automatic port mapping", () => {
     const unavailable = { status: "unavailable" as const, method: "none" as const, message: "none" };
     expect(classifyDirectHosting(unavailable, "192.168.1.42").status).toBe("likely-cgnat");
     expect(classifyDirectHosting(unavailable, "8.8.8.8").status).toBe("manual-forwarding-required");
+  });
+
+  test("encodes and validates NAT-PMP TCP mapping packets", () => {
+    const request = natPmpMappingRequest(19463, 3600);
+    expect(request.length).toBe(12);
+    expect(request[1]).toBe(2);
+    expect(request.readUInt16BE(4)).toBe(19463);
+    const response = Buffer.alloc(16);
+    response.writeUInt8(0, 0); response.writeUInt8(130, 1); response.writeUInt16BE(0, 2);
+    response.writeUInt32BE(123, 4); response.writeUInt16BE(19463, 10); response.writeUInt32BE(3600, 12);
+    expect(parseNatPmpMappingResponse(response)).toEqual({ publicPort: 19463, lifetimeSeconds: 3600 });
+    response.writeUInt16BE(2, 2);
+    expect(() => parseNatPmpMappingResponse(response)).toThrow("rejected mapping");
   });
 });
