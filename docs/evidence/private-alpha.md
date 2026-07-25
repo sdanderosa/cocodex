@@ -59,7 +59,9 @@ capability/origin checks, cancellation of in-flight local execution on client
 disconnect, expiry of queued/running agent tasks, and recipient-key certificate
 binding. `cocodex-server init` attempts the Windows Firewall rule and prints
 the single-port manual router-forwarding instructions when automatic setup is
-unavailable.
+unavailable. Initialization now performs a bounded UPnP discovery and
+`AddPortMapping` attempt; if no gateway responds or the mapping fails, the JSON
+result explains that manual forwarding or CGNAT troubleshooting is required.
 
 The separate server CLI now also exposes `status`, `stop`, `restart`, `migrate`,
 `backup`, and `restore`. Backups are signed by the server's Ed25519 identity,

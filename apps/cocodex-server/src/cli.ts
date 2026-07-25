@@ -6,6 +6,7 @@ import { openDatabase } from "./database";
 import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
 import { createServerIdentity, loadServerIdentity } from "./identity";
 import { createInvitation } from "./invitations";
+import { tryAutomaticPortMapping } from "./port-mapping";
 import { registerAgent } from "./agent-routing";
 import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
@@ -79,6 +80,7 @@ async function run(): Promise<void> {
       await createTlsIdentity(paths, publicHost);
       openDatabase(paths.database).close();
       const firewall = configureWindowsFirewall(port);
+      const portMapping = await tryAutomaticPortMapping(port);
       console.log(JSON.stringify({
         initialized: true,
         stateRoot: paths.root,
@@ -86,6 +88,7 @@ async function run(): Promise<void> {
         port,
         serverFingerprint: tlsCertificateFingerprint(paths.tlsCertificate),
         firewall,
+        portMapping,
         manualPortForwarding: {
           protocol: "TCP",
           externalPort: port,
