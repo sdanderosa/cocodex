@@ -991,3 +991,40 @@ and one intermittent private-alpha mailbox timing failure. The private-alpha
 test then passed twice when run alone (each run `1 pass`, `0 fail`, `48
 expect()` calls), and the focused combined command above passed. The complete
 existing-suite gate therefore remains open and is not claimed as green.
+
+## Final verification after recovery checkpoint
+
+Implementation checkpoint for this verification: `c55c1ac5`. The final focused
+integration/security command was:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `39 pass`, `0 fail`, `287 expect()` calls
+across seven files. This includes the real WSS revocation test, dependency
+cycle/idempotency and signed-host tests, bounded deferred-mailbox tests, and
+the three-process restart/offline/private-alpha harness.
+
+The final static/build commands were:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run lint:gui
+```
+
+Every command exited `0`. The separate Client and Server executables compiled,
+the privacy scan passed, and GUI lint reported one existing
+`react-hooks/exhaustive-deps` warning with no errors. No CoCodex server/client
+process or listener was left running after verification.
