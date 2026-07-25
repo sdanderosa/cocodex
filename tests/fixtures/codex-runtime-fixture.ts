@@ -1,0 +1,34 @@
+#!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+if (Bun.argv.includes("--version")) {
+  console.log("codex-cli 99.0.0");
+  process.exit(0);
+}
+
+const account = process.env.COCODEX_ACCOUNT_FIXTURE?.trim();
+if (!account) throw new Error("COCODEX_ACCOUNT_FIXTURE is required");
+if (!Bun.argv.includes("exec") || !Bun.argv.includes("--json") || !Bun.argv.includes("--ephemeral")) {
+  throw new Error("Expected official Codex exec JSONL arguments");
+}
+if (Bun.argv.includes("danger-full-access") || Bun.argv.includes("--yolo")) {
+  throw new Error("Unsafe Codex fixture invocation");
+}
+
+const prompt = await Bun.stdin.text();
+if (!prompt.trim()) throw new Error("Prompt stdin is required");
+const marker = join(process.cwd(), `${account}-execution.json`);
+writeFileSync(marker, `${JSON.stringify({ account, prompt, cwd: process.cwd() }, null, 2)}\n`, "utf8");
+console.log(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: `${account}: accepted locally` },
+}));
+console.log(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: `${account}: ${prompt}` },
+}));
+console.log(JSON.stringify({
+  type: "turn.completed",
+  usage: { input_tokens: account.length + prompt.length, output_tokens: 7 },
+}));

@@ -13,7 +13,8 @@ import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
 import { clientPaths } from "./paths";
 import { loadOrCreateClientIdentity } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
-import { flushDurableOutbox } from "./outbox";
+import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
+import { runJsonLineSession } from "./session";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -73,8 +74,8 @@ async function run(): Promise<void> {
       });
       console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId }));
       return;
-    }    case "private-send": {
-      const socket = await connectAuthenticatedClient(paths);
+    }
+    case "private-send": {
       const connection = loadClientConnection(paths);
       const identity = loadOrCreateClientIdentity(paths);
       const recipientDeviceId = required("--recipient-device");
@@ -87,13 +88,18 @@ async function run(): Promise<void> {
         text: required("--message"),
         clientCreatedAt,
       }, identity.privateKeyPem, identity.publicKeyPem, readFileSync(required("--recipient-key"), "utf8"));
-      const accepted = nextFrame(socket, "private.accepted");
-      socket.send(JSON.stringify({
+      enqueueDurableEvent(paths, {
         version: 1, type: "private.send", requestId: crypto.randomUUID(), messageId,
         recipientDeviceId, ciphertext, clientCreatedAt,
-      }));
-      console.log(JSON.stringify(await accepted));
-      socket.close();
+      });
+      try {
+        const socket = await connectAuthenticatedClient(paths);
+        const flushedEvents = await flushDurableOutbox(socket, paths);
+        socket.close();
+        console.log(JSON.stringify({ queued: false, flushedEvents, messageId }));
+      } catch {
+        console.log(JSON.stringify({ queued: true, messageId }));
+      }
       return;
     }
     case "private-listen": {
@@ -120,7 +126,29 @@ async function run(): Promise<void> {
       });
       await new Promise<void>(resolve => socket.addEventListener("close", () => resolve(), { once: true }));
       return;
-    }    case "request-agent": {
+    }
+    case "chat-send": {
+      const eventId = crypto.randomUUID();
+      enqueueDurableEvent(paths, {
+        version: 1,
+        type: "chat.send",
+        requestId: crypto.randomUUID(),
+        projectId: required("--project"),
+        eventId,
+        content: required("--message"),
+        clientCreatedAt: new Date().toISOString(),
+      });
+      try {
+        const socket = await connectAuthenticatedClient(paths);
+        const flushedEvents = await flushDurableOutbox(socket, paths);
+        socket.close();
+        console.log(JSON.stringify({ queued: false, flushedEvents, eventId }));
+      } catch {
+        console.log(JSON.stringify({ queued: true, eventId }));
+      }
+      return;
+    }
+    case "request-agent": {
       const socket = await connectAuthenticatedClient(paths);
       const projectId = required("--project");
       const snapshot = nextFrame(socket, "chat.snapshot");
@@ -135,7 +163,20 @@ async function run(): Promise<void> {
       }
       socket.close();
       return;
-    }    case "connect": {
+    }
+    case "session": {
+      await runJsonLineSession(paths);
+      return;
+    }
+    case "connect": {
+      if (Bun.argv.includes("--json-lines")) {
+        await runJsonLineSession(paths);
+        return;
+      }
+      if (Bun.argv.includes("--json-lines")) {
+        await runJsonLineSession(paths);
+        return;
+      }
       const connection = loadClientConnection(paths);
       await maintainAuthenticatedClient(paths, async socket => {
         const flushedEvents = await flushDurableOutbox(socket, paths);
@@ -177,8 +218,9 @@ Usage:
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-key PEM_PATH --message TEXT [--state-root PATH]
   cocodex-client private-listen [--after SEQUENCE] [--trust-fingerprint FP] [--state-root PATH]
+  cocodex-client chat-send --project ID --message TEXT [--state-root PATH]
   cocodex-client request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
-  cocodex-client connect [--state-root PATH]`);
+  cocodex-client connect [--json-lines] [--state-root PATH]`);
   }
 }
 

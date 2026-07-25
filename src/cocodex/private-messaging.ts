@@ -1,11 +1,10 @@
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { publicKeyFingerprint } from "@cocodex/protocol";
-import { createRequire } from "node:module";
 import type * as Sodium from "libsodium-wrappers-sumo";
 
 // The package's ESM wrapper is not initialized correctly by Bun 1.3.x; its
 // maintained CommonJS export uses the same reviewed implementation and API.
-const sodium = createRequire(import.meta.url)("libsodium-wrappers-sumo") as typeof Sodium;
+const sodium = require("libsodium-wrappers-sumo") as typeof Sodium;
 
 function decodeBase64Url(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, "base64url"));
