@@ -233,6 +233,40 @@ CREATE TABLE encrypted_project_context (
   revision INTEGER NOT NULL CHECK (revision > 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
-);`,
+  );`,
+  },
+  {
+    version: 12,
+    sql: `
+CREATE TABLE project_key_epochs (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  current_epoch INTEGER NOT NULL CHECK (current_epoch > 0),
+  last_rotation_id TEXT UNIQUE,
+  updated_by_device_id TEXT REFERENCES devices(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO project_key_epochs (
+  project_id, current_epoch, last_rotation_id, updated_by_device_id,
+  created_at, updated_at
+)
+SELECT project_id, MAX(key_epoch), NULL, NULL, MIN(created_at), MAX(updated_at)
+FROM project_key_envelopes
+GROUP BY project_id;`,
+  },
+  {
+    version: 13,
+    sql: `
+CREATE TABLE project_chat_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  client_created_at TEXT NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX project_chat_events_project_sequence
+  ON project_chat_events(project_id, sequence);`,
   },
 ];

@@ -56,6 +56,31 @@ export function addProjectMember(
   `).run(projectId, memberDeviceId, now.toISOString());
 }
 
+export function removeProjectMember(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  memberDeviceId: string,
+  now = new Date(),
+): void {
+  const owner = requireProjectMembership(db, projectId, ownerDeviceId);
+  if (owner.role !== "owner") throw new Error("Only a project owner can remove members");
+  if (ownerDeviceId === memberDeviceId) throw new Error("A project owner cannot remove itself");
+  const member = db.query(`
+    SELECT role FROM project_members WHERE project_id = ? AND device_id = ?
+  `).get(projectId, memberDeviceId) as MembershipRow | null;
+  if (!member) throw new Error("Device is not a project member");
+  if (member.role === "owner") throw new Error("A project owner cannot be removed");
+  db.transaction(() => {
+    db.query("DELETE FROM project_members WHERE project_id = ? AND device_id = ?")
+      .run(projectId, memberDeviceId);
+    db.query(`
+      INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
+      VALUES ('project.member.removed', ?, ?, ?, ?)
+    `).run(ownerDeviceId, memberDeviceId, now.toISOString(), JSON.stringify({ projectId }));
+  }).immediate();
+}
+
 export function listProjects(db: Database, deviceId: string): SharedProject[] {
   return db.query(`
     SELECT p.id, p.name, pm.role

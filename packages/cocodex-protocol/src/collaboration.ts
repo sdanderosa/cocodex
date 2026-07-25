@@ -5,9 +5,17 @@ import {
   projectContentEnvelopeSchema,
   projectKeyEnvelopeSchema,
 } from "./project-encryption";
+import {
+  encryptedChatAcceptedFrameSchema,
+  encryptedChatEventFrameSchema,
+  encryptedChatSendFrameSchema,
+  encryptedChatSnapshotFrameSchema,
+  encryptedChatSubscribeFrameSchema,
+} from "./project-chat";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const deviceId = z.uuid();
 export const PROJECT_CONTEXT_MAX_BYTES = 48 * 1024;
 const projectContext = z.record(z.string(), z.unknown()).superRefine((value, refinement) => {
   try {
@@ -155,6 +163,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     ciphertext: z.string().min(64).max(96_000),
     clientCreatedAt: z.iso.datetime(),
   }).strict(),
+  encryptedChatSubscribeFrameSchema,
+  encryptedChatSendFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("artifact.publish"),
@@ -187,6 +197,21 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     requestId,
     projectId,
     envelope: projectKeyEnvelopeSchema,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.key.rotate"),
+    requestId,
+    projectId,
+    expectedEpoch: z.number().int().nonnegative().max(PROJECT_KEY_EPOCH_MAX - 1),
+    envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.member.remove"),
+    requestId,
+    projectId,
+    deviceId: z.uuid(),
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -256,6 +281,24 @@ export const projectKeyChangedFrameSchema = z.object({
   envelope: projectKeyEnvelopeSchema,
 }).strict();
 
+export const projectKeyRotatedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.rotated"),
+  requestId,
+  projectId,
+  keyEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX),
+  envelopes: z.array(projectKeyEnvelopeSchema).max(128),
+  created: z.boolean(),
+}).strict();
+
+export const projectMemberRemovedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.member.removed"),
+  requestId: requestId.optional(),
+  projectId,
+  deviceId,
+}).strict();
+
 export const projectContextResultFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("project.context.result"),
@@ -287,9 +330,14 @@ export const projectContextChangedFrameSchema = z.object({
 }).strict();
 
 export const projectServerFrameSchema = z.discriminatedUnion("type", [
+  encryptedChatSnapshotFrameSchema,
+  encryptedChatAcceptedFrameSchema,
+  encryptedChatEventFrameSchema,
   projectKeyResultFrameSchema,
   projectKeyAcceptedFrameSchema,
   projectKeyChangedFrameSchema,
+  projectKeyRotatedFrameSchema,
+  projectMemberRemovedFrameSchema,
   projectContextResultFrameSchema,
   projectContextUpdatedFrameSchema,
   projectContextChangedFrameSchema,
@@ -299,6 +347,8 @@ export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
 export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
 export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
 export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema>;
+export type ProjectKeyRotatedFrame = z.infer<typeof projectKeyRotatedFrameSchema>;
+export type ProjectMemberRemovedFrame = z.infer<typeof projectMemberRemovedFrameSchema>;
 export type ProjectContextResultFrame = z.infer<typeof projectContextResultFrameSchema>;
 export type ProjectContextUpdatedFrame = z.infer<typeof projectContextUpdatedFrameSchema>;
 export type ProjectContextChangedFrame = z.infer<typeof projectContextChangedFrameSchema>;

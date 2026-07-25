@@ -81,10 +81,17 @@ structured context. The client unwraps and decrypts locally; the server stores
 only signed opaque envelopes. The encrypted update is also durable in the
 protected outbox while offline.
 
-This is the first encrypted project slice, not a claim that every project
-record is encrypted yet. Shared chat, Yjs prompt updates, task prompts,
-agent results, artifacts, and key rotation on revocation remain on the
-explicitly documented follow-up path.
+When a project key is available, `chat.subscribe` and `chat.send` select the
+encrypted `project.chat.*` transport automatically. The client encrypts the
+chat body locally, queues the opaque envelope offline, and emits the familiar
+local chat event only after verifying and decrypting it. `project.key.rotate`
+requires envelopes for every approved member; `project.member.remove` revokes
+the removed client's local key ring. The owner should rotate immediately after
+removal so remaining members receive a fresh epoch.
+
+This is still not a claim that every project record is encrypted yet. Yjs
+prompt updates, task prompts, agent results, artifacts, and file references
+remain on the explicitly documented follow-up path.
 
 ## Usage sharing
 

@@ -140,6 +140,7 @@ describe("CoCodex encrypted project context session", () => {
     const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
     const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
     trustDevice(kaiPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
+    trustDevice(stephenPaths.trustedDevices, kaiConnection.deviceId, publicKeyFingerprint(kaiIdentity.publicKeyPem));
 
     const stephen = new JsonSessionHarness();
     const kai = new JsonSessionHarness();
@@ -165,6 +166,29 @@ describe("CoCodex encrypted project context session", () => {
 
     kai.send({ id: crypto.randomUUID(), type: "project.key.get", projectId: project.id });
     await kai.waitFor(event => event.source === "project-encryption" && event.state === "key-available" && event.projectId === project.id);
+
+    stephen.send({ id: crypto.randomUUID(), type: "chat.subscribe", projectId: project.id });
+    kai.send({ id: crypto.randomUUID(), type: "chat.subscribe", projectId: project.id });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "server" && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot"),
+      kai.waitFor(event => event.source === "server" && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot"),
+    ]);
+    const plaintextChat = "This encrypted chat payload stays off the server";
+    stephen.send({ id: crypto.randomUUID(), type: "chat.send", projectId: project.id, content: plaintextChat });
+    const [stephenChat, kaiChat] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "chat.event"
+        && ((event.frame as Record<string, unknown>).event as Record<string, unknown> | undefined)?.content === plaintextChat),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "chat.event"
+        && ((event.frame as Record<string, unknown>).event as Record<string, unknown> | undefined)?.content === plaintextChat),
+    ]);
+    expect(stephenChat.frame).toMatchObject({ type: "chat.event", projectId: project.id });
+    expect(kaiChat.frame).toMatchObject({ type: "chat.event", projectId: project.id });
+    const encryptedChat = db.query("SELECT envelope_json AS envelopeJson FROM project_chat_events WHERE project_id = ?")
+      .get(project.id) as { envelopeJson: string };
+    expect(encryptedChat.envelopeJson).not.toContain(plaintextChat);
+    expect(encryptedChat.envelopeJson).toContain("ciphertext");
 
     const plaintextGoal = "This goal must never be stored by the collaboration server";
     stephen.send({

@@ -20,6 +20,7 @@ import {
 } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
 import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
+import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 import { serverEpoch } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
@@ -28,6 +29,8 @@ import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./us
 import {
   getEncryptedProjectContext,
   listProjectKeyEnvelopes,
+  removeProjectMemberAndInvalidateKeys,
+  rotateProjectKeyEpoch,
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "./project-encryption-storage";
@@ -45,6 +48,7 @@ interface SocketData {
   preAuthCounted: boolean;
   remoteAddress: string;
   subscribedProjects: Set<string>;
+  subscribedEncryptedChats: Set<string>;
   subscribedPrompts: Set<string>;
   subscribedContexts: Set<string>;
   subscribedEncryptedContexts: Set<string>;
@@ -162,6 +166,25 @@ export function startCoCodexServer(
         socket.send(encoded);
       } catch {
         socket.data.subscribedProjects.delete(projectId);
+      }
+    }
+  }
+
+  function sendToEncryptedChat(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedEncryptedChats.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedEncryptedChats.delete(projectId);
       }
     }
   }
@@ -349,6 +372,7 @@ export function startCoCodexServer(
           preAuthCounted: true,
           remoteAddress,
           subscribedProjects: new Set(),
+          subscribedEncryptedChats: new Set(),
           subscribedPrompts: new Set(),
           subscribedContexts: new Set(),
           subscribedEncryptedContexts: new Set(),
@@ -448,6 +472,43 @@ export function startCoCodexServer(
               requestId,
               projects: listProjects(db, deviceId),
             }));
+            return;
+          }
+          if (message.type === "project.chat.subscribe") {
+            const events = encryptedChatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
+            socket.data.subscribedEncryptedChats.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.chat.snapshot",
+              requestId,
+              projectId: message.projectId,
+              events,
+            }));
+            return;
+          }
+          if (message.type === "project.chat.send") {
+            const appended = appendEncryptedChatEventResult(db, {
+              projectId: message.projectId,
+              eventId: message.eventId,
+              senderDeviceId: deviceId,
+              envelope: message.envelope,
+              clientCreatedAt: message.clientCreatedAt,
+            });
+            socket.data.subscribedEncryptedChats.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.chat.accepted",
+              requestId,
+              projectId: message.projectId,
+              event: appended.event,
+            }));
+            if (appended.created) {
+              sendToEncryptedChat(message.projectId, {
+                version: 1,
+                type: "project.chat.event",
+                event: appended.event,
+              });
+            }
             return;
           }
           if (message.type === "chat.subscribe") {
@@ -632,6 +693,53 @@ export function startCoCodexServer(
                 envelope: shared.envelope,
               });
             }
+            return;
+          }
+          if (message.type === "project.key.rotate") {
+            const rotated = rotateProjectKeyEpoch(
+              db,
+              message.projectId,
+              deviceId,
+              message.expectedEpoch,
+              message.requestId,
+              message.envelopes,
+            );
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.key.rotated",
+              requestId,
+              projectId: message.projectId,
+              keyEpoch: rotated.keyEpoch,
+              envelopes: rotated.envelopes,
+              created: rotated.created,
+            }));
+            if (rotated.created) {
+              for (const envelope of rotated.envelopes) {
+                sendToDevice(envelope.recipientDeviceId, {
+                  version: 1,
+                  type: "project.key.changed",
+                  projectId: message.projectId,
+                  envelope,
+                });
+              }
+            }
+            return;
+          }
+          if (message.type === "project.member.remove") {
+            removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.member.removed",
+              requestId,
+              projectId: message.projectId,
+              deviceId: message.deviceId,
+            }));
+            sendToDevice(message.deviceId, {
+              version: 1,
+              type: "project.member.removed",
+              projectId: message.projectId,
+              deviceId: message.deviceId,
+            });
             return;
           }
           if (message.type === "project.context.get") {

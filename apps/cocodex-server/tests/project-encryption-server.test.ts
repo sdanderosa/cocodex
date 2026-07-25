@@ -102,6 +102,12 @@ function nextFrame(
     const onMessage = (event: MessageEvent) => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
       if (frame.type === "error") {
+        if (expectedType === "error") {
+          clearTimeout(timeout);
+          socket.removeEventListener("message", onMessage);
+          resolve(frame);
+          return;
+        }
         clearTimeout(timeout);
         socket.removeEventListener("message", onMessage);
         reject(new Error(String(frame.error)));
@@ -137,11 +143,16 @@ async function connect(port: number, device: TestDevice, fingerprint: string): P
   return socket;
 }
 
-function keyEnvelope(projectId: string, sender: TestDevice, recipientDeviceId: string): ProjectKeyEnvelope {
+function keyEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  recipientDeviceId: string,
+  keyEpoch = 1,
+): ProjectKeyEnvelope {
   const unsigned = {
     version: 1 as const,
     projectId,
-    keyEpoch: 1,
+    keyEpoch,
     recipientDeviceId,
     senderDeviceId: sender.id,
     sealedProjectKey: randomBytes(80).toString("base64url"),
@@ -162,6 +173,24 @@ function contextEnvelope(projectId: string, sender: TestDevice, recordId = rando
     recordId,
     nonce: randomBytes(24).toString("base64url"),
     ciphertext: randomBytes(16).toString("base64url"),
+    senderDeviceId: sender.id,
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectContentSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
+function chatEnvelope(projectId: string, sender: TestDevice, eventId: string, text: string): ProjectContentEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch: 1,
+    recordType: "chat" as const,
+    recordId: eventId,
+    nonce: randomBytes(24).toString("base64url"),
+    ciphertext: Buffer.from(JSON.stringify({ content: text }), "utf8").toString("base64url"),
     senderDeviceId: sender.id,
     senderPublicKeyPem: sender.publicKey,
   };
@@ -273,9 +302,179 @@ describe("encrypted project WSS routing", () => {
     }));
     expect((await replayContext).created).toBeFalse();
 
+    const epochTwoOwner = keyEnvelope(project.id, owner, owner.id, 2);
+    const epochTwoMember = keyEnvelope(project.id, owner, member.id, 2);
+    const rotationRequestId = randomUUID();
+    const ownerRotationChanged = nextFrame(
+      ownerSocket,
+      "project.key.changed",
+      frame => (frame.envelope as Record<string, unknown> | undefined)?.keyEpoch === 2,
+    );
+    const memberRotationChanged = nextFrame(
+      memberSocket,
+      "project.key.changed",
+      frame => (frame.envelope as Record<string, unknown> | undefined)?.keyEpoch === 2,
+    );
+    const rotationAccepted = nextFrame(ownerSocket, "project.key.rotated");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.rotate",
+      requestId: rotationRequestId,
+      projectId: project.id,
+      expectedEpoch: 1,
+      envelopes: [epochTwoOwner, epochTwoMember],
+    }));
+    expect(await rotationAccepted).toMatchObject({
+      requestId: rotationRequestId,
+      projectId: project.id,
+      keyEpoch: 2,
+      created: true,
+      envelopes: [epochTwoOwner, epochTwoMember],
+    });
+    expect((await ownerRotationChanged).envelope).toEqual(epochTwoOwner);
+    expect((await memberRotationChanged).envelope).toEqual(epochTwoMember);
+
+    const rotationReplay = nextFrame(ownerSocket, "project.key.rotated");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.rotate",
+      requestId: rotationRequestId,
+      projectId: project.id,
+      expectedEpoch: 1,
+      envelopes: [epochTwoOwner, epochTwoMember],
+    }));
+    expect((await rotationReplay).created).toBeFalse();
+
+    const staleRotation = nextFrame(ownerSocket, "error");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.rotate",
+      requestId: randomUUID(),
+      projectId: project.id,
+      expectedEpoch: 1,
+      envelopes: [epochTwoOwner, epochTwoMember],
+    }));
+    expect(await staleRotation).toMatchObject({ error: expect.stringContaining("rotation conflict") });
+
+    const removedAck = nextFrame(ownerSocket, "project.member.removed");
+    const removedNotice = nextFrame(memberSocket, "project.member.removed");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.member.remove",
+      requestId: randomUUID(),
+      projectId: project.id,
+      deviceId: member.id,
+    }));
+    expect(await removedAck).toMatchObject({ projectId: project.id, deviceId: member.id });
+    expect(await removedNotice).toMatchObject({ projectId: project.id, deviceId: member.id });
+
+    const removedKeyError = nextFrame(memberSocket, "project.key.result");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.get",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    await expect(removedKeyError).rejects.toThrow("approved project member");
+
+    const epochThreeOwner = keyEnvelope(project.id, owner, owner.id, 3);
+    const ownerFinalChanged = nextFrame(
+      ownerSocket,
+      "project.key.changed",
+      frame => (frame.envelope as Record<string, unknown> | undefined)?.keyEpoch === 3,
+    );
+    const finalRotation = nextFrame(ownerSocket, "project.key.rotated");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.rotate",
+      requestId: randomUUID(),
+      projectId: project.id,
+      expectedEpoch: 2,
+      envelopes: [epochThreeOwner],
+    }));
+    expect(await finalRotation).toMatchObject({ keyEpoch: 3, created: true, envelopes: [epochThreeOwner] });
+    expect((await ownerFinalChanged).envelope).toEqual(epochThreeOwner);
+
     const stored = db.query("SELECT envelope_json AS envelopeJson FROM encrypted_project_context WHERE project_id = ?")
       .get(project.id) as { envelopeJson: string };
     expect(stored.envelopeJson).toContain(secondContext.ciphertext);
     expect(stored.envelopeJson).not.toContain("plaintext");
+  }, 15_000);
+
+  test("routes encrypted chat envelopes without persisting plaintext", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-encrypted-chat-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const owner = approvedDevice(db, fingerprint, "Stephen");
+    const member = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Encrypted chat", owner.id);
+    addProjectMember(db, project.id, owner.id, member.id);
+    const serverConfig = createDefaultConfig(paths, "127.0.0.1", 443);
+    serverConfig.hostname = "127.0.0.1";
+    serverConfig.port = 0;
+    const server = startCoCodexServer(serverConfig, db, identity);
+    servers.push(server);
+    const ownerSocket = await connect(server.port, owner, fingerprint);
+    const memberSocket = await connect(server.port, member, fingerprint);
+
+    const key = keyEnvelope(project.id, owner, member.id);
+    const keyAccepted = nextFrame(ownerSocket, "project.key.accepted");
+    ownerSocket.send(JSON.stringify({ version: 1, type: "project.key.share", requestId: randomUUID(), projectId: project.id, envelope: key }));
+    await keyAccepted;
+
+    const ownerSnapshot = nextFrame(ownerSocket, "project.chat.snapshot");
+    const memberSnapshot = nextFrame(memberSocket, "project.chat.snapshot");
+    const subscribe = (socket: WebSocket) => socket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      afterSequence: 0,
+    }));
+    subscribe(ownerSocket);
+    subscribe(memberSocket);
+    expect((await ownerSnapshot).events).toEqual([]);
+    expect((await memberSnapshot).events).toEqual([]);
+
+    const eventId = randomUUID();
+    const envelope = chatEnvelope(project.id, owner, eventId, "secret chat payload");
+    const ownerEvent = nextFrame(ownerSocket, "project.chat.event");
+    const memberEvent = nextFrame(memberSocket, "project.chat.event");
+    const accepted = nextFrame(ownerSocket, "project.chat.accepted");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.send",
+      requestId: randomUUID(),
+      projectId: project.id,
+      eventId,
+      envelope,
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    const acceptedFrame = await accepted;
+    expect((acceptedFrame.event as Record<string, unknown>).envelope).toEqual(envelope);
+    expect((await ownerEvent).event).toEqual((await memberEvent).event);
+    const stored = db.query("SELECT envelope_json AS envelopeJson FROM project_chat_events WHERE event_id = ?")
+      .get(eventId) as { envelopeJson: string };
+    expect(stored.envelopeJson).toContain(envelope.ciphertext);
+    expect(stored.envelopeJson).not.toContain("secret chat payload");
+
+    const tampered = { ...envelope, signature: envelope.signature.slice(0, -1) + (envelope.signature.endsWith("A") ? "B" : "A") };
+    const tamperedEventId = randomUUID();
+    const error = nextFrame(ownerSocket, "error");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.send",
+      requestId: randomUUID(),
+      projectId: project.id,
+      eventId: tamperedEventId,
+      envelope: { ...tampered, recordId: tamperedEventId },
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    expect(await error).toMatchObject({ error: expect.stringContaining("signature") });
   }, 15_000);
 });

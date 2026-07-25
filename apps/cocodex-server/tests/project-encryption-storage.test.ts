@@ -13,7 +13,10 @@ import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/e
 import { createInvitation } from "../src/invitations";
 import {
   getEncryptedProjectContext,
+  getProjectKeyEpoch,
   listProjectKeyEnvelopes,
+  removeProjectMemberAndInvalidateKeys,
+  rotateProjectKeyEpoch,
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "../src/project-encryption-storage";
@@ -144,6 +147,107 @@ describe("opaque project-encryption server storage", () => {
         keyEnvelope(project.id, owner, member.id, 1, randomBytes(80).toString("base64url")),
       )).toThrow("replay conflict");
       expect(() => listProjectKeyEnvelopes(db, project.id, outsider.id)).toThrow("approved project member");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("manages monotonic key epochs and invalidates removed members", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const owner = approvedDevice(db, "Stephen");
+      const member = approvedDevice(db, "Kai");
+      const project = createProject(db, "Rotating encrypted project", owner.id);
+      addProjectMember(db, project.id, owner.id, member.id);
+
+      const epochOneOwner = keyEnvelope(project.id, owner, owner.id, 1);
+      const epochOneMember = keyEnvelope(project.id, owner, member.id, 1);
+      expect(shareProjectKeyEnvelope(db, project.id, owner.id, epochOneOwner).created).toBeTrue();
+      expect(shareProjectKeyEnvelope(db, project.id, owner.id, epochOneMember).created).toBeTrue();
+      expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 1 });
+
+      const rotationId = randomUUID();
+      const epochTwoOwner = keyEnvelope(project.id, owner, owner.id, 2);
+      const epochTwoMember = keyEnvelope(project.id, owner, member.id, 2);
+      const firstRotation = rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoMember],
+      );
+      expect(firstRotation).toMatchObject({ keyEpoch: 2, created: true });
+      expect(firstRotation.envelopes).toEqual([epochTwoOwner, epochTwoMember]);
+      expect(rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoMember],
+      ).created).toBeFalse();
+      expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 2 });
+
+      expect(() => rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        1,
+        randomUUID(),
+        [epochTwoOwner, epochTwoMember],
+      )).toThrow("rotation conflict");
+      expect(() => shareProjectKeyEnvelope(
+        db,
+        project.id,
+        owner.id,
+        keyEnvelope(project.id, owner, member.id, 1),
+      )).toThrow("stale");
+      expect(() => shareProjectKeyEnvelope(
+        db,
+        project.id,
+        owner.id,
+        keyEnvelope(project.id, owner, member.id, 3),
+      )).toThrow("requires a project key rotation");
+      expect(() => rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        2,
+        randomUUID(),
+        [keyEnvelope(project.id, owner, owner.id, 3)],
+      )).toThrow("every approved project member");
+      expect(() => rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        2,
+        randomUUID(),
+        [
+          keyEnvelope(project.id, owner, owner.id, 3),
+          keyEnvelope(project.id, owner, owner.id, 3),
+          keyEnvelope(project.id, owner, member.id, 3),
+        ],
+      )).toThrow("duplicate");
+
+      removeProjectMemberAndInvalidateKeys(db, project.id, owner.id, member.id);
+      expect(() => listProjectKeyEnvelopes(db, project.id, member.id))
+        .toThrow("approved project member");
+      expect(db.query(
+        "SELECT COUNT(*) AS count FROM project_key_envelopes WHERE project_id = ? AND recipient_device_id = ?",
+      ).get(project.id, member.id)).toEqual({ count: 0 });
+
+      const epochThreeOwner = keyEnvelope(project.id, owner, owner.id, 3);
+      const afterRemoval = rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        2,
+        randomUUID(),
+        [epochThreeOwner],
+      );
+      expect(afterRemoval).toMatchObject({ keyEpoch: 3, created: true });
+      expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 3 });
     } finally {
       db.close();
     }

@@ -17,7 +17,18 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "../src/cocodex/project-encryption";
-import { loadProjectKey, loadProjectKeyStore, storeProjectKey } from "../src/cocodex/project-key-store";
+import {
+  canEncryptProject,
+  loadProjectKey,
+  loadProjectKeyForEncryption,
+  loadProjectKeyState,
+  loadProjectKeyStore,
+  markProjectKeyRotationRequired,
+  restoreProjectKeyAccess,
+  revokeProjectKey,
+  rotateProjectKey,
+  storeProjectKey,
+} from "../src/cocodex/project-key-store";
 
 function signingIdentity() {
   return generateKeyPairSync("ed25519", {
@@ -100,9 +111,11 @@ describe("CoCodex project encryption foundation", () => {
       senderPrivateKeyPem: sender.signing.privateKey,
       senderPublicKeyPem: sender.signing.publicKey,
     });
+    const tamperedSealedKey = Buffer.from(envelope.sealedProjectKey, "base64url");
+    tamperedSealedKey[0] = tamperedSealedKey[0]! ^ 1;
     const tampered = {
       ...envelope,
-      sealedProjectKey: `${envelope.sealedProjectKey.slice(0, -1)}${envelope.sealedProjectKey.endsWith("A") ? "B" : "A"}`,
+      sealedProjectKey: tamperedSealedKey.toString("base64url"),
     };
     expect(() => projectKeyEnvelopeSchema.parse(tampered)).not.toThrow();
     await expect(openProjectKeyEnvelope({
@@ -246,6 +259,92 @@ describe("CoCodex project encryption foundation", () => {
       expect(readFileSync(path, "utf8")).toContain(key.toString("base64url"));
       expect(() => storeProjectKey(path, projectId, 0, key)).toThrow("epoch");
       expect(() => storeProjectKey(path, projectId, 4, Buffer.alloc(8))).toThrow("length");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts key epochs monotonically and makes rotation state durable", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-key-epochs-"));
+    try {
+      const path = join(root, "project-keys.json");
+      const projectId = randomUUID();
+      const firstKey = createProjectKey();
+      const secondKey = createProjectKey();
+      const staleKey = createProjectKey();
+
+      storeProjectKey(path, projectId, 4, firstKey);
+      expect(loadProjectKeyState(path, projectId)).toEqual({
+        currentEpoch: 4,
+        rotationRequired: false,
+        revoked: false,
+      });
+      expect(canEncryptProject(path, projectId)).toBe(true);
+      expect(loadProjectKeyForEncryption(path, projectId)).toEqual({ keyEpoch: 4, projectKey: firstKey });
+
+      // Retries of the same authenticated envelope are idempotent.
+      storeProjectKey(path, projectId, 4, firstKey);
+      expect(() => storeProjectKey(path, projectId, 4, staleKey)).toThrow("different key");
+      expect(() => storeProjectKey(path, projectId, 3, staleKey)).toThrow("stale");
+
+      expect(markProjectKeyRotationRequired(path, projectId)).toMatchObject({
+        currentEpoch: 4,
+        rotationRequired: true,
+        revoked: false,
+      });
+      expect(canEncryptProject(path, projectId)).toBe(false);
+      expect(loadProjectKeyForEncryption(path, projectId)).toBeUndefined();
+
+      expect(rotateProjectKey(path, projectId, 5, secondKey)).toEqual({
+        currentEpoch: 5,
+        rotationRequired: false,
+        revoked: false,
+      });
+      expect(loadProjectKey(path, projectId, 4)).toEqual({ keyEpoch: 4, projectKey: firstKey });
+      expect(loadProjectKeyForEncryption(path, projectId)).toEqual({ keyEpoch: 5, projectKey: secondKey });
+      expect(loadProjectKeyStore(path).states?.[projectId]).toEqual({
+        currentEpoch: 5,
+        rotationRequired: false,
+        revoked: false,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("blocks new encryption after revocation and only restores with a newer epoch", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-key-revocation-"));
+    try {
+      const path = join(root, "project-keys.json");
+      const projectId = randomUUID();
+      const firstKey = createProjectKey();
+      const replacementKey = createProjectKey();
+
+      storeProjectKey(path, projectId, 7, firstKey);
+      expect(revokeProjectKey(path, projectId)).toEqual({
+        currentEpoch: 7,
+        rotationRequired: true,
+        revoked: true,
+        revokedAtEpoch: 7,
+      });
+      expect(loadProjectKey(path, projectId, 7)).toEqual({ keyEpoch: 7, projectKey: firstKey });
+      expect(canEncryptProject(path, projectId)).toBe(false);
+      expect(() => storeProjectKey(path, projectId, 8, replacementKey)).toThrow("revoked");
+      expect(() => rotateProjectKey(path, projectId, 8, replacementKey)).toThrow("revoked");
+      expect(() => restoreProjectKeyAccess(path, projectId, 7, replacementKey)).toThrow("not newer");
+
+      expect(restoreProjectKeyAccess(path, projectId, 8, replacementKey)).toEqual({
+        currentEpoch: 8,
+        rotationRequired: false,
+        revoked: false,
+      });
+      expect(canEncryptProject(path, projectId)).toBe(true);
+      expect(loadProjectKeyForEncryption(path, projectId)).toEqual({ keyEpoch: 8, projectKey: replacementKey });
+      expect(loadProjectKeyState(path, projectId)).toEqual({
+        currentEpoch: 8,
+        rotationRequired: false,
+        revoked: false,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -37,6 +37,18 @@ envelopes to project members but never opens them. The client verifies the
 sender fingerprint, unwraps the project key locally, and decrypts Final
 Goal/context before exposing a normal local context frame to the UI.
 
+Project key epochs are server-authoritative. An owner rotation is a
+compare-and-swap operation that must include exactly one signed envelope for
+every approved project member. Removing a member deletes its membership and
+key envelopes; the removed client receives a revocation notice and marks its
+local key ring unusable for new writes. Replayed rotations are idempotent and
+stale expected epochs are rejected.
+
+The same envelope format now backs the `project.chat.*` path. The server
+assigns a sequence and persists only the opaque envelope in
+`project_chat_events`; the client decrypts `{content}` locally and emits the
+existing chat-event shape to the UI.
+
 Legacy `context.get`/`context.update` remain available for the existing
 private-alpha fixtures. They are explicitly server-readable and must not be
 described as end-to-end encrypted. The encrypted path uses distinct
@@ -54,11 +66,11 @@ described as end-to-end encrypted. The encrypted path uses distinct
 
 ## Consequences and remaining work
 
-This slice proves a complete encrypted-context flow and keeps the server blind
-to the context plaintext. It does not yet encrypt shared chat, Yjs prompt
-updates, tasks, agent prompts/results, artifacts, or file references. Key
-rotation on revocation and a full multi-device project-key migration remain
-required before claiming that every Co-Project record is encrypted.
+This slice proves complete encrypted-context and encrypted-chat flows and
+keeps the server blind to both payloads. It does not yet encrypt Yjs prompt
+updates, tasks, agent prompts/results, artifacts, or file references. The
+legacy plaintext chat/context compatibility routes remain for old fixtures and
+must be removed only after every record type has an end-to-end migration.
 
 ## Evidence
 
@@ -70,6 +82,6 @@ required before claiming that every Co-Project record is encrypted.
 - `apps/cocodex-server/tests/project-encryption-server.test.ts` exercises real
   WSS key/context routing and restart-safe SQLite storage.
 - `tests/cocodex-project-encryption-session.test.ts` runs two enrolled client
-  sessions against a real server, initializes a project key, encrypts a Final
-  Goal/context update, proves the stored row omits the plaintext, and verifies
-  that the other client decrypts it locally.
+  sessions against a real server, initializes a project key, encrypts a chat
+  message and Final Goal/context update, proves the stored rows omit the
+  plaintext, and verifies that the other client decrypts both locally.

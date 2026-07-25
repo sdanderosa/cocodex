@@ -9,6 +9,8 @@ import {
   PROJECT_CONTEXT_MAX_BYTES,
   projectContextResultFrameSchema,
   projectKeyEnvelopeSchema,
+  projectKeyRotatedFrameSchema,
+  projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
   publicKeyFingerprint,
   usageReportSchema,
@@ -136,6 +138,24 @@ describe("CoCodex protocol", () => {
     };
     expect(clientFrameSchema.parse(keyShare)).toEqual(keyShare);
     expect(clientFrameSchema.parse(contextUpdate)).toEqual(contextUpdate);
+    const rotate = {
+      version: 1 as const,
+      type: "project.key.rotate" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      expectedEpoch: 0,
+      envelopes: [keyEnvelope],
+    };
+    expect(clientFrameSchema.parse(rotate)).toEqual(rotate);
+    expect(() => clientFrameSchema.parse({ ...rotate, expectedEpoch: -1 })).toThrow();
+    const remove = {
+      version: 1 as const,
+      type: "project.member.remove" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      deviceId: recipientDeviceId,
+    };
+    expect(clientFrameSchema.parse(remove)).toEqual(remove);
     expect(() => clientFrameSchema.parse({ ...keyShare, envelope: { ...keyEnvelope, extra: true } })).toThrow();
     expect(() => clientFrameSchema.parse({ ...contextUpdate, envelope: { ...contentEnvelope, ciphertext: "%%%" } })).toThrow();
 
@@ -155,7 +175,72 @@ describe("CoCodex protocol", () => {
       projectId,
       envelope: keyEnvelope,
     })).toMatchObject({ type: "project.key.changed", projectId });
+    expect(projectKeyRotatedFrameSchema.parse({
+      version: 1 as const,
+      type: "project.key.rotated" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      keyEpoch: 1,
+      envelopes: [keyEnvelope],
+      created: true,
+    })).toMatchObject({ type: "project.key.rotated", keyEpoch: 1 });
+    expect(projectMemberRemovedFrameSchema.parse({
+      version: 1 as const,
+      type: "project.member.removed" as const,
+      projectId,
+      deviceId: recipientDeviceId,
+    })).toMatchObject({ type: "project.member.removed", deviceId: recipientDeviceId });
     expect(() => projectServerFrameSchema.parse({ ...result, extra: true })).toThrow();
+  });
+  test("accepts encrypted shared-chat frames while keeping payloads opaque", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const projectId = crypto.randomUUID();
+    const senderDeviceId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const envelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "chat" as const,
+      recordId: eventId,
+      nonce: Buffer.alloc(24, 3).toString("base64url"),
+      ciphertext: Buffer.alloc(32, 4).toString("base64url"),
+      senderDeviceId,
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 5).toString("base64url"),
+    };
+    const send = {
+      version: 1 as const,
+      type: "project.chat.send" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      eventId,
+      envelope,
+      clientCreatedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(clientFrameSchema.parse(send)).toEqual(send);
+    const event = {
+      sequence: 1,
+      projectId,
+      eventId,
+      senderDeviceId,
+      envelope,
+      clientCreatedAt: send.clientCreatedAt,
+      acceptedAt: send.clientCreatedAt,
+    };
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.chat.snapshot" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      events: [event],
+    })).toMatchObject({ type: "project.chat.snapshot", events: [event] });
+    expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.chat.event" as const, event }))
+      .toMatchObject({ type: "project.chat.event", event });
+    expect(() => clientFrameSchema.parse({ ...send, envelope: { ...envelope, extra: true } })).toThrow();
   });
   test("bounds presence cursor and caret frames", () => {
     const frame = {

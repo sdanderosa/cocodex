@@ -9,7 +9,7 @@ import {
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
 } from "@cocodex/protocol";
-import { requireProjectMembership } from "./shared-state";
+import { removeProjectMember as removeMembership, requireProjectMembership } from "./shared-state";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -22,6 +22,12 @@ interface KeyEnvelopeRow {
 interface ContextRow {
   envelopeJson: string;
   revision: number;
+  updatedAt: string;
+}
+
+interface ProjectKeyEpochRow {
+  currentEpoch: number;
+  lastRotationId: string | null;
   updatedAt: string;
 }
 
@@ -38,6 +44,19 @@ export interface EncryptedProjectContextRecord {
 }
 
 export interface EncryptedProjectContextWriteResult extends EncryptedProjectContextRecord {
+  created: boolean;
+}
+
+export interface ProjectKeyEpochRecord {
+  projectId: string;
+  currentEpoch: number;
+  lastRotationId: string | null;
+  updatedAt: string | null;
+}
+
+export interface ProjectKeyRotationResult extends ProjectKeyEpochRecord {
+  keyEpoch: number;
+  envelopes: ProjectKeyEnvelope[];
   created: boolean;
 }
 
@@ -111,6 +130,81 @@ function envelopeJson(value: object): string {
   return JSON.stringify(Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))));
 }
 
+function readProjectKeyEpoch(db: Database, projectId: string): ProjectKeyEpochRow | null {
+  const row = db.query(`
+    SELECT current_epoch AS currentEpoch,
+      last_rotation_id AS lastRotationId,
+      updated_at AS updatedAt
+    FROM project_key_epochs
+    WHERE project_id = ?
+  `).get(projectId) as ProjectKeyEpochRow | null;
+  if (row) return row;
+  const legacy = db.query(`
+    SELECT MAX(key_epoch) AS currentEpoch, MAX(updated_at) AS updatedAt
+    FROM project_key_envelopes
+    WHERE project_id = ?
+  `).get(projectId) as { currentEpoch: number | null; updatedAt: string | null };
+  if (!legacy.currentEpoch) return null;
+  return { currentEpoch: legacy.currentEpoch, lastRotationId: null, updatedAt: legacy.updatedAt ?? "" };
+}
+
+function ensureProjectKeyEpochRow(
+  db: Database,
+  projectId: string,
+  senderDeviceId: string,
+  envelopeEpoch: number,
+  now: Date,
+): ProjectKeyEpochRow {
+  const existing = readProjectKeyEpoch(db, projectId);
+  if (existing) return existing;
+  if (envelopeEpoch !== 1) throw new Error("Project key epoch must start at 1");
+  const timestamp = now.toISOString();
+  db.query(`
+    INSERT INTO project_key_epochs (
+      project_id, current_epoch, last_rotation_id, updated_by_device_id,
+      created_at, updated_at
+    ) VALUES (?, 1, NULL, ?, ?, ?)
+  `).run(projectId, senderDeviceId, timestamp, timestamp);
+  return { currentEpoch: 1, lastRotationId: null, updatedAt: timestamp };
+}
+
+export function getProjectKeyEpoch(
+  db: Database,
+  projectId: string,
+  deviceId: string,
+): ProjectKeyEpochRecord {
+  requireProjectMembership(db, projectId, deviceId);
+  const state = readProjectKeyEpoch(db, projectId);
+  return {
+    projectId,
+    currentEpoch: state?.currentEpoch ?? 0,
+    lastRotationId: state?.lastRotationId ?? null,
+    updatedAt: state?.updatedAt || null,
+  };
+}
+
+function approvedProjectMembers(db: Database, projectId: string): string[] {
+  const rows = db.query(`
+    SELECT pm.device_id AS deviceId
+    FROM project_members pm
+    JOIN devices d ON d.id = pm.device_id
+    WHERE pm.project_id = ? AND d.status = 'approved'
+    ORDER BY pm.device_id ASC
+  `).all(projectId) as Array<{ deviceId: string }>;
+  return rows.map(row => row.deviceId);
+}
+
+function sameEnvelopeSet(left: ProjectKeyEnvelope[], right: ProjectKeyEnvelope[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftByRecipient = new Map(left.map(envelope => [envelope.recipientDeviceId, envelopeJson(envelope)]));
+  const rightByRecipient = new Map(right.map(envelope => [envelope.recipientDeviceId, envelopeJson(envelope)]));
+  if (leftByRecipient.size !== rightByRecipient.size) return false;
+  for (const [recipient, value] of leftByRecipient) {
+    if (rightByRecipient.get(recipient) !== value) return false;
+  }
+  return true;
+}
+
 export function shareProjectKeyEnvelope(
   db: Database,
   projectId: string,
@@ -133,6 +227,13 @@ export function shareProjectKeyEnvelope(
   );
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
+    const epoch = ensureProjectKeyEpochRow(db, projectId, senderDeviceId, envelope.keyEpoch, now);
+    if (envelope.keyEpoch < epoch.currentEpoch) {
+      throw new Error(`Project key envelope epoch ${envelope.keyEpoch} is stale; current epoch is ${epoch.currentEpoch}`);
+    }
+    if (envelope.keyEpoch > epoch.currentEpoch) {
+      throw new Error(`Project key envelope epoch ${envelope.keyEpoch} requires a project key rotation`);
+    }
     const existing = db.query(`
       SELECT envelope_json AS envelopeJson
       FROM project_key_envelopes
@@ -159,6 +260,144 @@ export function shareProjectKeyEnvelope(
     );
     return { envelope, created: true };
   }).immediate();
+}
+
+export function rotateProjectKeyEpoch(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  expectedEpoch: number,
+  rotationId: string,
+  values: unknown,
+  now = new Date(),
+): ProjectKeyRotationResult {
+  if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0) {
+    throw new Error("Invalid expected project key epoch");
+  }
+  if (!rotationId || rotationId.length > 128) throw new Error("Invalid project key rotation ID");
+  if (!Array.isArray(values) || values.length < 1 || values.length > 128) {
+    throw new Error("Project key rotation requires 1-128 envelopes");
+  }
+  const envelopes = values.map(value => projectKeyEnvelopeSchema.parse(value));
+  if (envelopes.some(envelope => envelope.projectId !== projectId)) {
+    throw new Error("Project key rotation contains an envelope for another project");
+  }
+  const ownerMembership = requireProjectMembership(db, projectId, ownerDeviceId);
+  if (ownerMembership.role !== "owner") throw new Error("Only a project owner can rotate project keys");
+  const members = approvedProjectMembers(db, projectId);
+  const memberSet = new Set(members);
+  const recipients = new Set<string>();
+  for (const envelope of envelopes) {
+    if (envelope.senderDeviceId !== ownerDeviceId) {
+      throw new Error("Project key rotation envelopes must be signed by the owner");
+    }
+    if (recipients.has(envelope.recipientDeviceId)) {
+      throw new Error("Project key rotation contains duplicate recipients");
+    }
+    recipients.add(envelope.recipientDeviceId);
+    if (!memberSet.has(envelope.recipientDeviceId)) {
+      throw new Error("Project key rotation recipient is not an approved project member");
+    }
+  }
+  if (recipients.size !== memberSet.size || members.some(memberId => !recipients.has(memberId))) {
+    throw new Error("Project key rotation must include every approved project member");
+  }
+  const serialized = envelopes.map(envelope => envelopeJson(envelope));
+  for (let index = 0; index < envelopes.length; index += 1) {
+    verifyEnvelopeSender(
+      db,
+      ownerDeviceId,
+      envelopes[index]!.senderPublicKeyPem,
+      projectKeyEnvelopeSigningTranscript(envelopes[index]!),
+      envelopes[index]!.signature,
+    );
+  }
+  return db.transaction(() => {
+    const state = readProjectKeyEpoch(db, projectId);
+    const currentEpoch = state?.currentEpoch ?? 0;
+    if (state?.lastRotationId === rotationId) {
+      const priorRows = db.query(`
+        SELECT envelope_json AS envelopeJson
+        FROM project_key_envelopes
+        WHERE project_id = ? AND key_epoch = ?
+        ORDER BY recipient_device_id ASC
+      `).all(projectId, currentEpoch) as KeyEnvelopeRow[];
+      const prior = priorRows.map(row => parseKeyEnvelope(row.envelopeJson));
+      if (!sameEnvelopeSet(prior, envelopes)) throw new Error("Project key rotation replay conflict");
+      return {
+        projectId,
+        currentEpoch,
+        lastRotationId: state.lastRotationId,
+        updatedAt: state.updatedAt || null,
+        keyEpoch: currentEpoch,
+        envelopes: prior,
+        created: false,
+      };
+    }
+    if (currentEpoch !== expectedEpoch) {
+      throw new Error(`Project key rotation conflict (expected ${expectedEpoch}, current ${currentEpoch})`);
+    }
+    const keyEpoch = currentEpoch + 1;
+    if (keyEpoch > 0x7fffffff) throw new Error("Project key epoch limit reached");
+    if (envelopes.some(envelope => envelope.keyEpoch !== keyEpoch)) {
+      throw new Error(`Project key rotation envelopes must use epoch ${keyEpoch}`);
+    }
+    const timestamp = now.toISOString();
+    for (let index = 0; index < envelopes.length; index += 1) {
+      const envelope = envelopes[index]!;
+      db.query(`
+        INSERT INTO project_key_envelopes (
+          project_id, key_epoch, recipient_device_id, sender_device_id,
+          envelope_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        projectId,
+        keyEpoch,
+        envelope.recipientDeviceId,
+        envelope.senderDeviceId,
+        serialized[index],
+        timestamp,
+        timestamp,
+      );
+    }
+    if (state) {
+      db.query(`
+        UPDATE project_key_epochs
+        SET current_epoch = ?, last_rotation_id = ?, updated_by_device_id = ?, updated_at = ?
+        WHERE project_id = ?
+      `).run(keyEpoch, rotationId, ownerDeviceId, timestamp, projectId);
+    } else {
+      db.query(`
+        INSERT INTO project_key_epochs (
+          project_id, current_epoch, last_rotation_id, updated_by_device_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(projectId, keyEpoch, rotationId, ownerDeviceId, timestamp, timestamp);
+    }
+    return {
+      projectId,
+      currentEpoch: keyEpoch,
+      lastRotationId: rotationId,
+      updatedAt: timestamp,
+      keyEpoch,
+      envelopes,
+      created: true,
+    };
+  }).immediate();
+}
+
+export function removeProjectMemberAndInvalidateKeys(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  memberDeviceId: string,
+  now = new Date(),
+): void {
+  removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now);
+  db.query(`
+    DELETE FROM project_key_envelopes
+    WHERE project_id = ? AND (recipient_device_id = ? OR sender_device_id = ?)
+  `).run(projectId, memberDeviceId, memberDeviceId);
 }
 
 export function listProjectKeyEnvelopes(
