@@ -2,7 +2,7 @@
 
 - Evidence date: 2026-07-25
 - Implementation commits: `37d344d4`, plus running-task recovery fix
-  `72ce0f41`
+  `72ce0f41` and trust/recovery-state validation fix `cc206faa`
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
