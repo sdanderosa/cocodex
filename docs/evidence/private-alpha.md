@@ -481,6 +481,48 @@ Files: `packages/cocodex-protocol/src/project-agent.ts`,
 `apps/cocodex-server/src/encrypted-chat.ts`, `src/cocodex/agent-bridge.ts`,
 `src/cocodex/session.ts`, and `tests/cocodex-private-alpha-process.test.ts`.
 
+## Signed CoCodex Server authority handoff
+
+Implementation commit: `8361f7d6`
+
+Test name: `hands a live server to a prepared process and reconnects a resident client`
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-server-transfer-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `24 expect()` calls.
+
+The test launches separate source and destination `cocodex-server` CLI
+processes with isolated temporary state roots, ports, identities, TLS
+certificates, and SQLite databases. It enrolls a client over the real HTTPS
+enrollment endpoints and WSS authentication, creates a project, stops the
+source, exports a destination-bound AES-GCM transfer, proves the source status
+is `retired` and that a new source start is refused, imports into the prepared
+destination, starts the destination, accepts the source-signed
+`ccx-transfer1.` certificate in the client, and reads the surviving project
+through a real `project.list` WebSocket frame at authority epoch 2.
+
+The complete CoCodex command was rerun after this change:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `75 pass`, `0 fail`, `698 expect() calls`
+across 27 files. Typecheck, separate server/client compile builds, and the
+privacy scan also exited `0`.
+
+Files: `packages/cocodex-protocol/src/server-transfer.ts`,
+`apps/cocodex-server/src/backup.ts`, `apps/cocodex-server/src/server-state.ts`,
+`apps/cocodex-server/src/cli.ts`, `apps/cocodex-server/src/server.ts`,
+`src/cocodex/client.ts`, `src/cocodex/cli.ts`,
+`tests/cocodex-server-transfer-process.test.ts`,
+`apps/cocodex-server/tests/backup.test.ts`, and ADR 0017.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
