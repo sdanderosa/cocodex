@@ -9,6 +9,7 @@ export interface ClientPaths {
   messagingPublicKey: string;
   projectWrapPrivateKey: string;
   projectWrapPublicKey: string;
+  projectKeys: string;
   connection: string;
   agentPolicy: string;
   agentJournal: string;
@@ -31,6 +32,7 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     messagingPublicKey: resolve(absoluteRoot, "messaging-x25519-public.pem"),
     projectWrapPrivateKey: resolve(absoluteRoot, "project-wrap-x25519-private.pem"),
     projectWrapPublicKey: resolve(absoluteRoot, "project-wrap-x25519-public.pem"),
+    projectKeys: resolve(absoluteRoot, "project-keys.json"),
     connection: resolve(absoluteRoot, "connection.json"),
     agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),

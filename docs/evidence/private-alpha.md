@@ -259,6 +259,42 @@ Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
 fallback; packet encoding/response validation and diagnostic classification are
 covered by the port-mapping tests. PCP remains a later compatibility extension.
 
+## Project-wrap identity and encrypted Final Goal/context
+
+The first project-encryption slice is now connected end to end. Each client
+creates a separate X25519 project-wrap keypair; the owner can send signed,
+per-device sealed project-key envelopes. The server validates owner authority,
+approved membership, signatures, replay/idempotency, and revision conflicts,
+then persists opaque envelope JSON only. The client unwraps the project key and
+decrypts the Final Goal/context locally with libsodium XChaCha20-Poly1305.
+
+Focused command:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`.
+
+Relevant output:
+
+```text
+20 pass
+0 fail
+111 expect() calls
+```
+
+The real session test runs two enrolled clients against a real TLS/WSS server,
+initializes a project key, writes encrypted context, verifies the SQLite row
+does not contain the plaintext goal, and recovers the goal by local decryption
+on the other client. This does not generalize to all project records yet.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
@@ -306,8 +342,10 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- project-content encryption and key epochs are not implemented: shared chat,
-  prompts, Final Goal/context, tasks, and artifacts remain server-readable.
+- whole-project encryption and complete key epochs are not implemented yet:
+  shared chat, prompts, tasks, agent results, artifacts, and file references
+  remain server-readable; Final Goal/context is encrypted only through the new
+  explicit project-context frames, and key rotation on revocation is deferred.
 - NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt

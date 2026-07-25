@@ -7,6 +7,9 @@ import {
   encodeInvitation,
   enrollmentSigningTranscript,
   PROJECT_CONTEXT_MAX_BYTES,
+  projectContextResultFrameSchema,
+  projectKeyEnvelopeSchema,
+  projectServerFrameSchema,
   publicKeyFingerprint,
   usageReportSchema,
   usageReportSigningTranscript,
@@ -84,6 +87,75 @@ describe("CoCodex protocol", () => {
     expect(() => clientFrameSchema.parse({ ...frame, finalGoal: "x".repeat(32_769) })).toThrow();
     expect(() => clientFrameSchema.parse({ ...frame, context: [] })).toThrow();
     expect(() => clientFrameSchema.parse({ ...frame, context: { blob: "x".repeat(PROJECT_CONTEXT_MAX_BYTES) } })).toThrow();
+  });
+  test("strictly bounds opaque project-encryption frames in both directions", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const projectId = crypto.randomUUID();
+    const senderDeviceId = crypto.randomUUID();
+    const recipientDeviceId = crypto.randomUUID();
+    const keyEnvelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recipientDeviceId,
+      senderDeviceId,
+      sealedProjectKey: Buffer.alloc(80, 1).toString("base64url"),
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 2).toString("base64url"),
+    };
+    const contentEnvelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "shared-context" as const,
+      recordId: crypto.randomUUID(),
+      nonce: Buffer.alloc(24, 3).toString("base64url"),
+      ciphertext: Buffer.alloc(16, 4).toString("base64url"),
+      senderDeviceId,
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 5).toString("base64url"),
+    };
+    expect(projectKeyEnvelopeSchema.parse(keyEnvelope)).toEqual(keyEnvelope);
+    const keyShare = {
+      version: 1 as const,
+      type: "project.key.share" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      envelope: keyEnvelope,
+    };
+    const contextUpdate = {
+      version: 1 as const,
+      type: "project.context.update" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      expectedRevision: 0,
+      envelope: contentEnvelope,
+    };
+    expect(clientFrameSchema.parse(keyShare)).toEqual(keyShare);
+    expect(clientFrameSchema.parse(contextUpdate)).toEqual(contextUpdate);
+    expect(() => clientFrameSchema.parse({ ...keyShare, envelope: { ...keyEnvelope, extra: true } })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...contextUpdate, envelope: { ...contentEnvelope, ciphertext: "%%%" } })).toThrow();
+
+    const result = {
+      version: 1 as const,
+      type: "project.context.result" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      envelope: contentEnvelope,
+      revision: 1,
+      updatedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(projectContextResultFrameSchema.parse(result)).toEqual(result);
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.key.changed" as const,
+      projectId,
+      envelope: keyEnvelope,
+    })).toMatchObject({ type: "project.key.changed", projectId });
+    expect(() => projectServerFrameSchema.parse({ ...result, extra: true })).toThrow();
   });
   test("bounds presence cursor and caret frames", () => {
     const frame = {

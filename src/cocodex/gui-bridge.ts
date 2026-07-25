@@ -8,6 +8,9 @@ import { runJsonLineSession, type JsonLineSessionOptions } from "./session";
 const MAX_EVENTS = 500;
 const ALLOWED_COMMANDS = new Set([
   "project.list",
+  "project.key.get",
+  "project.key.share",
+  "project.key.initialize",
   "device.trust",
   "chat.subscribe",
   "chat.send",
@@ -15,6 +18,8 @@ const ALLOWED_COMMANDS = new Set([
   "prompt.update",
   "context.get",
   "context.update",
+  "project.context.get",
+  "project.context.update",
   "usage.get",
   "presence.update",
   "agent.request",

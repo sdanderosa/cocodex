@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   projectContentAad,
   projectContentEnvelopeSchema,
@@ -14,6 +17,7 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "../src/cocodex/project-encryption";
+import { loadProjectKey, loadProjectKeyStore, storeProjectKey } from "../src/cocodex/project-key-store";
 
 function signingIdentity() {
   return generateKeyPairSync("ed25519", {
@@ -227,5 +231,23 @@ describe("CoCodex project encryption foundation", () => {
     });
     expect(() => projectContentEnvelopeSchema.parse({ ...content, nonce: "%%%" })).toThrow();
     expect(() => projectContentEnvelopeSchema.parse({ ...content, extra: true })).toThrow();
+  });
+
+  test("persists project keys in a bounded protected local store without exposing raw key fields", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-key-store-"));
+    try {
+      const path = join(root, "project-keys.json");
+      const projectId = randomUUID();
+      const key = createProjectKey();
+      storeProjectKey(path, projectId, 3, key);
+      expect(loadProjectKey(path, projectId, 3)).toEqual({ keyEpoch: 3, projectKey: key });
+      expect(loadProjectKey(path, projectId, 2)).toBeUndefined();
+      expect(loadProjectKeyStore(path).version).toBe(1);
+      expect(readFileSync(path, "utf8")).toContain(key.toString("base64url"));
+      expect(() => storeProjectKey(path, projectId, 0, key)).toThrow("epoch");
+      expect(() => storeProjectKey(path, projectId, 4, Buffer.alloc(8))).toThrow("length");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

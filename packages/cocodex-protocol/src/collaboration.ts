@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { usageReportSchema } from "./usage";
+import {
+  PROJECT_KEY_EPOCH_MAX,
+  projectContentEnvelopeSchema,
+  projectKeyEnvelopeSchema,
+} from "./project-encryption";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -171,6 +176,34 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("project.key.get"),
+    requestId,
+    projectId,
+    keyEpoch: z.number().int().min(1).max(PROJECT_KEY_EPOCH_MAX).optional(),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.key.share"),
+    requestId,
+    projectId,
+    envelope: projectKeyEnvelopeSchema,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.context.get"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.context.update"),
+    requestId,
+    projectId,
+    expectedRevision: z.number().int().nonnegative(),
+    envelope: projectContentEnvelopeSchema,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("context.update"),
     requestId,
     projectId,
@@ -198,6 +231,77 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     signature: z.string().min(64).max(256),
   }).strict(),
 ]);
+
+export const projectKeyResultFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.result"),
+  requestId,
+  projectId,
+  envelopes: z.array(projectKeyEnvelopeSchema).max(128),
+}).strict();
+
+export const projectKeyAcceptedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.accepted"),
+  requestId,
+  projectId,
+  envelope: projectKeyEnvelopeSchema,
+  created: z.boolean(),
+}).strict();
+
+export const projectKeyChangedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.changed"),
+  projectId,
+  envelope: projectKeyEnvelopeSchema,
+}).strict();
+
+export const projectContextResultFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.context.result"),
+  requestId,
+  projectId,
+  envelope: projectContentEnvelopeSchema.nullable(),
+  revision: z.number().int().nonnegative(),
+  updatedAt: z.iso.datetime().nullable(),
+}).strict();
+
+export const projectContextUpdatedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.context.updated"),
+  requestId,
+  projectId,
+  envelope: projectContentEnvelopeSchema,
+  revision: z.number().int().positive(),
+  created: z.boolean(),
+  updatedAt: z.iso.datetime(),
+}).strict();
+
+export const projectContextChangedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.context.changed"),
+  projectId,
+  envelope: projectContentEnvelopeSchema,
+  revision: z.number().int().positive(),
+  updatedAt: z.iso.datetime(),
+}).strict();
+
+export const projectServerFrameSchema = z.discriminatedUnion("type", [
+  projectKeyResultFrameSchema,
+  projectKeyAcceptedFrameSchema,
+  projectKeyChangedFrameSchema,
+  projectContextResultFrameSchema,
+  projectContextUpdatedFrameSchema,
+  projectContextChangedFrameSchema,
+]);
+
+export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
+export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
+export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
+export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema>;
+export type ProjectContextResultFrame = z.infer<typeof projectContextResultFrameSchema>;
+export type ProjectContextUpdatedFrame = z.infer<typeof projectContextUpdatedFrameSchema>;
+export type ProjectContextChangedFrame = z.infer<typeof projectContextChangedFrameSchema>;
 
 export const agentTaskSchema = z.object({
   id: z.uuid(),

@@ -25,6 +25,12 @@ import { serverEpoch } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
 import { getSharedProjectContext, updateSharedProjectContext } from "./shared-context";
 import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./usage";
+import {
+  getEncryptedProjectContext,
+  listProjectKeyEnvelopes,
+  shareProjectKeyEnvelope,
+  updateEncryptedProjectContext,
+} from "./project-encryption-storage";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -41,6 +47,7 @@ interface SocketData {
   subscribedProjects: Set<string>;
   subscribedPrompts: Set<string>;
   subscribedContexts: Set<string>;
+  subscribedEncryptedContexts: Set<string>;
   subscribedUsages: Set<string>;
   agentReady: boolean;
 }
@@ -197,6 +204,25 @@ export function startCoCodexServer(
     }
   }
 
+  function sendToEncryptedContext(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedEncryptedContexts.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedEncryptedContexts.delete(projectId);
+      }
+    }
+  }
+
   function sendToUsage(projectId: string, frame: unknown): void {
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
@@ -325,6 +351,7 @@ export function startCoCodexServer(
           subscribedProjects: new Set(),
           subscribedPrompts: new Set(),
           subscribedContexts: new Set(),
+          subscribedEncryptedContexts: new Set(),
           subscribedUsages: new Set(),
           agentReady: false,
         };
@@ -575,6 +602,81 @@ export function startCoCodexServer(
             });
             socket.send(JSON.stringify({ version: 1, type: "artifact.accepted", requestId, artifact: published.artifact }));
             if (published.created) sendToProject(message.projectId, { version: 1, type: "artifact.published", artifact: published.artifact });
+            return;
+          }
+          if (message.type === "project.key.get") {
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.key.result",
+              requestId,
+              projectId: message.projectId,
+              envelopes: listProjectKeyEnvelopes(db, message.projectId, deviceId, message.keyEpoch),
+            }));
+            return;
+          }
+          if (message.type === "project.key.share") {
+            const shared = shareProjectKeyEnvelope(db, message.projectId, deviceId, message.envelope);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.key.accepted",
+              requestId,
+              projectId: message.projectId,
+              envelope: shared.envelope,
+              created: shared.created,
+            }));
+            if (shared.created) {
+              sendToDevice(shared.envelope.recipientDeviceId, {
+                version: 1,
+                type: "project.key.changed",
+                projectId: message.projectId,
+                envelope: shared.envelope,
+              });
+            }
+            return;
+          }
+          if (message.type === "project.context.get") {
+            const record = getEncryptedProjectContext(db, message.projectId, deviceId);
+            socket.data.subscribedEncryptedContexts.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.context.result",
+              requestId,
+              projectId: message.projectId,
+              envelope: record?.envelope ?? null,
+              revision: record?.revision ?? 0,
+              updatedAt: record?.updatedAt ?? null,
+            }));
+            return;
+          }
+          if (message.type === "project.context.update") {
+            const updated = updateEncryptedProjectContext(
+              db,
+              message.projectId,
+              deviceId,
+              message.expectedRevision,
+              message.envelope,
+            );
+            socket.data.subscribedEncryptedContexts.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.context.updated",
+              requestId,
+              projectId: message.projectId,
+              envelope: updated.envelope,
+              revision: updated.revision,
+              created: updated.created,
+              updatedAt: updated.updatedAt,
+            }));
+            if (updated.created) {
+              sendToEncryptedContext(message.projectId, {
+                version: 1,
+                type: "project.context.changed",
+                projectId: message.projectId,
+                envelope: updated.envelope,
+                revision: updated.revision,
+                updatedAt: updated.updatedAt,
+              });
+            }
             return;
           }
           if (message.type === "context.get") {

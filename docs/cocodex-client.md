@@ -63,6 +63,29 @@ its local agent policy before invoking the local Codex runtime. Agent results
 are streamed back into the authoritative project chat. Private messages are
 decrypted locally and are never automatically added to an agent prompt.
 
+## Encrypted project context
+
+New client installations also create a dedicated X25519 project-wrap keypair;
+it is separate from the private-message key and remains in the protected
+client state directory. An owner can initialize an encrypted project-context
+epoch through the JSON-line session by supplying the approved members' project
+wrap public keys:
+
+```json
+{"id":"keys-1","type":"project.key.initialize","projectId":"PROJECT_ID","keyEpoch":1,"recipients":[{"deviceId":"STEPHEN_DEVICE_ID","projectWrapPublicKeyPem":"..."},{"deviceId":"KAI_DEVICE_ID","projectWrapPublicKeyPem":"..."}]}
+```
+
+Then use `project.key.get` on each member client and use
+`project.context.get`/`project.context.update` for encrypted Final Goal and
+structured context. The client unwraps and decrypts locally; the server stores
+only signed opaque envelopes. The encrypted update is also durable in the
+protected outbox while offline.
+
+This is the first encrypted project slice, not a claim that every project
+record is encrypted yet. Shared chat, Yjs prompt updates, task prompts,
+agent results, artifacts, and key rotation on revocation remain on the
+explicitly documented follow-up path.
+
 ## Usage sharing
 
 The resident session aggregates local token counters and active-agent state into

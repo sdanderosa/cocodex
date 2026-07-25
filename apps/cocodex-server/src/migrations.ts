@@ -209,4 +209,30 @@ CREATE INDEX usage_reports_updated ON usage_reports(updated_at);`,
     sql: `
 ALTER TABLE devices ADD COLUMN project_wrap_public_key_pem TEXT;`,
   },
+  {
+    version: 11,
+    sql: `
+CREATE TABLE project_key_envelopes (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 0),
+  recipient_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, key_epoch, recipient_device_id)
+);
+CREATE INDEX project_key_envelopes_recipient
+  ON project_key_envelopes(recipient_device_id, project_id, key_epoch);
+CREATE TABLE encrypted_project_context (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 0),
+  record_id TEXT NOT NULL,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`,
+  },
 ];

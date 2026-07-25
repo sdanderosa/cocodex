@@ -95,11 +95,18 @@ the reporting device's Ed25519 signature and revision, stores the latest report
 only, and returns it only to approved members of a shared project. It never
 receives provider credentials or raw quota/account records.
 
-Project-content encryption is not yet enabled. Shared chat, prompt state,
-Final Goal/context, task prompts, and artifacts remain server-readable in this
-alpha checkpoint; do not describe the current server as an end-to-end encrypted
-project store. The planned project-key epoch design is tracked in the
-architecture references and must be implemented before that claim is made.
+Project-content encryption is enabled for the explicit `project.key.*` and
+`project.context.*` slice. The server verifies owner-signed key envelopes,
+approved membership, signatures, replay/idempotency, and context revisions,
+then stores only opaque envelope JSON in `project_key_envelopes` and
+`encrypted_project_context`. It never receives the project key or opens the
+Final Goal/context ciphertext.
+
+This is not yet a whole-project E2EE claim. Legacy `context.*` frames, shared
+chat, Yjs prompt state, task prompts, agent results, artifacts, and file
+references remain server-readable until their own encrypted envelopes and
+end-to-end tests are complete. Key rotation on device revocation is also
+deferred; do not present the current slice as a complete project-key lifecycle.
 
 The private alpha deliberately defers relay/libp2p traversal, automatic
 failover, full multi-device ratchets, and cross-platform service installers.
