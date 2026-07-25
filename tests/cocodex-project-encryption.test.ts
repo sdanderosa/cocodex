@@ -25,6 +25,7 @@ import {
   loadProjectKeyState,
   loadProjectKeyStore,
   markProjectKeyRotationRequired,
+  removeProjectKey,
   restoreProjectKeyAccess,
   revokeProjectKey,
   rotateProjectKey,
@@ -260,6 +261,9 @@ describe("CoCodex project encryption foundation", () => {
       expect(readFileSync(path, "utf8")).toContain(key.toString("base64url"));
       expect(() => storeProjectKey(path, projectId, 0, key)).toThrow("epoch");
       expect(() => storeProjectKey(path, projectId, 4, Buffer.alloc(8))).toThrow("length");
+      removeProjectKey(path, projectId, 3);
+      expect(loadProjectKey(path, projectId, 3)).toBeUndefined();
+      expect(loadProjectKeyState(path, projectId)).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

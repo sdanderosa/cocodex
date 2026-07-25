@@ -14,6 +14,7 @@ import { createInvitation } from "../src/invitations";
 import {
   getEncryptedProjectContext,
   getProjectKeyEpoch,
+  initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
   removeProjectMemberAndInvalidateKeys,
   rotateProjectKeyEpoch,
@@ -139,6 +140,68 @@ function artifactEnvelope(
 }
 
 describe("opaque project-encryption server storage", () => {
+  test("initializes every approved member atomically and replays by request ID", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const owner = approvedDevice(db, "Stephen");
+      const member = approvedDevice(db, "Kai");
+      const project = createProject(db, "Atomic encrypted project", owner.id);
+      addProjectMember(db, project.id, owner.id, member.id);
+      const ownerEnvelope = keyEnvelope(project.id, owner, owner.id);
+      const memberEnvelope = keyEnvelope(project.id, owner, member.id);
+      const initializationId = randomUUID();
+
+      const initialized = initializeProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        initializationId,
+        [ownerEnvelope, memberEnvelope],
+      );
+      expect(initialized).toMatchObject({
+        projectId: project.id,
+        currentEpoch: 1,
+        keyEpoch: 1,
+        created: true,
+        envelopes: [ownerEnvelope, memberEnvelope],
+      });
+      expect(db.query("SELECT COUNT(*) AS count FROM project_key_envelopes WHERE project_id = ?")
+        .get(project.id)).toEqual({ count: 2 });
+      expect(initializeProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        initializationId,
+        [ownerEnvelope, memberEnvelope],
+      ).created).toBeFalse();
+      expect(db.query("SELECT COUNT(*) AS count FROM project_key_epochs WHERE project_id = ?")
+        .get(project.id)).toEqual({ count: 1 });
+      expect(() => initializeProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        randomUUID(),
+        [keyEnvelope(project.id, owner, owner.id)],
+      )).toThrow("every approved project member");
+
+      const incompleteProject = createProject(db, "Incomplete encrypted project", owner.id);
+      addProjectMember(db, incompleteProject.id, owner.id, member.id);
+      expect(() => initializeProjectKeyEpoch(
+        db,
+        incompleteProject.id,
+        owner.id,
+        randomUUID(),
+        [keyEnvelope(incompleteProject.id, owner, owner.id)],
+      )).toThrow("every approved project member");
+      expect(db.query("SELECT COUNT(*) AS count FROM project_key_envelopes WHERE project_id = ?")
+        .get(incompleteProject.id)).toEqual({ count: 0 });
+      expect(db.query("SELECT COUNT(*) AS count FROM project_key_epochs WHERE project_id = ?")
+        .get(incompleteProject.id)).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
   test("enforces owner key sharing, recipient membership, and idempotent envelopes", () => {
     const db = openDatabase(":memory:");
     try {

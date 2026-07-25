@@ -165,6 +165,13 @@ encrypted prompts it orders and deduplicates Yjs updates without applying them;
 the clients perform the Yjs state transition after local decryption. Encrypted
 artifact rows expose only project/task/author routing metadata and timestamps.
 
+The first `project.key.initialize` operation is stricter than the compatibility
+`project.key.share` route. It accepts one owner-signed epoch-1 envelope for
+every approved project member and inserts the complete set plus the epoch row in
+one immediate SQLite transaction. The `project.key.initialized` response is
+idempotent by request ID, so a reconnect can safely replay the batch. A failed
+batch leaves no partial key envelopes and does not enable encrypted mode.
+
 This is not yet a whole-project E2EE claim. Legacy `context.*`, `agent.*`, and
 file-reference paths remain server-readable for projects without a key, and
 file references still need an encrypted transport. Legacy `prompt.*` and

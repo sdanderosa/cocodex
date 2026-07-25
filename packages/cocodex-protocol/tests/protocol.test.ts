@@ -11,6 +11,7 @@ import {
   PROJECT_CONTEXT_MAX_BYTES,
   projectContextResultFrameSchema,
   projectKeyEnvelopeSchema,
+  projectKeyInitializedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
@@ -144,6 +145,16 @@ describe("CoCodex protocol", () => {
       envelope: contentEnvelope,
     };
     expect(clientFrameSchema.parse(keyShare)).toEqual(keyShare);
+    const initialize = {
+      version: 1 as const,
+      type: "project.key.initialize" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      keyEpoch: 1 as const,
+      envelopes: [keyEnvelope],
+    };
+    expect(clientFrameSchema.parse(initialize)).toEqual(initialize);
+    expect(() => clientFrameSchema.parse({ ...initialize, keyEpoch: 2 })).toThrow();
     expect(clientFrameSchema.parse(contextUpdate)).toEqual(contextUpdate);
     const rotate = {
       version: 1 as const,
@@ -182,6 +193,24 @@ describe("CoCodex protocol", () => {
       projectId,
       envelope: keyEnvelope,
     })).toMatchObject({ type: "project.key.changed", projectId });
+    expect(projectKeyInitializedFrameSchema.parse({
+      version: 1 as const,
+      type: "project.key.initialized" as const,
+      requestId: initialize.requestId,
+      projectId,
+      keyEpoch: 1,
+      envelopes: [keyEnvelope],
+      created: true,
+    })).toMatchObject({ type: "project.key.initialized", projectId, created: true });
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.key.initialized" as const,
+      requestId: initialize.requestId,
+      projectId,
+      keyEpoch: 1,
+      envelopes: [keyEnvelope],
+      created: true,
+    })).toMatchObject({ type: "project.key.initialized", projectId });
     expect(projectKeyRotatedFrameSchema.parse({
       version: 1 as const,
       type: "project.key.rotated" as const,

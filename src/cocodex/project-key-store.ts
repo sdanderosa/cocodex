@@ -215,6 +215,35 @@ export function storeProjectKey(path: string, projectId: string, keyEpoch: numbe
   saveProjectKeyStore(path, writeProjectKeyState({ ...store, projects }, projectId, nextState));
 }
 
+/** Remove one locally staged key after its server transaction was rejected. */
+export function removeProjectKey(path: string, projectId: string, keyEpoch: number): void {
+  validateProjectId(projectId);
+  validateKeyEpoch(keyEpoch);
+  const store = loadProjectKeyStore(path);
+  const epochs = store.projects[projectId];
+  if (!epochs || epochs[String(keyEpoch)] === undefined) return;
+  const nextEpochs = { ...epochs };
+  delete nextEpochs[String(keyEpoch)];
+  const projects = { ...store.projects };
+  const states = { ...(store.states ?? {}) };
+  if (Object.keys(nextEpochs).length === 0) {
+    delete projects[projectId];
+    delete states[projectId];
+  } else {
+    projects[projectId] = nextEpochs;
+    const state = readProjectKeyState(store, projectId);
+    if (state) states[projectId] = {
+      ...state,
+      currentEpoch: Math.max(...Object.keys(nextEpochs).map(Number)),
+    };
+  }
+  saveProjectKeyStore(path, {
+    version: STORE_VERSION,
+    projects,
+    ...(Object.keys(states).length > 0 ? { states } : {}),
+  });
+}
+
 export function loadProjectKey(path: string, projectId: string, keyEpoch?: number): { keyEpoch: number; projectKey: Buffer } | undefined {
   validateProjectId(projectId);
   if (keyEpoch !== undefined) validateKeyEpoch(keyEpoch);

@@ -46,6 +46,7 @@ import {
   getEncryptedProjectContext,
   assertLegacyProjectWriteAllowed,
   getProjectKeyEpoch,
+  initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
   removeProjectMemberAndInvalidateKeys,
   rotateProjectKeyEpoch,
@@ -1030,6 +1031,35 @@ export function startCoCodexServer(
                 projectId: message.projectId,
                 envelope: shared.envelope,
               });
+            }
+            return;
+          }
+          if (message.type === "project.key.initialize") {
+            const initialized = initializeProjectKeyEpoch(
+              db,
+              message.projectId,
+              deviceId,
+              message.requestId,
+              message.envelopes,
+            );
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.key.initialized",
+              requestId,
+              projectId: message.projectId,
+              keyEpoch: initialized.keyEpoch,
+              envelopes: initialized.envelopes,
+              created: initialized.created,
+            }));
+            if (initialized.created) {
+              for (const envelope of initialized.envelopes) {
+                sendToDevice(envelope.recipientDeviceId, {
+                  version: 1,
+                  type: "project.key.changed",
+                  projectId: message.projectId,
+                  envelope,
+                });
+              }
             }
             return;
           }

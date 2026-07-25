@@ -29,7 +29,7 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "./project-encryption";
-import { loadProjectKey, loadProjectKeyForEncryption, loadProjectKeyForRotation, loadProjectKeyState, markProjectKeyRotationRequired, revokeProjectKey, storeProjectKey } from "./project-key-store";
+import { loadProjectKey, loadProjectKeyForEncryption, loadProjectKeyForRotation, loadProjectKeyState, markProjectKeyRotationRequired, removeProjectKey, revokeProjectKey, storeProjectKey } from "./project-key-store";
 
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
@@ -80,6 +80,11 @@ export async function runJsonLineSession(
   let flushChain = Promise.resolve(0);
   let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
+  const pendingProjectKeyInitializations = new Map<string, {
+    projectId: string;
+    keyEpoch: 1;
+    frame: Record<string, unknown>;
+  }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
   const assertLegacyProjectFallbackAllowed = (projectId: string): void => {
@@ -876,6 +881,7 @@ export async function runJsonLineSession(
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
       if (frame.type === "agent.list.result" || frame.type === "agent.task.list.result"
+        || frame.type === "project.key.initialized"
         || frame.type === "project.key.rotation-required"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
@@ -883,6 +889,16 @@ export async function runJsonLineSession(
         catch (error) {
           emitError({ source: "protocol", error: error instanceof Error ? error.message : String(error) });
           return;
+        }
+      }
+      if (frame.type === "error" && typeof frame.requestId === "string") {
+        const pending = pendingProjectKeyInitializations.get(frame.requestId);
+        if (pending) {
+          pendingProjectKeyInitializations.delete(frame.requestId);
+          try { removeProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch); }
+          catch (error) {
+            emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
       if (frame.type === "project.chat.snapshot" || frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
@@ -966,6 +982,28 @@ export async function runJsonLineSession(
         }
       } else if (frame.type === "project.key.changed") {
         openProjectKeyEnvelopeFromServer(frame.envelope);
+      } else if (frame.type === "project.key.initialized") {
+        const pending = pendingProjectKeyInitializations.get(String(frame.requestId));
+        if (pending) {
+          pendingProjectKeyInitializations.delete(String(frame.requestId));
+          if (String(frame.projectId) !== pending.projectId || Number(frame.keyEpoch) !== pending.keyEpoch) {
+            try { removeProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch); }
+            catch (error) {
+              emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+            }
+            emitError({ source: "project-encryption", error: "Project key initialization acknowledgement did not match the request" });
+          } else {
+            emit({
+              source: "control",
+              id: frame.requestId,
+              ok: true,
+              projectId: pending.projectId,
+              keyEpoch: pending.keyEpoch,
+              sharedRecipients: Array.isArray(frame.envelopes) ? frame.envelopes.length : 0,
+              created: frame.created === true,
+            });
+          }
+        }
       } else if (frame.type === "project.key.rotated") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);
@@ -1001,6 +1039,10 @@ export async function runJsonLineSession(
     };
     connected.addEventListener("message", listener);
     const flushedEvents = await flush();
+    for (const pending of pendingProjectKeyInitializations.values()) {
+      try { send(pending.frame); }
+      catch { /* the connection supervisor will retry on its next cycle */ }
+    }
     for (const [projectId, afterSequence] of chatCursors) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
         chatCursors.delete(projectId);
@@ -1165,6 +1207,7 @@ export async function runJsonLineSession(
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
           const projectId = String(command.projectId);
           const keyEpoch = Number(command.keyEpoch ?? 1);
+          if (keyEpoch !== 1) throw new Error("Project key initialization must start at epoch 1");
           if (loadProjectKey(paths.projectKeys, projectId, keyEpoch)) {
             throw new Error(`Project key epoch ${keyEpoch} already exists locally`);
           }
@@ -1172,8 +1215,8 @@ export async function runJsonLineSession(
             throw new Error("Project key initialization requires 1-128 recipients");
           }
           const projectKey = createProjectKey();
-          storeProjectKey(paths.projectKeys, projectId, keyEpoch, projectKey);
-          let shared = 0;
+          const requestId = controlRequestId(command.id);
+          const envelopes = [];
           for (const recipient of command.recipients) {
             if (!recipient || typeof recipient !== "object") throw new Error("Project key recipient is invalid");
             const recipientRecord = recipient as Record<string, unknown>;
@@ -1187,11 +1230,29 @@ export async function runJsonLineSession(
               senderPrivateKeyPem: identity.privateKeyPem,
               senderPublicKeyPem: identity.publicKeyPem,
             });
-            send({ version: 1, type: "project.key.share", requestId: randomUUID(), projectId, envelope });
-            shared += 1;
+            envelopes.push(envelope);
+          }
+          const frame = {
+            version: 1 as const,
+            type: "project.key.initialize" as const,
+            requestId,
+            projectId,
+            keyEpoch: 1 as const,
+            envelopes,
+          } satisfies Record<string, unknown>;
+          // Stage the local key before the atomic server request. If the
+          // server rejects the batch, the error handler removes this staged
+          // key; if the connection drops after commit, the same request is
+          // replayed on reconnect and remains idempotent.
+          storeProjectKey(paths.projectKeys, projectId, keyEpoch, projectKey);
+          pendingProjectKeyInitializations.set(requestId, { projectId, keyEpoch: 1, frame });
+          try { send(frame); }
+          catch (error) {
+            pendingProjectKeyInitializations.delete(requestId);
+            removeProjectKey(paths.projectKeys, projectId, keyEpoch);
+            throw error;
           }
           projectKeySubscriptions.add(projectId);
-          emit({ source: "control", id: command.id, ok: true, projectId, keyEpoch, sharedRecipients: shared });
         } else if (command.type === "project.key.rotate") {
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
           const projectId = String(command.projectId);

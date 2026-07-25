@@ -240,6 +240,14 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("project.key.initialize"),
+    requestId,
+    projectId,
+    keyEpoch: z.literal(1),
+    envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("project.key.rotate"),
     requestId,
     projectId,
@@ -313,6 +321,16 @@ export const projectKeyAcceptedFrameSchema = z.object({
   requestId,
   projectId,
   envelope: projectKeyEnvelopeSchema,
+  created: z.boolean(),
+}).strict();
+
+export const projectKeyInitializedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.key.initialized"),
+  requestId,
+  projectId,
+  keyEpoch: z.literal(1),
+  envelopes: z.array(projectKeyEnvelopeSchema).max(128),
   created: z.boolean(),
 }).strict();
 
@@ -487,6 +505,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   encryptedAgentResultChangedFrameSchema,
   projectKeyResultFrameSchema,
   projectKeyAcceptedFrameSchema,
+  projectKeyInitializedFrameSchema,
   projectKeyChangedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
@@ -505,6 +524,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
 export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
 export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
+export type ProjectKeyInitializedFrame = z.infer<typeof projectKeyInitializedFrameSchema>;
 export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema>;
 export type ProjectKeyRotatedFrame = z.infer<typeof projectKeyRotatedFrameSchema>;
 export type ProjectKeyRotationRequiredFrame = z.infer<typeof projectKeyRotationRequiredFrameSchema>;

@@ -30,6 +30,9 @@ The client-side project encryption module uses maintained `libsodium` through
   nonce, sender device, and canonical sender key;
 - the encrypted content envelope is signed as well as AEAD-authenticated.
 
+Initial key distribution is the atomic all-member batch described in ADR 0020;
+the compatibility single-envelope route is not used by the client initializer.
+
 The server stores only canonical opaque envelope JSON in
 `project_key_envelopes` and `encrypted_project_context`. It validates the
 envelope schema, sender signature, approved-device membership, owner-only key

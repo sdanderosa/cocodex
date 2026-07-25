@@ -62,6 +62,12 @@ export interface ProjectKeyRotationResult extends ProjectKeyEpochRecord {
   created: boolean;
 }
 
+export interface ProjectKeyInitializationResult extends ProjectKeyEpochRecord {
+  keyEpoch: 1;
+  envelopes: ProjectKeyEnvelope[];
+  created: boolean;
+}
+
 function enrolledSigningKey(db: Database, deviceId: string): string {
   const row = db.query(`
     SELECT public_key_pem AS publicKeyPem
@@ -292,6 +298,135 @@ export function shareProjectKeyEnvelope(
       now.toISOString(),
     );
     return { envelope, created: true };
+}).immediate();
+}
+
+/**
+ * Initialize a project key in one transaction.  Initialization is deliberately
+ * stricter than the legacy single-envelope share route: the owner must submit
+ * one signed envelope for every currently approved project member, and the
+ * epoch row is created only if every envelope validates.  This prevents a
+ * client from entering encrypted mode locally while the server has only a
+ * partial recipient set.
+ */
+export function initializeProjectKeyEpoch(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  initializationId: string,
+  values: unknown,
+  now = new Date(),
+): ProjectKeyInitializationResult {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(initializationId)) {
+    throw new Error("Invalid project key initialization ID");
+  }
+  if (!Array.isArray(values) || values.length < 1 || values.length > 128) {
+    throw new Error("Project key initialization requires 1-128 envelopes");
+  }
+  const envelopes = values.map(value => projectKeyEnvelopeSchema.parse(value));
+  if (envelopes.some(envelope => envelope.projectId !== projectId)) {
+    throw new Error("Project key initialization contains an envelope for another project");
+  }
+  if (envelopes.some(envelope => envelope.keyEpoch !== 1)) {
+    throw new Error("Project key initialization envelopes must use epoch 1");
+  }
+  const ownerMembership = requireProjectMembership(db, projectId, ownerDeviceId);
+  if (ownerMembership.role !== "owner") throw new Error("Only a project owner can initialize project keys");
+  const members = approvedProjectMembers(db, projectId);
+  const memberSet = new Set(members);
+  const recipients = new Set<string>();
+  for (const envelope of envelopes) {
+    if (envelope.senderDeviceId !== ownerDeviceId) {
+      throw new Error("Project key initialization envelopes must be signed by the owner");
+    }
+    if (recipients.has(envelope.recipientDeviceId)) {
+      throw new Error("Project key initialization contains duplicate recipients");
+    }
+    recipients.add(envelope.recipientDeviceId);
+    if (!memberSet.has(envelope.recipientDeviceId)) {
+      throw new Error("Project key initialization recipient is not an approved project member");
+    }
+  }
+  if (recipients.size !== memberSet.size || members.some(memberId => !recipients.has(memberId))) {
+    throw new Error("Project key initialization must include every approved project member");
+  }
+  for (const envelope of envelopes) {
+    verifyEnvelopeSender(
+      db,
+      ownerDeviceId,
+      envelope.senderPublicKeyPem,
+      projectKeyEnvelopeSigningTranscript(envelope),
+      envelope.signature,
+    );
+  }
+  const serialized = envelopes.map(envelope => envelopeJson(envelope));
+  const initRotationId = `init:${initializationId}`;
+  return db.transaction(() => {
+    const state = readProjectKeyEpoch(db, projectId);
+    if (state) {
+      if (state.currentEpoch !== 1 || state.rotationRequired) {
+        throw new Error("Project key initialization is only allowed before encrypted mode");
+      }
+      if (state.lastRotationId !== initRotationId) {
+        throw new Error("Project encryption key has already been initialized");
+      }
+      const priorRows = db.query(`
+        SELECT envelope_json AS envelopeJson
+        FROM project_key_envelopes
+        WHERE project_id = ? AND key_epoch = 1
+        ORDER BY recipient_device_id ASC
+      `).all(projectId) as KeyEnvelopeRow[];
+      const prior = priorRows.map(row => parseKeyEnvelope(row.envelopeJson));
+      if (!sameEnvelopeSet(prior, envelopes)) throw new Error("Project key initialization replay conflict");
+      return {
+        projectId,
+        currentEpoch: state.currentEpoch,
+        lastRotationId: state.lastRotationId,
+        updatedAt: state.updatedAt || null,
+        rotationRequired: state.rotationRequired,
+        keyEpoch: 1 as const,
+        envelopes: prior,
+        created: false,
+      };
+    }
+    const existing = db.query(`
+      SELECT 1 AS present FROM project_key_envelopes WHERE project_id = ? LIMIT 1
+    `).get(projectId) as { present: number } | null;
+    if (existing) throw new Error("Project key envelopes already exist without an atomic initialization record");
+    const timestamp = now.toISOString();
+    for (let index = 0; index < envelopes.length; index += 1) {
+      const envelope = envelopes[index]!;
+      db.query(`
+        INSERT INTO project_key_envelopes (
+          project_id, key_epoch, recipient_device_id, sender_device_id,
+          envelope_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        projectId,
+        1,
+        envelope.recipientDeviceId,
+        ownerDeviceId,
+        serialized[index],
+        timestamp,
+        timestamp,
+      );
+    }
+    db.query(`
+      INSERT INTO project_key_epochs (
+        project_id, current_epoch, last_rotation_id, updated_by_device_id,
+        created_at, updated_at, rotation_required
+      ) VALUES (?, 1, ?, ?, ?, ?, 0)
+    `).run(projectId, initRotationId, ownerDeviceId, timestamp, timestamp);
+    return {
+      projectId,
+      currentEpoch: 1,
+      lastRotationId: initRotationId,
+      updatedAt: timestamp,
+      rotationRequired: false,
+      keyEpoch: 1 as const,
+      envelopes,
+      created: true,
+    };
   }).immediate();
 }
 
