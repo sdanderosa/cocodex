@@ -21,6 +21,9 @@ export interface EncryptedChatEvent {
   envelope: ProjectContentEnvelope;
   clientCreatedAt: string;
   acceptedAt: string;
+  taskId?: string;
+  final?: boolean;
+  status?: "running" | "completed" | "failed";
 }
 
 export interface AppendEncryptedChatInput {
@@ -48,6 +51,9 @@ interface EventRow {
   envelopeJson: string;
   clientCreatedAt: string;
   acceptedAt: string;
+  taskId: string | null;
+  final: number;
+  status: "chat" | "running" | "completed" | "failed";
 }
 
 function envelopeJson(value: ProjectContentEnvelope): string {
@@ -115,6 +121,10 @@ function verifyEnvelopeSender(
 }
 
 function eventFromRow(row: EventRow): EncryptedChatEvent {
+  if (row.taskId && row.status === "chat") throw new Error("Stored encrypted agent result metadata is invalid");
+  const taskMetadata: Pick<EncryptedChatEvent, "taskId" | "final" | "status"> = row.taskId
+    ? { taskId: row.taskId, final: Boolean(row.final), status: row.status as "running" | "completed" | "failed" }
+    : {};
   return {
     sequence: row.sequence,
     projectId: row.projectId,
@@ -123,6 +133,7 @@ function eventFromRow(row: EventRow): EncryptedChatEvent {
     envelope: parseEnvelope(row.envelopeJson),
     clientCreatedAt: row.clientCreatedAt,
     acceptedAt: row.acceptedAt,
+    ...taskMetadata,
   };
 }
 
@@ -151,7 +162,8 @@ export function appendEncryptedChatEventResult(
   const existing = db.query(`
     SELECT sequence, project_id AS projectId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
-      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt
+      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
+      task_id AS taskId, final, status
     FROM project_chat_events
     WHERE event_id = ?
   `).get(input.eventId) as EventRow | null;
@@ -180,7 +192,8 @@ export function appendEncryptedChatEventResult(
   const row = db.query(`
     SELECT sequence, project_id AS projectId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
-      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt
+      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
+      task_id AS taskId, final, status
     FROM project_chat_events WHERE sequence = ?
   `).get(Number(result.lastInsertRowid)) as EventRow;
   return { event: eventFromRow(row), created: true };
@@ -198,7 +211,8 @@ export function encryptedChatEventsAfter(
   const rows = db.query(`
     SELECT sequence, project_id AS projectId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
-      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt
+      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
+      task_id AS taskId, final, status
     FROM project_chat_events
     WHERE project_id = ? AND sequence > ?
     ORDER BY sequence ASC
@@ -206,4 +220,3 @@ export function encryptedChatEventsAfter(
   `).all(projectId, afterSequence, boundedLimit) as EventRow[];
   return rows.map(eventFromRow);
 }
-

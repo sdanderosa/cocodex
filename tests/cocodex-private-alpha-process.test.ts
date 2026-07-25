@@ -127,6 +127,24 @@ async function waitFor(
   throw new Error(`Timed out. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))}`);
 }
 
+async function waitForAfter(
+  resident: Resident,
+  checkpoint: number,
+  predicate: (line: Record<string, any>) => boolean,
+  timeoutMs = 30_000,
+): Promise<Record<string, any>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = resident.lines.slice(checkpoint).find(predicate);
+    if (found) return found;
+    if (resident.process.exitCode !== null) {
+      throw new Error(`Resident exited ${resident.process.exitCode}: stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-12))}`);
+    }
+    await Bun.sleep(25);
+  }
+  throw new Error(`Timed out after checkpoint. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))}`);
+}
+
 async function buildArtifacts(serverExe: string, clientExe: string, fixtureExe: string): Promise<void> {
   await run(bun, [
     "build", "./apps/cocodex-server/src/cli.ts", "--compile", "--outfile", serverExe,
@@ -185,6 +203,11 @@ describe("three-process CoCodex private alpha", () => {
     const stephenKeyCertificate = await run(clientExe, [
       "identity-card", "--state-root", stephenRoot,
     ]);
+    const kaiKeyCertificate = await run(clientExe, [
+      "identity-card", "--state-root", kaiRoot,
+    ]);
+    const stephenDeviceCard = JSON.parse(stephenKeyCertificate) as { projectWrapPublicKeyPem: string };
+    const kaiDeviceCard = JSON.parse(kaiKeyCertificate) as { projectWrapPublicKeyPem: string };
 
     const project = JSON.parse(await run(serverExe, [
       "project-create", "--name", "Nocturne Launcher", "--owner-device", stephenDevice.id,
@@ -326,6 +349,73 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("Kai agent completed");
     expect(existsSync(join(kaiWorkspace, "kai-account-execution.json"))).toBeTrue();
 
+    const keyInitialize = randomUUID();
+    stephen.send({
+      id: keyInitialize,
+      type: "project.key.initialize",
+      projectId: project.id,
+      keyEpoch: 1,
+      recipients: [
+        { deviceId: stephenDevice.id, projectWrapPublicKeyPem: stephenDeviceCard.projectWrapPublicKeyPem },
+        { deviceId: kaiDevice.id, projectWrapPublicKeyPem: kaiDeviceCard.projectWrapPublicKeyPem },
+      ],
+    });
+    await waitFor(stephen, line => line.source === "control" && line.id === keyInitialize
+      && line.ok === true && line.sharedRecipients === 2);
+    const keyGet = randomUUID();
+    kai.send({ id: keyGet, type: "project.key.get", projectId: project.id });
+    await waitFor(kai, line => line.source === "control" && line.id === keyGet && line.ok === true);
+    await waitFor(kai, line => line.source === "project-encryption"
+      && line.state === "key-available" && line.projectId === project.id);
+
+    // Re-subscribe after project-key enrollment so both clients receive the
+    // encrypted chat stream used for encrypted agent results.
+    const encryptedChatSubS = randomUUID();
+    const encryptedChatSubK = randomUUID();
+    stephen.send({ id: encryptedChatSubS, type: "chat.subscribe", projectId: project.id });
+    kai.send({ id: encryptedChatSubK, type: "chat.subscribe", projectId: project.id });
+    await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === encryptedChatSubS),
+      waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === encryptedChatSubK),
+    ]);
+
+    const encryptedStephenPrompt = "encrypted Stephen prompt never stored in server plaintext";
+    const encryptedStephenRequest = randomUUID();
+    kai.send({
+      id: encryptedStephenRequest,
+      type: "agent.request",
+      projectId: project.id,
+      agentId: "stephen-agent",
+      prompt: encryptedStephenPrompt,
+    });
+    const encryptedStephenControl = await waitFor(kai, line => line.source === "control"
+      && line.id === encryptedStephenRequest && line.ok === true && line.encrypted === true);
+    const encryptedStephenApproval = await waitFor(stephen, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === encryptedStephenControl.taskId);
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: encryptedStephenApproval.task.id, approved: true });
+    await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.taskId === encryptedStephenControl.taskId
+      && line.frame.final === true && line.frame.event?.content?.includes(encryptedStephenPrompt));
+    expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).toContain(encryptedStephenPrompt);
+
+    const encryptedKaiPrompt = "encrypted Kai prompt never stored in server plaintext";
+    const encryptedKaiRequest = randomUUID();
+    stephen.send({
+      id: encryptedKaiRequest,
+      type: "agent.request",
+      projectId: project.id,
+      agentId: "kai-agent",
+      prompt: encryptedKaiPrompt,
+    });
+    const encryptedKaiControl = await waitFor(stephen, line => line.source === "control"
+      && line.id === encryptedKaiRequest && line.ok === true && line.encrypted === true);
+    const encryptedKaiApproval = await waitFor(kai, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === encryptedKaiControl.taskId);
+    kai.send({ id: randomUUID(), type: "agent.approval", taskId: encryptedKaiApproval.task.id, approved: true });
+    await waitFor(stephen, line => line.frame?.type === "agent.result" && line.frame.taskId === encryptedKaiControl.taskId
+      && line.frame.final === true && line.frame.event?.content?.includes(encryptedKaiPrompt));
+    expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).toContain(encryptedKaiPrompt);
+    traceCheckpoint("encrypted agents completed");
+
     const usageGetS = randomUUID();
     const usageGetK = randomUUID();
     stephen.send({ id: usageGetS, type: "usage.get", projectId: project.id });
@@ -337,8 +427,8 @@ describe("three-process CoCodex private alpha", () => {
     const usageReportsS = usageS.frame.reports as any[];
     const usageReportsK = usageK.frame.reports as any[];
     expect(usageReportsS).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 1 }) }),
-      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
     expect(usageReportsK).toEqual(expect.arrayContaining([
       expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ inputTokens: expect.any(Number) }) }),
@@ -384,13 +474,25 @@ describe("three-process CoCodex private alpha", () => {
     expect(stephen.process.pid).toBe(stephenPid);
     expect(kai.process.pid).toBe(kaiPid);
     traceCheckpoint("clients reconnected");
+    const recoveryCheckpointS = stephen.lines.length;
+    const recoveryCheckpointK = kai.lines.length;
+    const recoveredChatSubS = randomUUID();
+    const recoveredChatSubK = randomUUID();
+    stephen.send({ id: recoveredChatSubS, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
+    kai.send({ id: recoveredChatSubK, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
     await Promise.all([
-      waitFor(stephen, line => (line.frame?.type === "chat.snapshot"
-        && line.frame.events?.some((item: any) => item.content === "Kai offline queued"))
-        || (line.frame?.type === "chat.event" && line.frame.event?.content === "Kai offline queued")),
-      waitFor(kai, line => (line.frame?.type === "chat.snapshot"
-        && line.frame.events?.some((item: any) => item.content === "Stephen offline queued"))
-        || (line.frame?.type === "chat.event" && line.frame.event?.content === "Stephen offline queued")),
+      waitFor(stephen, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === recoveredChatSubS
+        && line.frame.events?.some((item: any) => item.content === "Kai offline queued")),
+      waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === recoveredChatSubK
+        && line.frame.events?.some((item: any) => item.content === "Stephen offline queued")),
+    ]);
+    await Promise.all([
+      waitForAfter(stephen, recoveryCheckpointS, line => line.frame?.type === "agent.result"
+        && line.frame.taskId === encryptedKaiControl.taskId && line.frame.final === true
+        && line.frame.event?.content?.includes(encryptedKaiPrompt)),
+      waitForAfter(kai, recoveryCheckpointK, line => line.frame?.type === "agent.result"
+        && line.frame.taskId === encryptedStephenControl.taskId && line.frame.final === true
+        && line.frame.event?.content?.includes(encryptedStephenPrompt)),
     ]);
 
     const recoveredContextRequest = randomUUID();
@@ -411,8 +513,8 @@ describe("three-process CoCodex private alpha", () => {
       line => line.frame?.type === "usage.result" && line.frame.requestId === recoveredUsageRequest,
     );
     expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 1 }) }),
-      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
 
     traceCheckpoint("recovered snapshots received");
@@ -428,6 +530,20 @@ describe("three-process CoCodex private alpha", () => {
 
     const db = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
     const ciphertext = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };
+    const encryptedTasks = db.query(`
+      SELECT id, prompt, prompt_envelope_json AS promptEnvelopeJson
+      FROM agent_tasks WHERE id IN (?, ?)
+      ORDER BY id
+    `).all(encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+      id: string; prompt: string; promptEnvelopeJson: string;
+    }>;
+    const encryptedResults = db.query(`
+      SELECT task_id AS taskId, envelope_json AS envelopeJson
+      FROM project_chat_events WHERE task_id IN (?, ?)
+      ORDER BY task_id, sequence
+    `).all(encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+      taskId: string; envelopeJson: string;
+    }>;
     const duplicateCounts = db.query(`
       SELECT COUNT(*) AS total, COUNT(DISTINCT event_id) AS uniqueIds FROM chat_events
     `).get() as { total: number; uniqueIds: number };
@@ -437,5 +553,18 @@ describe("three-process CoCodex private alpha", () => {
     expect(duplicateCounts.total).toBe(duplicateCounts.uniqueIds);
     expect(readFileSync(join(stephenWorkspace, "stephen-account-execution.json"), "utf8")).not.toContain(privateCanary);
     expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).not.toContain(privateCanary);
+    expect(encryptedTasks).toHaveLength(2);
+    for (const task of encryptedTasks) {
+      expect(task.prompt).toBe("[encrypted]");
+      expect(task.promptEnvelopeJson).not.toContain(encryptedStephenPrompt);
+      expect(task.promptEnvelopeJson).not.toContain(encryptedKaiPrompt);
+      expect(task.promptEnvelopeJson).toContain("ciphertext");
+    }
+    expect(encryptedResults.length).toBeGreaterThanOrEqual(2);
+    for (const result of encryptedResults) {
+      expect(result.envelopeJson).not.toContain(encryptedStephenPrompt);
+      expect(result.envelopeJson).not.toContain(encryptedKaiPrompt);
+      expect(result.envelopeJson).toContain("ciphertext");
+    }
   }, 120_000);
 });

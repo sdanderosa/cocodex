@@ -46,7 +46,7 @@ local key ring unusable for new writes. Replayed rotations are idempotent and
 stale expected epochs are rejected.
 
 The same envelope format now backs the `project.chat.*`, `project.prompt.*`,
-and `project.artifact.*` paths. The server assigns an authoritative sequence
+`project.artifact.*`, and keyed agent task/result paths. The server assigns an authoritative sequence
 where the record type needs one, and persists only opaque envelopes in
 `project_chat_events`, `project_prompt_updates`, and `project_artifacts`. For
 artifacts, routing metadata is limited to the project, optional task ID,
@@ -55,6 +55,12 @@ are inside the envelope. The client decrypts `{content}`, `{update}`, or the
 artifact record locally and emits the existing UI shape. The server
 deliberately does not apply encrypted Yjs updates because doing so would
 require access to the prompt plaintext.
+
+Keyed agent prompts and streamed results use the `task` and `agent-response`
+record types described in ADR 0016. The server stores `[encrypted]` task
+placeholders and opaque result envelopes; the host client performs the only
+decryption and local Codex execution. Legacy `agent.request`/`agent.result`
+remain available for projects without a key.
 
 Legacy `context.get`/`context.update` remain available for the existing
 private-alpha fixtures. They are explicitly server-readable and must not be
@@ -74,9 +80,10 @@ described as end-to-end encrypted. The encrypted path uses distinct
 ## Consequences and remaining work
 
 This slice proves complete encrypted-context, encrypted-chat, encrypted
-shared-prompt, and encrypted-artifact flows and keeps the server blind to
-those payloads. It does not yet encrypt tasks, agent prompts/results, or file
-references. The legacy plaintext chat/context/prompt/artifact compatibility
+shared-prompt, encrypted-artifact, and keyed-agent prompt/result flows and
+keeps the server blind to those payloads. File references and the remaining
+multi-device/message lifecycle still require separate work. The legacy
+plaintext chat/context/prompt/artifact/agent compatibility
 routes remain for old fixtures and must be removed only after every record
 type has an end-to-end migration.
 
@@ -94,3 +101,6 @@ type has an end-to-end migration.
   message, Yjs prompt update, Final Goal/context update, and artifact, proves
   the stored rows omit plaintext, and verifies that the other client decrypts
   all four locally after a server restart.
+- `tests/cocodex-private-alpha-process.test.ts` and ADR 0016 cover reciprocal
+  encrypted agent execution, host-local Codex use, SQLite canaries, encrypted
+  cancellation, and post-restart result recovery.

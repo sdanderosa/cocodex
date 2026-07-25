@@ -11,7 +11,8 @@
   private-message hardening `63b552a6`, and PCP direct-hosting fallback
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
   lifecycle timeout hardening `0f09345f`, and encrypted project artifacts
-  `ba32d995`.
+  `ba32d995`. The keyed encrypted-agent prompt/result slice is recorded in
+  the current follow-up implementation commit.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -25,7 +26,7 @@ local execution, and private ciphertext across restart`
 Command:
 
 ```powershell
-.\node_modules\bun\bin\bun.exe test `
+.\node_modules\.bin\bun.exe test `
   .\tests\cocodex-private-alpha-process.test.ts --timeout 60000
 ```
 
@@ -36,7 +37,7 @@ Relevant output:
 ```text
 1 pass
 0 fail
-18 expect() calls
+45 expect() calls
 Ran 1 test across 1 file.
 ```
 
@@ -54,6 +55,9 @@ The exercised path includes:
 - identical project discovery and authoritative chronological chat;
 - signed reciprocal agent routing through each host's production local
   adapter;
+- keyed reciprocal agent routing whose prompts and streamed results stay
+  opaque in SQLite, including encrypted cancellation and post-restart result
+  recovery;
 - streamed result events and local usage callbacks;
 - explicitly supplied, Ed25519-signed recipient key certificates,
   signed/sealed private messages, and protected fingerprint verification;
@@ -94,6 +98,8 @@ Files:
 - `src/cocodex/agent-journal.ts`
 - `src/cocodex/outbox.ts`
 - `apps/cocodex-server/src/server.ts`
+- `apps/cocodex-server/src/encrypted-agent-routing.ts`
+- `packages/cocodex-protocol/src/project-agent.ts`
 
 The deterministic runtime fixture is evidence for process isolation,
 production adapter invocation, routing, streaming, local workspace
@@ -117,10 +123,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-50 pass
+72 pass
 0 fail
-388 expect() calls
-Ran 50 tests across 22 files.
+663 expect() calls
+Ran 72 tests across 26 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
@@ -439,8 +445,42 @@ The complete CoCodex command was rerun after this change:
 .\node_modules\.bin\bun.exe run test:cocodex
 ```
 
-Exit status: `0`; relevant output: `70 pass`, `0 fail`, `621 expect() calls`
+Exit status: `0`; relevant output: `72 pass`, `0 fail`, `663 expect() calls`
 across 26 files.
+
+## Encrypted agent prompts and streamed results
+
+Implementation decision: ADR 0016. The keyed agent transport uses the existing
+signed project-content envelope: `task` for the requester prompt and
+`agent-response` for each host result. The server stores `[encrypted]` and
+opaque envelopes only; the host client decrypts, authorizes, executes locally,
+and journals result replay. Encrypted cancellation is routed as control and the
+host emits the encrypted terminal failure event.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `22 pass`, `0 fail` for the focused protocol,
+routing, migration, bridge, and three-process files (the three-process test
+alone reports `1 pass`, `0 fail`, `45 expect() calls`). The process harness
+builds and launches one real server plus isolated Stephen and Kai clients,
+initializes a project key, executes reciprocal tasks through the production
+Codex adapter, checks prompt/result canaries are absent from SQLite, exercises
+encrypted cancellation in the bridge suite, restarts the server, and recovers
+the encrypted result events by cursor.
+
+Files: `packages/cocodex-protocol/src/project-agent.ts`,
+`apps/cocodex-server/src/encrypted-agent-routing.ts`,
+`apps/cocodex-server/src/encrypted-chat.ts`, `src/cocodex/agent-bridge.ts`,
+`src/cocodex/session.ts`, and `tests/cocodex-private-alpha-process.test.ts`.
 
 ## Official Codex runtime smoke
 
@@ -489,11 +529,13 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
-- whole-project encryption is not implemented yet: tasks, agent results, and
-  file references remain server-readable; Final Goal/context, shared chat,
-  shared prompt updates, and keyed artifacts are encrypted only through their
-  explicit new frames. Legacy plaintext compatibility routes remain. Automatic
-  post-removal rotation orchestration and revocation UI are still incomplete.
+- whole-project encryption is not implemented yet: keyed task prompts and
+  agent results now use explicit encrypted frames, but file references remain
+  server-readable and legacy plaintext compatibility routes remain for
+  projects without a key. Final Goal/context, shared chat, shared prompt
+  updates, keyed artifacts, and keyed agent events are encrypted only through
+  their explicit new frames. Automatic post-removal rotation orchestration and
+  revocation UI are still incomplete.
 - robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt

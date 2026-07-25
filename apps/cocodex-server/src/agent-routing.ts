@@ -172,7 +172,7 @@ export function expireQueuedAgentTasks(db: Database, now = new Date()): Array<{
   event: ChatEvent;
 }> {
   const expired = db.query(`SELECT id, target_device_id AS targetDeviceId
-    FROM agent_tasks WHERE status = 'queued' AND expires_at <= ?
+    FROM agent_tasks WHERE status = 'queued' AND prompt_envelope_json IS NULL AND expires_at <= ?
     ORDER BY accepted_at, id`).all(now.toISOString()) as Array<{ id: string; targetDeviceId: string }>;
   return expired.map(item => {
     const result = appendAgentResult(
@@ -225,7 +225,7 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
     t.status, t.accepted_at AS acceptedAt, t.dependencies_json AS dependenciesJson
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
-    WHERE t.target_device_id = ?
+    WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NULL
       AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
   return rows.map(row => {

@@ -117,3 +117,16 @@ export {
   type EncryptedArtifactPublishedFrame,
   type EncryptedArtifactListResultFrame,
 } from "./project-artifact";
+export {
+  encryptedAgentRequestFrameSchema,
+  encryptedAgentResultSendFrameSchema,
+  encryptedAgentResultChangedFrameSchema,
+  encryptedAgentTaskSchema,
+  encryptedAgentTaskFrameSchema,
+  encryptedAgentResultEventSchema,
+  type EncryptedAgentRequestFrame,
+  type EncryptedAgentResultFrame,
+  type EncryptedAgentTask,
+  type EncryptedAgentTaskFrame,
+  type EncryptedAgentResultEvent,
+} from "./project-agent";

@@ -298,4 +298,13 @@ CREATE TABLE project_artifacts (
 CREATE INDEX project_artifacts_project_created
   ON project_artifacts(project_id, created_at, id);`,
   },
+  {
+    version: 16,
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN prompt_envelope_json TEXT;
+ALTER TABLE project_chat_events ADD COLUMN task_id TEXT;
+ALTER TABLE project_chat_events ADD COLUMN final INTEGER NOT NULL DEFAULT 0 CHECK (final IN (0, 1));
+ALTER TABLE project_chat_events ADD COLUMN status TEXT NOT NULL DEFAULT 'chat';
+CREATE INDEX project_chat_events_task ON project_chat_events(task_id, sequence);`,
+  },
 ];

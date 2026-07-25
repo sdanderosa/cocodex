@@ -105,6 +105,10 @@ per-device sequence numbers.
 - Store only private-message ciphertext and routing metadata on the server.
 - Never expose private-message plaintext to an agent without an explicit,
   signed share action.
+- When a project key exists, seal agent prompts and streamed results with the
+  project-content envelope; the server routes `[encrypted]` and routing
+  metadata while the host client decrypts and executes locally. Keep the
+  no-key plaintext route only as compatibility behavior.
 
 ### Reconnection
 
@@ -142,8 +146,10 @@ roots, ports, identities, databases, account fixtures, and project paths:
 
 Tests exercise the actual TLS/WSS transport, invitation consumption, approval,
 reconnection, authoritative ordering, bidirectional remote-agent routing,
-client-local execution, streamed results, encrypted private messages, server
-restart, durable offline queues, and local OpenCodex operation while offline.
+client-local execution, keyed encrypted prompts/results, streamed results,
+encrypted private messages, server restart, durable offline queues, and local
+OpenCodex operation while offline. SQLite canary checks prove that keyed task
+prompts and agent results do not cross the server boundary as plaintext.
 
 Every security-sensitive negative path must prove that the local execution
 adapter was not invoked and authoritative state did not advance.

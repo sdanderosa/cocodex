@@ -109,9 +109,19 @@ artifact publishes are durable in the protected outbox and lists are
 automatically reissued after reconnect. Legacy `artifact.*` remains for
 projects without a key.
 
-This is still not a claim that every project record is encrypted yet. Task
-prompts, agent results, and file references remain on the explicitly documented
-follow-up path.
+When a project key is available, `agent.request` automatically seals the task
+prompt as a `project.agent.request` envelope. The destination client verifies
+the server dispatch proof, decrypts the prompt locally, and passes it to the
+host's normal Codex adapter. Every streamed result is sealed by the host as an
+`agent-response` envelope, journaled for reconnect replay, and exposed to the
+UI only after local decryption. The server stores `[encrypted]` plus routing
+metadata and cannot fabricate a host result during encrypted cancellation.
+Projects without a key retain the legacy `agent.*` route. Private-message
+ciphertext and file references are never added to agent context implicitly.
+
+This is still not a claim that every project record is encrypted yet. File
+references and the full multi-device/forward-secret messaging lifecycle remain
+on the explicitly documented follow-up path.
 
 ## Usage sharing
 

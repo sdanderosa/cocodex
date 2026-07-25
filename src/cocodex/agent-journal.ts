@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { projectContentEnvelopeSchema, type ProjectContentEnvelope } from "@cocodex/protocol";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 
 const resultSchema = z.object({
@@ -12,8 +13,9 @@ const resultSchema = z.object({
   content: z.string().min(1).max(32_768),
   final: z.boolean(),
   status: z.enum(["running", "completed", "failed"]),
+  projectEnvelope: projectContentEnvelopeSchema.optional(),
 }).strict();
-export type DurableAgentResult = z.infer<typeof resultSchema>;
+export type DurableAgentResult = z.infer<typeof resultSchema> & { projectEnvelope?: ProjectContentEnvelope };
 
 const taskRecordSchema = z.object({
   taskId: z.uuid(),

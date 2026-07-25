@@ -15,6 +15,9 @@ export const encryptedChatEventSchema = z.object({
   envelope: projectContentEnvelopeSchema,
   clientCreatedAt: z.iso.datetime(),
   acceptedAt: z.iso.datetime(),
+  taskId: z.uuid().optional(),
+  final: z.boolean().optional(),
+  status: z.enum(["running", "completed", "failed"]).optional(),
 }).strict();
 export type EncryptedChatEvent = z.infer<typeof encryptedChatEventSchema>;
 
@@ -63,4 +66,3 @@ export type EncryptedChatSendFrame = z.infer<typeof encryptedChatSendFrameSchema
 export type EncryptedChatSnapshotFrame = z.infer<typeof encryptedChatSnapshotFrameSchema>;
 export type EncryptedChatAcceptedFrame = z.infer<typeof encryptedChatAcceptedFrameSchema>;
 export type EncryptedChatEventFrame = z.infer<typeof encryptedChatEventFrameSchema>;
-

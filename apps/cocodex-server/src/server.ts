@@ -9,6 +9,13 @@ import {
   websocketAuthTranscript,
 } from "@cocodex/protocol";
 import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, pendingAgentTasks } from "./agent-routing";
+import {
+  appendEncryptedAgentResult,
+  cancelEncryptedAgentTask,
+  createEncryptedAgentTask,
+  isEncryptedAgentTask,
+  pendingEncryptedAgentTasks,
+} from "./encrypted-agent-routing";
 import { verifyAdminToken, type ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
@@ -502,6 +509,9 @@ export function startCoCodexServer(
             for (const task of pendingAgentTasks(db, deviceId)) {
               socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
             }
+            for (const task of pendingEncryptedAgentTasks(db, deviceId)) {
+              socket.send(JSON.stringify({ version: 1, type: "project.agent.task", task }));
+            }
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.ready.accepted",
@@ -649,6 +659,22 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "agent.cancel") {
+            if (isEncryptedAgentTask(db, message.taskId)) {
+              const cancelled = cancelEncryptedAgentTask(db, deviceId, message.taskId);
+              sendToDevice(cancelled.task.targetDeviceId, {
+                version: 1,
+                type: "agent.cancel",
+                taskId: cancelled.task.id,
+                reason: message.reason,
+              });
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "agent.cancelled",
+                requestId,
+                taskId: cancelled.task.id,
+              }));
+              return;
+            }
             const cancelled = cancelAgentTask(db, deviceId, message.taskId, message.reason);
             if (cancelled.created) {
               sendToDevice(cancelled.task.targetDeviceId, {
@@ -981,6 +1007,24 @@ export function startCoCodexServer(
             }));
             return;
           }
+          if (message.type === "project.agent.request") {
+            const { task, created } = createEncryptedAgentTask(db, identity, {
+              id: message.taskId,
+              projectId: message.projectId,
+              requesterDeviceId: deviceId,
+              agentId: message.agentId,
+              nonce: message.nonce,
+              issuedAt: message.issuedAt,
+              expiresAt: message.expiresAt,
+              dependencies: message.dependencies,
+              envelope: message.envelope,
+            });
+            if (created && pendingEncryptedAgentTasks(db, task.targetDeviceId).some(ready => ready.id === task.id)) {
+              sendToDevice(task.targetDeviceId, { version: 1, type: "project.agent.task", task }, true);
+            }
+            socket.send(JSON.stringify({ version: 1, type: "project.agent.accepted", requestId, task }));
+            return;
+          }
           if (message.type === "agent.result") {
             const result = appendAgentResult(
               db,
@@ -1009,6 +1053,39 @@ export function startCoCodexServer(
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.result.accepted",
+              requestId,
+              taskId: result.task.id,
+              sequence: result.event.sequence,
+            }));
+            return;
+          }
+          if (message.type === "project.agent.result") {
+            const result = appendEncryptedAgentResult(db, {
+              taskId: message.taskId,
+              eventId: message.eventId,
+              targetDeviceId: deviceId,
+              envelope: message.envelope,
+              final: message.final,
+              status: message.status,
+            });
+            if (result.created) {
+              sendToEncryptedChat(result.task.projectId, {
+                version: 1,
+                type: "project.agent.result",
+                taskId: result.task.id,
+                final: message.final,
+                status: message.status,
+                event: result.event,
+              });
+              if (message.final) {
+                for (const ready of pendingEncryptedAgentTasks(db, result.task.targetDeviceId)) {
+                  sendToDevice(ready.targetDeviceId, { version: 1, type: "project.agent.task", task: ready }, true);
+                }
+              }
+            }
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.agent.result.accepted",
               requestId,
               taskId: result.task.id,
               sequence: result.event.sequence,

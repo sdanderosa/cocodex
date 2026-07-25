@@ -342,6 +342,113 @@ describe("CoCodex protocol", () => {
     })).toMatchObject({ type: "project.artifact.list.result", artifacts: [artifact] });
     expect(() => clientFrameSchema.parse({ ...publish, envelope: { ...envelope, extra: true } })).toThrow();
   });
+  test("accepts encrypted agent dispatch and result frames without exposing plaintext", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const projectId = crypto.randomUUID();
+    const requesterDeviceId = crypto.randomUUID();
+    const targetDeviceId = crypto.randomUUID();
+    const taskId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const envelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "task" as const,
+      recordId: taskId,
+      nonce: Buffer.alloc(24, 13).toString("base64url"),
+      ciphertext: Buffer.alloc(96, 14).toString("base64url"),
+      senderDeviceId: requesterDeviceId,
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 15).toString("base64url"),
+    };
+    const request = {
+      version: 1 as const,
+      type: "project.agent.request" as const,
+      requestId: crypto.randomUUID(),
+      taskId,
+      projectId,
+      agentId: "kai-agent",
+      nonce: "N".repeat(43),
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      expiresAt: "2030-01-01T00:05:00.000Z",
+      dependencies: [],
+      envelope,
+    };
+    expect(clientFrameSchema.parse(request)).toEqual(request);
+    expect(() => clientFrameSchema.parse({ ...request, prompt: "must stay encrypted" })).toThrow();
+
+    const task = {
+      id: taskId,
+      projectId,
+      requesterDeviceId,
+      targetDeviceId,
+      agentId: request.agentId,
+      prompt: "[encrypted]" as const,
+      promptEnvelope: envelope,
+      nonce: request.nonce,
+      issuedAt: request.issuedAt,
+      expiresAt: request.expiresAt,
+      dependencies: [],
+      requesterSignature: "R".repeat(64),
+      requesterPublicKeyPem: signing.publicKey,
+      serverSignature: "S".repeat(64),
+      status: "queued" as const,
+      acceptedAt: request.issuedAt,
+    };
+    expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.agent.task" as const, task }))
+      .toMatchObject({ type: "project.agent.task", task: { prompt: "[encrypted]", promptEnvelope: envelope } });
+
+    const resultEnvelope = {
+      ...envelope,
+      recordType: "agent-response" as const,
+      recordId: eventId,
+      nonce: Buffer.alloc(24, 16).toString("base64url"),
+      ciphertext: Buffer.alloc(64, 17).toString("base64url"),
+      senderDeviceId: targetDeviceId,
+    };
+    const result = {
+      version: 1 as const,
+      type: "project.agent.result" as const,
+      requestId: crypto.randomUUID(),
+      taskId,
+      eventId,
+      envelope: resultEnvelope,
+      final: true,
+      status: "completed" as const,
+    };
+    expect(clientFrameSchema.parse(result)).toEqual(result);
+    const event = {
+      sequence: 7,
+      projectId,
+      taskId,
+      eventId,
+      senderDeviceId: targetDeviceId,
+      envelope: resultEnvelope,
+      final: true,
+      status: "completed" as const,
+      clientCreatedAt: "2030-01-01T00:05:01.000Z",
+      acceptedAt: "2030-01-01T00:05:02.000Z",
+    };
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.agent.result" as const,
+      taskId,
+      final: true,
+      status: "completed" as const,
+      event,
+    })).toMatchObject({ type: "project.agent.result", event });
+    expect(() => projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.agent.result" as const,
+      taskId,
+      final: true,
+      status: "completed" as const,
+      event: { ...event, content: "plaintext must not be present" },
+    })).toThrow();
+  });
   test("bounds presence cursor and caret frames", () => {
     const frame = {
       version: 1 as const,

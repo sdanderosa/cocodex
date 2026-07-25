@@ -6,6 +6,7 @@ import {
   publicKeyFingerprint,
   type Artifact,
   type AgentTask,
+  type EncryptedAgentTask,
   type ChatEvent,
 } from "@cocodex/protocol";
 import { existsSync } from "node:fs";
@@ -58,12 +59,14 @@ export async function runJsonLineSession(
   const connection = loadClientConnection(paths);
   const identity = loadOrCreateClientIdentity(paths);
   const controller = new AbortController();
+  const chatSubscriptions = new Set<string>();
   const chatCursors = new Map<string, number>();
   const encryptedChatCursors = new Map<string, number>();
   const promptSubscriptions = new Set<string>();
   const encryptedPromptCursors = new Map<string, number>();
   const encryptedPromptSubscriptions = new Set<string>();
   const encryptedArtifactSubscriptions = new Set<string>();
+  const encryptedTaskProjects = new Map<string, string>();
   const contextSubscriptions = new Set<string>();
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
@@ -78,6 +81,22 @@ export async function runJsonLineSession(
   const send = (frame: unknown) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("CoCodex Server is offline");
     socket.send(JSON.stringify(frame));
+  };
+  const migrateProjectSubscriptions = (projectId: string): void => {
+    if (chatSubscriptions.has(projectId) && !encryptedChatCursors.has(projectId)) {
+      chatCursors.delete(projectId);
+      encryptedChatCursors.set(projectId, 0);
+      send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence: 0 });
+    }
+    if (promptSubscriptions.delete(projectId)) {
+      encryptedPromptCursors.set(projectId, 0);
+      encryptedPromptSubscriptions.add(projectId);
+      send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: 0 });
+    }
+    if (contextSubscriptions.delete(projectId)) {
+      encryptedContextSubscriptions.add(projectId);
+      send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
+    }
   };
   const encryptedChatFrame = async (
     projectId: string,
@@ -185,6 +204,45 @@ export async function runJsonLineSession(
       envelope,
     };
   };
+  const encryptedAgentRequestFrame = async (
+    projectId: string,
+    taskId: string,
+    agentId: string,
+    prompt: string,
+    nonce: string,
+    issuedAt: string,
+    expiresAt: string,
+    dependencies: string[],
+    requestId: string,
+  ) => {
+    if (prompt.length < 1 || prompt.length > 32_768) throw new Error("Agent prompt must be 1-32768 characters");
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+    if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
+    const envelope = await sealProjectContent({
+      projectId,
+      keyEpoch: stored.keyEpoch,
+      recordType: "task",
+      recordId: taskId,
+      plaintext: JSON.stringify({ prompt }),
+      projectKey: stored.projectKey,
+      senderDeviceId: connection.deviceId,
+      senderPrivateKeyPem: identity.privateKeyPem,
+      senderPublicKeyPem: identity.publicKeyPem,
+    });
+    return {
+      version: 1 as const,
+      type: "project.agent.request" as const,
+      requestId,
+      taskId,
+      projectId,
+      agentId,
+      nonce,
+      issuedAt,
+      expiresAt,
+      dependencies,
+      envelope,
+    };
+  };
   const publishUsage = (changes: Partial<typeof usageReport> = {}) => {
     usageReport = {
       ...usageReport,
@@ -281,6 +339,52 @@ export async function runJsonLineSession(
     return senderPublicKeyPem;
   };
 
+  const decryptEncryptedAgentPrompt = async (task: EncryptedAgentTask): Promise<string> => {
+    const parsedEnvelope = projectContentEnvelopeSchema.parse(task.promptEnvelope);
+    const key = loadProjectKey(paths.projectKeys, task.projectId, parsedEnvelope.keyEpoch);
+    if (!key) throw new Error(`No project key is available for ${task.projectId} epoch ${parsedEnvelope.keyEpoch}`);
+    const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
+    const plaintext = await openProjectContent({
+      envelope: parsedEnvelope,
+      projectKey: key.projectKey,
+      expectedProjectId: task.projectId,
+      expectedKeyEpoch: key.keyEpoch,
+      expectedRecordType: "task",
+      expectedRecordId: task.id,
+      expectedSenderDeviceId: task.requesterDeviceId,
+      expectedSenderPublicKeyPem: senderPublicKeyPem,
+    });
+    if (plaintext.byteLength > 32_768) throw new Error("Encrypted agent prompt is too large");
+    let decoded: unknown;
+    try { decoded = JSON.parse(plaintext.toString("utf8")); }
+    catch { throw new Error("Encrypted agent prompt is not valid JSON"); }
+    const prompt = decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      ? (decoded as Record<string, unknown>).prompt
+      : undefined;
+    if (typeof prompt !== "string" || prompt.length < 1 || prompt.length > 32_768) {
+      throw new Error("Encrypted agent prompt is invalid");
+    }
+    return prompt;
+  };
+
+  const encryptAgentResult = async (result: import("./agent-journal").DurableAgentResult) => {
+    const projectId = encryptedTaskProjects.get(result.taskId);
+    if (!projectId) return undefined;
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+    if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
+    return sealProjectContent({
+      projectId,
+      keyEpoch: stored.keyEpoch,
+      recordType: "agent-response",
+      recordId: result.eventId,
+      plaintext: JSON.stringify({ content: result.content }),
+      projectKey: stored.projectKey,
+      senderDeviceId: connection.deviceId,
+      senderPrivateKeyPem: identity.privateKeyPem,
+      senderPublicKeyPem: identity.publicKeyPem,
+    });
+  };
+
   const decodeProjectContext = (plaintext: Buffer): { finalGoal: string; context: Record<string, unknown> } => {
     if (plaintext.byteLength > PROJECT_CONTEXT_MAX_BYTES) throw new Error("Encrypted project context is too large");
     let value: unknown;
@@ -299,6 +403,9 @@ export async function runJsonLineSession(
     const projectId = String(rawEvent.projectId);
     const eventId = String(rawEvent.eventId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
+    if (String(rawEvent.senderDeviceId) !== parsedEnvelope.senderDeviceId) {
+      throw new Error("Encrypted agent result sender does not match its envelope");
+    }
     const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
     if (!key) throw new Error(`No project key is available for ${projectId} epoch ${parsedEnvelope.keyEpoch}`);
     const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
@@ -333,16 +440,92 @@ export async function runJsonLineSession(
     };
   };
 
+  const openEncryptedAgentResult = async (rawEvent: Record<string, any>): Promise<{ taskId: string; final: boolean; status: "running" | "completed" | "failed"; event: ChatEvent }> => {
+    const projectId = String(rawEvent.projectId);
+    const taskId = String(rawEvent.taskId);
+    const eventId = String(rawEvent.eventId);
+    const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
+    const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
+    if (!key) throw new Error(`No project key is available for ${projectId} epoch ${parsedEnvelope.keyEpoch}`);
+    const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
+    const plaintext = await openProjectContent({
+      envelope: parsedEnvelope,
+      projectKey: key.projectKey,
+      expectedProjectId: projectId,
+      expectedKeyEpoch: key.keyEpoch,
+      expectedRecordType: "agent-response",
+      expectedRecordId: eventId,
+      expectedSenderDeviceId: parsedEnvelope.senderDeviceId,
+      expectedSenderPublicKeyPem: senderPublicKeyPem,
+    });
+    if (plaintext.byteLength > 32_768) throw new Error("Encrypted agent result is too large");
+    let decoded: unknown;
+    try { decoded = JSON.parse(plaintext.toString("utf8")); }
+    catch { throw new Error("Encrypted agent result is not valid JSON"); }
+    const content = decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      ? (decoded as Record<string, unknown>).content
+      : undefined;
+    if (typeof content !== "string" || content.length < 1 || content.length > 32_768) {
+      throw new Error("Encrypted agent result is invalid");
+    }
+    const status = rawEvent.status;
+    if (status !== "running" && status !== "completed" && status !== "failed") {
+      throw new Error("Encrypted agent result status is invalid");
+    }
+    const final = rawEvent.final === true;
+    if (final !== (status === "completed" || status === "failed")) {
+      throw new Error("Encrypted agent result final flag is invalid");
+    }
+    return {
+      taskId,
+      final,
+      status,
+      event: {
+        sequence: Number(rawEvent.sequence),
+        projectId,
+        eventId,
+        senderDeviceId: String(rawEvent.senderDeviceId),
+        content,
+        clientCreatedAt: String(rawEvent.clientCreatedAt),
+        acceptedAt: String(rawEvent.acceptedAt),
+      },
+    };
+  };
+
+  const openEncryptedAgentResultFrame = async (frame: Record<string, any>): Promise<void> => {
+    try {
+      const result = await openEncryptedAgentResult(frame.event);
+      encryptedChatCursors.set(result.event.projectId, Math.max(encryptedChatCursors.get(result.event.projectId) ?? 0, result.event.sequence));
+      emit({ source: "server", frame: {
+        version: 1,
+        type: "agent.result",
+        taskId: result.taskId,
+        final: result.final,
+        status: result.status,
+        event: result.event,
+      } });
+    } catch (error) {
+      emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const openEncryptedChatFrame = async (frame: Record<string, any>): Promise<void> => {
     try {
       const projectId = String(frame.projectId ?? frame.event?.projectId);
       if (frame.type === "project.chat.snapshot") {
         const rawEvents = Array.isArray(frame.events) ? frame.events : [];
         const events: ChatEvent[] = [];
-        for (const rawEvent of rawEvents) events.push(await openEncryptedChatEvent(rawEvent));
+        const agentResults: Array<{ taskId: string; final: boolean; status: "running" | "completed" | "failed"; event: ChatEvent }> = [];
+        for (const rawEvent of rawEvents) {
+          const envelope = rawEvent?.envelope as Record<string, unknown> | undefined;
+          if (envelope?.recordType === "agent-response") agentResults.push(await openEncryptedAgentResult(rawEvent));
+          else events.push(await openEncryptedChatEvent(rawEvent));
+        }
         const latest = events.at(-1)?.sequence;
-        if (typeof latest === "number") {
-          encryptedChatCursors.set(projectId, Math.max(encryptedChatCursors.get(projectId) ?? 0, latest));
+        const latestResult = agentResults.at(-1)?.event.sequence;
+        const latestSequence = Math.max(latest ?? 0, latestResult ?? 0);
+        if (latestSequence > 0) {
+          encryptedChatCursors.set(projectId, Math.max(encryptedChatCursors.get(projectId) ?? 0, latestSequence));
         }
         emit({ source: "server", frame: {
           version: 1,
@@ -351,12 +534,35 @@ export async function runJsonLineSession(
           projectId,
           events,
         } });
-        if (rawEvents.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
-          send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence: latest });
+        for (const result of agentResults) {
+          emit({ source: "server", frame: {
+            version: 1,
+            type: "agent.result",
+            taskId: result.taskId,
+            final: result.final,
+            status: result.status,
+            event: result.event,
+          } });
+        }
+        if (rawEvents.length === SNAPSHOT_PAGE_SIZE && latestSequence > 0) {
+          send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence: latestSequence });
         }
         return;
       }
       if (frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
+        if (frame.event?.envelope?.recordType === "agent-response") {
+          const result = await openEncryptedAgentResult(frame.event);
+          emit({ source: "server", frame: {
+            version: 1,
+            type: "agent.result",
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+            taskId: result.taskId,
+            final: result.final,
+            status: result.status,
+            event: result.event,
+          } });
+          return;
+        }
         const event = await openEncryptedChatEvent(frame.event);
         encryptedChatCursors.set(projectId, Math.max(encryptedChatCursors.get(projectId) ?? 0, event.sequence));
         emit({ source: "server", frame: {
@@ -551,6 +757,7 @@ export async function runJsonLineSession(
         expectedSenderPublicKeyPem: senderPublicKeyPem,
       }).then(projectKey => {
         storeProjectKey(paths.projectKeys, parsedEnvelope.projectId, parsedEnvelope.keyEpoch, projectKey);
+        migrateProjectSubscriptions(parsedEnvelope.projectId);
         emit({ source: "project-encryption", state: "key-available", projectId: parsedEnvelope.projectId, keyEpoch: parsedEnvelope.keyEpoch });
       }).catch(error => emitError({
         source: "project-encryption",
@@ -631,11 +838,36 @@ export async function runJsonLineSession(
         void openEncryptedPromptFrame(frame);
         return;
       }
+      if (frame.type === "project.agent.task") {
+        const task = frame.task as Record<string, unknown> | undefined;
+        if (task?.id && task.projectId) encryptedTaskProjects.set(String(task.id), String(task.projectId));
+        emit({ source: "server", frame: {
+          version: 1,
+          type: "agent.task",
+          task: task ? { ...task, promptEnvelope: undefined } : task,
+        } });
+        return;
+      }
+      if (frame.type === "project.agent.accepted") {
+        const task = frame.task as Record<string, unknown> | undefined;
+        emit({ source: "server", frame: {
+          version: 1,
+          type: "agent.accepted",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          task: task ? { ...task, promptEnvelope: undefined } : task,
+        } });
+        return;
+      }
+      if (frame.type === "project.agent.result") {
+        void openEncryptedAgentResultFrame(frame);
+        return;
+      }
       if (frame.type === "project.artifact.accepted" || frame.type === "project.artifact.published" || frame.type === "project.artifact.list.result") {
         void openEncryptedArtifactFrame(frame);
         return;
       }
       if (frame.type === "chat.snapshot") {
+        if (loadProjectKeyForEncryption(paths.projectKeys, String(frame.projectId))) return;
         const events = Array.isArray(frame.events) ? frame.events : [];
         const latest = events.at(-1)?.sequence;
         if (typeof latest === "number") chatCursors.set(frame.projectId, latest);
@@ -649,6 +881,7 @@ export async function runJsonLineSession(
           });
         }
       } else if (frame.type === "chat.event" || frame.type === "agent.result") {
+        if (frame.type === "chat.event" && loadProjectKeyForEncryption(paths.projectKeys, String(frame.event?.projectId))) return;
         const item = frame.event;
         if (item?.projectId && typeof item.sequence === "number") {
           chatCursors.set(item.projectId, Math.max(chatCursors.get(item.projectId) ?? 0, item.sequence));
@@ -766,6 +999,8 @@ export async function runJsonLineSession(
         trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
         journalPath: paths.agentJournal,
         onActiveAgents: activeAgents => publishUsage({ activeAgents }),
+        decryptTaskPrompt: decryptEncryptedAgentPrompt,
+        encryptResult: encryptAgentResult,
       });
     }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
@@ -887,6 +1122,7 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, projectId, deviceId });
         } else if (command.type === "chat.subscribe") {
           const projectId = String(command.projectId);
+          chatSubscriptions.add(projectId);
           const stored = loadProjectKey(paths.projectKeys, projectId);
           if (stored) {
             const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(projectId) ?? 0);
@@ -911,6 +1147,7 @@ export async function runJsonLineSession(
           }
         } else if (command.type === "project.chat.subscribe") {
           const projectId = String(command.projectId);
+          chatSubscriptions.add(projectId);
           const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(projectId) ?? 0);
           encryptedChatCursors.set(projectId, afterSequence);
           send({
@@ -1154,9 +1391,22 @@ export async function runJsonLineSession(
             paths,
             Array.isArray(command.dependencies) ? command.dependencies.map(String) : [],
           );
-          enqueueDurableEvent(paths, {
-            ...request,
-          });
+          const stored = loadProjectKeyForEncryption(paths.projectKeys, request.projectId);
+          if (stored) {
+            enqueueDurableEvent(paths, await encryptedAgentRequestFrame(
+              request.projectId,
+              request.taskId,
+              request.agentId,
+              request.prompt,
+              request.nonce,
+              request.issuedAt,
+              request.expiresAt,
+              request.dependencies,
+              request.requestId,
+            ));
+          } else {
+            enqueueDurableEvent(paths, { ...request });
+          }
           const delivered = await flush();
           emit({
             source: "control",
@@ -1164,6 +1414,7 @@ export async function runJsonLineSession(
             ok: true,
             queued: delivered === 0,
             taskId: request.taskId,
+            encrypted: Boolean(stored),
           });
         } else if (command.type === "agent.approval") {
           const taskId = String(command.taskId);

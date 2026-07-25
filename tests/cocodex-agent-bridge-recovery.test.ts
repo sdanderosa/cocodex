@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  agentEncryptedDispatchSigningTranscript,
   agentDispatchSigningTranscript,
   agentRequestSigningTranscript,
   publicKeyFingerprint,
@@ -18,7 +19,7 @@ class AcknowledgingSocket extends EventTarget {
   send(data: string): void {
     const frame = JSON.parse(data) as Record<string, unknown>;
     this.sent.push(frame);
-    if (frame.type !== "agent.result") return;
+    if (frame.type !== "agent.result" && frame.type !== "project.agent.result") return;
     queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
       data: JSON.stringify({
         version: 1,
@@ -94,6 +95,82 @@ function signedTask(
       requesterPublicKeyPem: requester.publicKey,
       serverSignature,
       status,
+      acceptedAt: issuedAt,
+    },
+    requesterFingerprint: publicKeyFingerprint(requester.publicKey),
+    serverPublicKeyPem: server.publicKey,
+  };
+}
+
+function signedEncryptedTask(localDeviceId: string): {
+  task: any;
+  requesterFingerprint: string;
+  serverPublicKeyPem: string;
+} {
+  const requester = generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const server = generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const taskId = randomUUID();
+  const projectId = randomUUID();
+  const requesterDeviceId = randomUUID();
+  const issuedAt = new Date(Date.now() - 10_000).toISOString();
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const nonce = "N".repeat(43);
+  const promptEnvelope = {
+    version: 1 as const,
+    projectId,
+    keyEpoch: 1,
+    recordType: "task" as const,
+    recordId: taskId,
+    nonce: Buffer.alloc(24, 1).toString("base64url"),
+    ciphertext: Buffer.alloc(16, 2).toString("base64url"),
+    senderDeviceId: requesterDeviceId,
+    senderPublicKeyPem: requester.publicKey,
+    signature: Buffer.alloc(64, 3).toString("base64url"),
+  };
+  const dispatch = {
+    taskId,
+    projectId,
+    agentId: "local-codex",
+    nonce,
+    issuedAt,
+    expiresAt,
+    dependencies: [],
+    requesterDeviceId,
+    targetDeviceId: localDeviceId,
+    envelopeProjectId: projectId,
+    envelopeKeyEpoch: 1,
+    envelopeRecordId: taskId,
+    envelopeNonce: promptEnvelope.nonce,
+    envelopeCiphertext: promptEnvelope.ciphertext,
+    envelopeSenderDeviceId: requesterDeviceId,
+    envelopeSenderPublicKeyPem: requester.publicKey,
+    envelopeSignature: promptEnvelope.signature,
+  };
+  const serverSignature = sign(null, agentEncryptedDispatchSigningTranscript(dispatch), server.privateKey)
+    .toString("base64url");
+  return {
+    task: {
+      id: taskId,
+      projectId,
+      requesterDeviceId,
+      targetDeviceId: localDeviceId,
+      agentId: dispatch.agentId,
+      prompt: "[encrypted]",
+      promptEnvelope,
+      nonce,
+      issuedAt,
+      expiresAt,
+      dependencies: [],
+      requesterSignature: promptEnvelope.signature,
+      requesterPublicKeyPem: requester.publicKey,
+      serverSignature,
+      status: "queued",
       acceptedAt: issuedAt,
     },
     requesterFingerprint: publicKeyFingerprint(requester.publicKey),
@@ -237,4 +314,65 @@ describe("CoCodex local agent crash recovery", () => {
       await detach();
       rmSync(root, { recursive: true, force: true });
     }
-  });});
+  });
+
+  test("returns an encrypted terminal result when an encrypted task is cancelled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-encrypted-cancel-"));
+    const journalPath = join(root, "agent-journal.json");
+    const localDeviceId = randomUUID();
+    const fixture = signedEncryptedTask(localDeviceId);
+    const socket = new AcknowledgingSocket();
+    let started = false;
+    let aborted = false;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute(_task, signal) {
+        started = true;
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve();
+          else signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        aborted = Boolean(signal?.aborted);
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([[fixture.task.requesterDeviceId, fixture.requesterFingerprint]]),
+      journalPath,
+      decryptTaskPrompt: async () => "encrypted cancellation prompt",
+      encryptResult: async result => ({
+        version: 1,
+        projectId: fixture.task.projectId,
+        keyEpoch: 1,
+        recordType: "agent-response",
+        recordId: result.eventId,
+        nonce: Buffer.alloc(24, 4).toString("base64url"),
+        ciphertext: Buffer.alloc(16, 5).toString("base64url"),
+        senderDeviceId: localDeviceId,
+        senderPublicKeyPem: "-----BEGIN PUBLIC KEY-----\ninvalid-test-key\n-----END PUBLIC KEY-----\n",
+        signature: Buffer.alloc(64, 6).toString("base64url"),
+      }),
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "project.agent.task", task: fixture.task }),
+      }));
+      for (let attempt = 0; attempt < 100 && !started; attempt += 1) await Bun.sleep(5);
+      expect(started).toBeTrue();
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "agent.cancel", taskId: fixture.task.id, reason: "Stop encrypted task." }),
+      }));
+      for (let attempt = 0; attempt < 100 && !aborted; attempt += 1) await Bun.sleep(5);
+      expect(aborted).toBeTrue();
+      for (let attempt = 0; attempt < 100
+        && !socket.sent.some(frame => frame.type === "project.agent.result"); attempt += 1) await Bun.sleep(5);
+      const result = socket.sent.find(frame => frame.type === "project.agent.result");
+      expect(result).toMatchObject({ taskId: fixture.task.id, final: true, status: "failed" });
+      expect(result?.content).toBeUndefined();
+      expect(result?.envelope).toMatchObject({ recordType: "agent-response", recordId: expect.any(String) });
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
