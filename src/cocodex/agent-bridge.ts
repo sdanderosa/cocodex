@@ -175,21 +175,25 @@ export function attachLocalAgentBridge(
     if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
       activeTasks.add(task.id);
       const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
+      const mustRecover = task.status === "running" || journalState === "started";
       executionChain = executionChain
         .catch(() => undefined)
-        .then(() => journalState === "new"
-          ? sendResult(socket, security, task.id, "Local execution queue is full.", true, "failed")
-          : journalState === "started" ? recoverTask(socket, security, task.id) : undefined)
+        .then(() => mustRecover
+          ? recoverTask(socket, security, task.id)
+          : journalState === "new"
+            ? sendResult(socket, security, task.id, "Local execution queue is full.", true, "failed")
+            : undefined)
         .finally(() => activeTasks.delete(task.id));
       return;
     }
     activeTasks.add(task.id);
     const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
+    const mustRecover = task.status === "running" || journalState === "started";
     executionChain = executionChain
       .catch(() => undefined)
-      .then(() => journalState === "new"
-        ? executeTask(socket, adapter, task, security)
-        : journalState === "started" ? recoverTask(socket, security, task.id) : undefined)
+      .then(() => mustRecover
+        ? recoverTask(socket, security, task.id)
+        : journalState === "new" ? executeTask(socket, adapter, task, security) : undefined)
       .finally(() => activeTasks.delete(task.id));
   };
   socket.addEventListener("message", listener);

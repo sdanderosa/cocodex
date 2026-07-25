@@ -16,10 +16,13 @@ export function loadTrustedDevices(path: string): Record<string, string> {
 
 export function trustDevice(path: string, deviceId: string, fingerprint: string): void {
   const fingerprints = loadTrustedDevices(path);
-  fingerprints[deviceId] = fingerprint;
+  const validated = schema.parse({
+    version: 1,
+    fingerprints: { ...fingerprints, [deviceId]: fingerprint },
+  });
   mkdirSync(dirname(path), { recursive: true });
   hardenSecretDir(dirname(path), { required: true });
-  writeFileSync(path, `${JSON.stringify({ version: 1, fingerprints }, null, 2)}\n`, {
+  writeFileSync(path, `${JSON.stringify(validated, null, 2)}\n`, {
     encoding: "utf8", mode: 0o600,
   });
   hardenSecretPath(path, { required: true });
