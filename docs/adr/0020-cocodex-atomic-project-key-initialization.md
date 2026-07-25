@@ -34,6 +34,8 @@ matching envelope set. A mismatched acknowledgement removes the staged key and
 emits a control failure. The key is never sent to the server. Authenticated
 reconnects re-deliver all envelopes addressed to the device, so an offline
 recipient does not depend on the original broadcast.
+Project-key store writes use a protected temporary file and atomic rename, so
+an interrupted local write cannot leave a truncated intent record.
 
 ## Reuse and licensing
 

@@ -14,7 +14,8 @@
   `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`, with the
   authoritative roster and revocation-safe key hardening in `7942452f`, and
   atomic project-key initialization in `f80dc082`, followed by durable key
-  recovery and offline-recipient replay hardening in `f58490be`.
+  recovery and offline-recipient replay hardening in `f58490be`, with atomic
+  local key-store persistence in `90f03548`.
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
   evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
   presence, and disconnected-UI hardening `76647c34`.
@@ -123,7 +124,7 @@ finished here.
 
 ## Atomic project-key initialization checkpoint
 
-Commits `f80dc082` and `f58490be` replace the client's one-envelope-at-a-time initializer
+Commits `f80dc082`, `f58490be`, and `90f03548` replace the client's one-envelope-at-a-time initializer
 with a strict `project.key.initialize` batch. The server requires one
 owner-signed epoch-1 envelope for every approved project member and inserts the
 complete set plus the epoch row in one immediate SQLite transaction. The
