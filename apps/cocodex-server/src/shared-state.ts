@@ -86,7 +86,16 @@ export interface AppendChatInput {
   clientCreatedAt: string;
 }
 
-export function appendChatEvent(db: Database, input: AppendChatInput, now = new Date()): ChatEvent {
+export interface AppendChatResult {
+  event: ChatEvent;
+  created: boolean;
+}
+
+export function appendChatEventResult(
+  db: Database,
+  input: AppendChatInput,
+  now = new Date(),
+): AppendChatResult {
   requireProjectMembership(db, input.projectId, input.senderDeviceId);
   if (input.content.length < 1 || input.content.length > 32_768) {
     throw new Error("Chat content must be 1-32768 characters");
@@ -114,7 +123,7 @@ export function appendChatEvent(db: Database, input: AppendChatInput, now = new 
     ) {
       throw new Error("Event ID was already used with different content");
     }
-    return existing;
+    return { event: existing, created: false };
   }
   const result = db.query(`
     INSERT INTO chat_events (
@@ -128,7 +137,7 @@ export function appendChatEvent(db: Database, input: AppendChatInput, now = new 
     input.clientCreatedAt,
     now.toISOString(),
   );
-  return db.query(`
+  const event = db.query(`
     SELECT
       sequence,
       project_id AS projectId,
@@ -139,6 +148,11 @@ export function appendChatEvent(db: Database, input: AppendChatInput, now = new 
       accepted_at AS acceptedAt
     FROM chat_events WHERE sequence = ?
   `).get(Number(result.lastInsertRowid)) as ChatEvent;
+  return { event, created: true };
+}
+
+export function appendChatEvent(db: Database, input: AppendChatInput, now = new Date()): ChatEvent {
+  return appendChatEventResult(db, input, now).event;
 }
 
 export function chatEventsAfter(

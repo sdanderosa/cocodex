@@ -1,53 +1,152 @@
+import { createPublicKey, sign, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import type { AgentTask, ChatEvent } from "@cocodex/protocol";
+import {
+  agentDispatchSigningTranscript,
+  agentRequestSigningTranscript,
+  type AgentDefinition,
+  type AgentTask,
+  type ChatEvent,
+} from "@cocodex/protocol";
+import type { ServerIdentity } from "./identity";
 import { appendChatEvent, requireProjectMembership } from "./shared-state";
+
+const MAX_CLOCK_SKEW_MS = 60_000;
+const MAX_TASK_LIFETIME_MS = 5 * 60_000;
+
+export interface RegisterAgentInput {
+  id: string;
+  projectId: string;
+  hostDeviceId: string;
+  name: string;
+}
+
+export function registerAgent(db: Database, input: RegisterAgentInput, now = new Date()): AgentDefinition {
+  requireProjectMembership(db, input.projectId, input.hostDeviceId);
+  const agent: AgentDefinition = {
+    id: input.id,
+    projectId: input.projectId,
+    name: input.name.trim(),
+    hostDeviceId: input.hostDeviceId,
+    enabled: true,
+  };
+  if (!agent.name) throw new Error("Agent name is required");
+  db.query(`INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
+    VALUES (?, ?, ?, ?, 1, ?)`)
+    .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
+  return agent;
+}
 
 export interface CreateAgentTaskInput {
   id: string;
   projectId: string;
   requesterDeviceId: string;
-  targetDeviceId: string;
   agentId: string;
   prompt: string;
-  clientCreatedAt: string;
+  nonce: string;
+  issuedAt: string;
+  expiresAt: string;
+  requesterSignature: string;
 }
 
-export function createAgentTask(db: Database, input: CreateAgentTaskInput, now = new Date()): AgentTask {
+interface AgentRow {
+  id: string;
+  projectId: string;
+  hostDeviceId: string;
+  enabled: number;
+}
+
+interface DeviceKeyRow { publicKeyPem: string; status: string }
+interface TaskRow extends Omit<AgentTask, "status"> { status: AgentTask["status"] }
+
+function taskById(db: Database, id: string): AgentTask | null {
+  return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+    t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
+    t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
+    t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
+    t.status, t.accepted_at AS acceptedAt
+    FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id WHERE t.id = ?`).get(id) as TaskRow | null;
+}
+
+function sameRequest(task: AgentTask, input: CreateAgentTaskInput): boolean {
+  return task.projectId === input.projectId && task.requesterDeviceId === input.requesterDeviceId
+    && task.agentId === input.agentId && task.prompt === input.prompt && task.nonce === input.nonce
+    && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
+    && task.requesterSignature === input.requesterSignature;
+}
+
+export function createAgentTask(
+  db: Database,
+  identity: ServerIdentity,
+  input: CreateAgentTaskInput,
+  now = new Date(),
+): { task: AgentTask; created: boolean } {
   requireProjectMembership(db, input.projectId, input.requesterDeviceId);
-  requireProjectMembership(db, input.projectId, input.targetDeviceId);
-  if (input.requesterDeviceId === input.targetDeviceId) {
-    throw new Error("Remote agent target must be another enrolled device");
+  const existing = taskById(db, input.id);
+  if (existing) {
+    if (!sameRequest(existing, input)) throw new Error("Task ID was already used for a different request");
+    return { task: existing, created: false };
   }
-  const task: AgentTask = {
-    id: input.id,
+  const issued = Date.parse(input.issuedAt);
+  const expires = Date.parse(input.expiresAt);
+  if (!Number.isFinite(issued) || !Number.isFinite(expires)) throw new Error("Invalid task lifetime");
+  if (issued > now.getTime() + MAX_CLOCK_SKEW_MS) throw new Error("Task issue time is too far in the future");
+  if (expires <= now.getTime() || expires - issued > MAX_TASK_LIFETIME_MS) throw new Error("Task is expired or lives too long");
+  const agent = db.query(`SELECT id, project_id AS projectId, host_device_id AS hostDeviceId, enabled
+    FROM agents WHERE id = ?`).get(input.agentId) as AgentRow | null;
+  if (!agent || agent.projectId !== input.projectId || agent.enabled !== 1) throw new Error("Agent is not available in this project");
+  requireProjectMembership(db, input.projectId, agent.hostDeviceId);
+  if (agent.hostDeviceId === input.requesterDeviceId) throw new Error("Remote agent must be hosted by another device");
+  const requester = db.query(`SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?`)
+    .get(input.requesterDeviceId) as DeviceKeyRow | null;
+  if (!requester || requester.status !== "approved") throw new Error("Requester device is not approved");
+  const requestValid = verify(null, agentRequestSigningTranscript({
+    taskId: input.id,
     projectId: input.projectId,
-    requesterDeviceId: input.requesterDeviceId,
-    targetDeviceId: input.targetDeviceId,
-    agentId: input.agentId.trim(),
+    agentId: input.agentId,
     prompt: input.prompt,
-    status: "queued",
-    clientCreatedAt: input.clientCreatedAt,
-    acceptedAt: now.toISOString(),
+    nonce: input.nonce,
+    issuedAt: input.issuedAt,
+    expiresAt: input.expiresAt,
+  }), createPublicKey(requester.publicKeyPem), Buffer.from(input.requesterSignature, "base64url"));
+  if (!requestValid) throw new Error("Invalid agent request signature");
+  const acceptedAt = now.toISOString();
+  const unsigned = {
+    taskId: input.id,
+    projectId: input.projectId,
+    agentId: input.agentId,
+    prompt: input.prompt,
+    nonce: input.nonce,
+    issuedAt: input.issuedAt,
+    expiresAt: input.expiresAt,
+    requesterDeviceId: input.requesterDeviceId,
+    targetDeviceId: agent.hostDeviceId,
+    requesterSignature: input.requesterSignature,
+    requesterPublicKeyPem: requester.publicKeyPem,
   };
-  db.query(`
-    INSERT INTO agent_tasks (
-      id, project_id, requester_device_id, target_device_id, agent_id, prompt,
-      status, client_created_at, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-  `).run(
-    task.id,
-    task.projectId,
-    task.requesterDeviceId,
-    task.targetDeviceId,
-    task.agentId,
-    task.prompt,
-    task.clientCreatedAt,
-    task.acceptedAt,
+  const serverSignature = sign(null, agentDispatchSigningTranscript(unsigned), identity.privateKeyPem).toString("base64url");
+  const { taskId: _signedTaskId, ...dispatch } = unsigned;
+  const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature };
+  db.query(`INSERT INTO agent_tasks (
+    id, project_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
+    issued_at, expires_at, requester_signature, server_signature, status, accepted_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`).run(
+    task.id, task.projectId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
+    task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
+    task.serverSignature, task.acceptedAt,
   );
-  return task;
+  return { task, created: true };
 }
 
-interface TaskRow extends AgentTask {}
+export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date()): AgentTask[] {
+  return db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+    t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
+    t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
+    t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
+    t.status, t.accepted_at AS acceptedAt
+    FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
+    WHERE t.target_device_id = ? AND t.status = 'queued' AND t.expires_at > ?
+    ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
+}
 
 export function appendAgentResult(
   db: Database,
@@ -60,40 +159,19 @@ export function appendAgentResult(
   now = new Date(),
 ): { task: AgentTask; event: ChatEvent } {
   return db.transaction(() => {
-    const task = db.query(`
-      SELECT
-        id,
-        project_id AS projectId,
-        requester_device_id AS requesterDeviceId,
-        target_device_id AS targetDeviceId,
-        agent_id AS agentId,
-        prompt,
-        status,
-        client_created_at AS clientCreatedAt,
-        accepted_at AS acceptedAt
-      FROM agent_tasks WHERE id = ?
-    `).get(taskId) as TaskRow | null;
+    const task = taskById(db, taskId);
     if (!task || task.targetDeviceId !== targetDeviceId) throw new Error("Agent task is not assigned to this device");
+    requireProjectMembership(db, task.projectId, targetDeviceId);
     if (task.status === "completed" || task.status === "failed") throw new Error("Agent task is already final");
-    if (final !== (status === "completed" || status === "failed")) {
-      throw new Error("Agent result final flag and status disagree");
-    }
+    if (final !== (status === "completed" || status === "failed")) throw new Error("Agent result final flag and status disagree");
     const event = appendChatEvent(db, {
-      projectId: task.projectId,
-      eventId,
-      senderDeviceId: targetDeviceId,
-      content,
+      projectId: task.projectId, eventId, senderDeviceId: targetDeviceId, content,
       clientCreatedAt: now.toISOString(),
     }, now);
-    db.query(`
-      INSERT INTO agent_task_events (task_id, chat_sequence, final, status)
-      VALUES (?, ?, ?, ?)
-    `).run(task.id, event.sequence, final ? 1 : 0, status);
-    db.query(`
-      UPDATE agent_tasks
-      SET status = ?, completed_at = CASE WHEN ? THEN ? ELSE completed_at END
-      WHERE id = ?
-    `).run(status, final ? 1 : 0, now.toISOString(), task.id);
+    db.query(`INSERT INTO agent_task_events (task_id, chat_sequence, final, status) VALUES (?, ?, ?, ?)`)
+      .run(task.id, event.sequence, final ? 1 : 0, status);
+    db.query(`UPDATE agent_tasks SET status = ?, completed_at = CASE WHEN ? THEN ? ELSE completed_at END WHERE id = ?`)
+      .run(status, final ? 1 : 0, now.toISOString(), task.id);
     return { task: { ...task, status }, event };
   }).immediate();
 }

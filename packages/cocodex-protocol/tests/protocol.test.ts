@@ -6,6 +6,7 @@ import {
   encodeInvitation,
   enrollmentSigningTranscript,
   publicKeyFingerprint,
+  websocketAuthTranscript,
 } from "../src";
 
 describe("CoCodex protocol", () => {
@@ -49,5 +50,23 @@ describe("CoCodex protocol", () => {
     expect(enrollmentSigningTranscript({ ...input, challenge: "other" })).not.toEqual(baseline);
     expect(enrollmentSigningTranscript({ ...input, invitationId: "other" })).not.toEqual(baseline);
     expect(enrollmentSigningTranscript({ ...input, displayName: "Stephen" })).not.toEqual(baseline);
+  });
+
+  test("WebSocket proof binds the server, device, request, and challenge", () => {
+    const input = {
+      serverFingerprint: "server-a",
+      deviceId: "device-a",
+      requestId: "request-a",
+      challenge: "challenge-a",
+    };
+    const baseline = websocketAuthTranscript(input);
+    for (const changed of [
+      { ...input, serverFingerprint: "server-b" },
+      { ...input, deviceId: "device-b" },
+      { ...input, requestId: "request-b" },
+      { ...input, challenge: "challenge-b" },
+    ]) {
+      expect(websocketAuthTranscript(changed)).not.toEqual(baseline);
+    }
   });
 });

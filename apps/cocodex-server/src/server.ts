@@ -1,20 +1,35 @@
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { ServerWebSocket } from "bun";
 import type { Database } from "bun:sqlite";
-import { clientFrameSchema, decodeInvitation, enrollmentClaimSchema } from "@cocodex/protocol";
-import { appendAgentResult, createAgentTask } from "./agent-routing";
+import {
+  clientFrameSchema,
+  decodeInvitation,
+  enrollmentClaimSchema,
+  websocketAuthTranscript,
+} from "@cocodex/protocol";
+import { appendAgentResult, createAgentTask, pendingAgentTasks } from "./agent-routing";
 import type { ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
-import { appendChatEvent, chatEventsAfter, listProjects } from "./shared-state";
+import {
+  appendChatEventResult,
+  chatEventsAfter,
+  listProjects,
+  requireProjectMembership,
+} from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
-const AUTH_CONTEXT = "cocodex-websocket-auth-v1";
+const MAX_UNAUTHENTICATED_SOCKETS = 64;
+const AUTHENTICATION_TIMEOUT_MS = 10_000;
 
 interface SocketData {
   challenge: string;
   authenticatedDeviceId?: string;
+  authTimer?: ReturnType<typeof setTimeout>;
+  preAuthCounted: boolean;
+  subscribedProjects: Set<string>;
 }
 
 interface DeviceAuthRow {
@@ -59,16 +74,54 @@ function deviceForAuthentication(db: Database, deviceId: string): DeviceAuthRow 
   `).get(deviceId) as DeviceAuthRow | null;
 }
 
-export function websocketAuthMessage(challenge: string): string {
-  return `${AUTH_CONTEXT}\n${challenge}`;
-}
-
 export function startCoCodexServer(
   config: ServerConfig,
   db: Database,
   identity: ServerIdentity,
 ): RunningCoCodexServer {
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
+  const sockets = new Set<ServerWebSocket<SocketData>>();
+  let unauthenticatedSocketCount = 0;
+
+  function clearPreAuth(socket: ServerWebSocket<SocketData>): void {
+    if (socket.data.authTimer) {
+      clearTimeout(socket.data.authTimer);
+      socket.data.authTimer = undefined;
+    }
+    if (socket.data.preAuthCounted) {
+      socket.data.preAuthCounted = false;
+      unauthenticatedSocketCount -= 1;
+    }
+  }
+
+  function sendToDevice(deviceId: string, frame: unknown): void {
+    const device = deviceForAuthentication(db, deviceId);
+    if (!device || device.status !== "approved") return;
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      if (socket.data.authenticatedDeviceId === deviceId) socket.send(encoded);
+    }
+  }
+
+  function sendToProject(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedProjects.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedProjects.delete(projectId);
+      }
+    }
+  }
+
   const server = Bun.serve<SocketData>({
     hostname: config.hostname,
     port: config.port,
@@ -121,14 +174,24 @@ export function startCoCodexServer(
             devicePublicKeyPem: body.devicePublicKeyPem,
             signature: body.signature,
           });
-          return json({ device, approvalRequired: true }, 202);
+          return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem }, 202);
         } catch (error) {
           return json({ error: safeErrorMessage(error) }, 400);
         }
       }
       if (url.pathname === "/v1/connect") {
+        if (unauthenticatedSocketCount >= MAX_UNAUTHENTICATED_SOCKETS) {
+          return json({ error: "Too many unauthenticated connections" }, 503);
+        }
         const challenge = randomBytes(32).toString("base64url");
-        if (bunServer.upgrade(request, { data: { challenge } })) return;
+        unauthenticatedSocketCount += 1;
+        const data: SocketData = {
+          challenge,
+          preAuthCounted: true,
+          subscribedProjects: new Set(),
+        };
+        if (bunServer.upgrade(request, { data })) return;
+        unauthenticatedSocketCount -= 1;
         return json({ error: "WebSocket upgrade failed" }, 400);
       }
       return json({ error: "Not found" }, 404);
@@ -136,6 +199,11 @@ export function startCoCodexServer(
     websocket: {
       maxPayloadLength: MAX_HTTP_BODY_BYTES,
       open(socket) {
+        sockets.add(socket);
+        socket.data.authTimer = setTimeout(() => {
+          clearPreAuth(socket);
+          socket.close(1008, "Authentication timed out");
+        }, AUTHENTICATION_TIMEOUT_MS);
         socket.send(JSON.stringify({
           type: "auth.challenge",
           protocol: 1,
@@ -154,23 +222,37 @@ export function startCoCodexServer(
             const publicKey = createPublicKey(device.publicKeyPem);
             const valid = verify(
               null,
-              Buffer.from(websocketAuthMessage(socket.data.challenge), "utf8"),
+              websocketAuthTranscript({
+                serverFingerprint: certificateFingerprint,
+                deviceId: device.id,
+                requestId: message.requestId,
+                challenge: socket.data.challenge,
+              }),
               publicKey,
               Buffer.from(message.signature, "base64url"),
             );
             if (!valid) throw new Error("Invalid device proof");
             socket.data.authenticatedDeviceId = device.id;
-            socket.subscribe(`device:${device.id}`);
+            clearPreAuth(socket);
             socket.send(JSON.stringify({
               version: 1,
               type: "auth.ok",
               requestId,
               deviceId: device.id,
+              serverIdentityPublicKeyPem: identity.publicKeyPem,
             }));
+            for (const task of pendingAgentTasks(db, device.id)) {
+              socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
+            }
             return;
           }
           if (message.type === "auth.response") throw new Error("Device is already authenticated");
           const deviceId = socket.data.authenticatedDeviceId;
+          const currentDevice = deviceForAuthentication(db, deviceId);
+          if (!currentDevice || currentDevice.status !== "approved") {
+            socket.close(1008, "Device authorization was revoked");
+            return;
+          }
           if (message.type === "project.list") {
             socket.send(JSON.stringify({
               version: 1,
@@ -182,7 +264,7 @@ export function startCoCodexServer(
           }
           if (message.type === "chat.subscribe") {
             const events = chatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
-            socket.subscribe(`project:${message.projectId}`);
+            socket.data.subscribedProjects.add(message.projectId);
             socket.send(JSON.stringify({
               version: 1,
               type: "chat.snapshot",
@@ -193,20 +275,22 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "agent.request") {
-            const task = createAgentTask(db, {
+            const { task, created } = createAgentTask(db, identity, {
               id: message.taskId,
               projectId: message.projectId,
               requesterDeviceId: deviceId,
-              targetDeviceId: message.targetDeviceId,
               agentId: message.agentId,
               prompt: message.prompt,
-              clientCreatedAt: message.clientCreatedAt,
+              nonce: message.nonce,
+              issuedAt: message.issuedAt,
+              expiresAt: message.expiresAt,
+              requesterSignature: message.signature,
             });
-            server.publish(`device:${task.targetDeviceId}`, JSON.stringify({
+            if (created) sendToDevice(task.targetDeviceId, {
               version: 1,
               type: "agent.task",
               task,
-            }));
+            });
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.accepted",
@@ -225,14 +309,14 @@ export function startCoCodexServer(
               message.final,
               message.status,
             );
-            server.publish(`project:${result.task.projectId}`, JSON.stringify({
+            sendToProject(result.task.projectId, {
               version: 1,
               type: "agent.result",
               taskId: result.task.id,
               final: message.final,
               status: message.status,
               event: result.event,
-            }));
+            });
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.result.accepted",
@@ -242,7 +326,7 @@ export function startCoCodexServer(
             }));
             return;
           }
-          const event = appendChatEvent(db, {
+          const appended = appendChatEventResult(db, {
             projectId: message.projectId,
             eventId: message.eventId,
             senderDeviceId: deviceId,
@@ -253,13 +337,15 @@ export function startCoCodexServer(
             version: 1,
             type: "chat.accepted",
             requestId,
-            event,
+            event: appended.event,
           }));
-          server.publish(`project:${message.projectId}`, JSON.stringify({
-            version: 1,
-            type: "chat.event",
-            event,
-          }));
+          if (appended.created) {
+            sendToProject(message.projectId, {
+              version: 1,
+              type: "chat.event",
+              event: appended.event,
+            });
+          }
         } catch (error) {
           const authenticated = Boolean(socket.data.authenticatedDeviceId);
           socket.send(JSON.stringify({
@@ -268,14 +354,33 @@ export function startCoCodexServer(
             requestId,
             error: safeErrorMessage(error),
           }));
-          if (!authenticated) socket.close(1008, "Authentication failed");
+          if (!authenticated) {
+            clearPreAuth(socket);
+            socket.close(1008, "Authentication failed");
+          }
         }
+      },
+      close(socket) {
+        clearPreAuth(socket);
+        sockets.delete(socket);
       },
     },
   });
   return {
     hostname: server.hostname ?? config.hostname,
     port: server.port ?? config.port,
-    stop: (closeActiveConnections = false) => server.stop(closeActiveConnections),
+    stop: async (closeActiveConnections = false) => {
+      if (closeActiveConnections) {
+        for (const socket of sockets) socket.close(1001, "Server shutting down");
+        sockets.clear();
+      }
+      const stopping = server.stop(closeActiveConnections);
+      if (!closeActiveConnections) {
+        await stopping;
+        return;
+      }
+      await Promise.race([stopping, Bun.sleep(1_000)]);
+      server.unref();
+    },
   };
 }

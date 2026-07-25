@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ClientPaths } from "./paths";
+import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 
 export interface ClientIdentity {
   publicKeyPem: string;
@@ -12,16 +13,20 @@ export function loadOrCreateClientIdentity(paths: ClientPaths): ClientIdentity {
   const publicExists = existsSync(paths.identityPublicKey);
   if (privateExists !== publicExists) throw new Error("CoCodex device identity is incomplete");
   if (privateExists) {
+    hardenSecretDir(paths.root, { required: true });
+    hardenSecretPath(paths.identityPrivateKey, { required: true });
     return {
       privateKeyPem: readFileSync(paths.identityPrivateKey, "utf8"),
       publicKeyPem: readFileSync(paths.identityPublicKey, "utf8"),
     };
   }
   mkdirSync(paths.root, { recursive: true });
+  hardenSecretDir(paths.root, { required: true });
   const pair = generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
+  hardenSecretPath(paths.identityPrivateKey, { required: true });
   writeFileSync(paths.identityPrivateKey, pair.privateKey, {
     encoding: "utf8",
     flag: "wx",

@@ -12,8 +12,13 @@ export {
 } from "./enrollment";
 export {
   clientFrameSchema,
+  agentTaskSchema,
+  agentTaskFrameSchema,
+  websocketAuthTranscript,
   type ChatEvent,
   type ClientFrame,
   type AgentTask,
+  type AgentDefinition,
   type SharedProject,
 } from "./collaboration";
+export * from "./agent-signing";

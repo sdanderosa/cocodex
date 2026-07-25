@@ -1,0 +1,55 @@
+import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDatabase } from "../src/database";
+import { migrations } from "../src/migrations";
+
+describe("CoCodex database migrations", () => {
+  test("preserves legacy unsigned agent tables while installing signed task schema", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-migration-"));
+    const path = join(root, "server.sqlite3");
+    try {
+      const legacy = new Database(path, { create: true });
+      legacy.exec("PRAGMA foreign_keys = ON");
+      legacy.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      legacy.exec(migrations[0]!.sql);
+      legacy.exec(`
+        CREATE TABLE agent_tasks (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          requester_device_id TEXT NOT NULL,
+          target_device_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          status TEXT NOT NULL,
+          client_created_at TEXT NOT NULL,
+          accepted_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        CREATE TABLE agent_task_events (
+          task_id TEXT NOT NULL,
+          chat_sequence INTEGER NOT NULL UNIQUE,
+          final INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          PRIMARY KEY (task_id, chat_sequence)
+        );
+      `);
+      legacy.query("INSERT INTO schema_migrations VALUES (1, ?)").run(new Date().toISOString());
+      legacy.close();
+
+      const migrated = openDatabase(path);
+      expect(migrated.query(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_agent_tasks_v1'",
+      ).get()).not.toBeNull();
+      const columns = migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>;
+      expect(columns.map(column => column.name)).toContain("requester_signature");
+      expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
+        .toEqual([{ version: 1 }, { version: 2 }]);
+      migrated.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

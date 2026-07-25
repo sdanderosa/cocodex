@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { publicKeyFingerprint } from "@cocodex/protocol";
+import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import type { ServerPaths } from "./paths";
 
 export interface ServerIdentity {
@@ -12,7 +13,9 @@ export interface ServerIdentity {
 
 function writeSecret(path: string, value: string): void {
   mkdirSync(dirname(path), { recursive: true });
+  hardenSecretDir(dirname(path), { required: true });
   writeFileSync(path, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  hardenSecretPath(path, { required: true });
   if (process.platform !== "win32") chmodSync(path, 0o600);
 }
 
@@ -39,6 +42,8 @@ export function createServerIdentity(paths: ServerPaths): ServerIdentity {
 }
 
 export function loadServerIdentity(paths: ServerPaths): ServerIdentity {
+  hardenSecretDir(paths.root, { required: true });
+  hardenSecretPath(paths.identityPrivateKey, { required: true });
   const publicKeyPem = readFileSync(paths.identityPublicKey, "utf8");
   const privateKeyPem = readFileSync(paths.identityPrivateKey, "utf8");
   return {

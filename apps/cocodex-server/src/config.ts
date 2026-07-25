@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import type { ServerPaths } from "./paths";
 
 export interface ServerConfig {
@@ -26,10 +27,14 @@ export function createDefaultConfig(paths: ServerPaths, publicHost: string, port
 export function saveConfig(paths: ServerPaths, config: ServerConfig): void {
   if (existsSync(paths.config)) throw new Error("Server configuration already exists");
   mkdirSync(paths.root, { recursive: true });
+  hardenSecretDir(paths.root, { required: true });
   writeFileSync(paths.config, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  hardenSecretPath(paths.config, { required: true });
 }
 
 export function loadConfig(paths: ServerPaths): ServerConfig {
+  hardenSecretDir(paths.root, { required: true });
+  hardenSecretPath(paths.config, { required: true });
   const value = JSON.parse(readFileSync(paths.config, "utf8")) as Partial<ServerConfig>;
   if (
     value.version !== 1 ||

@@ -5,6 +5,8 @@ import { openDatabase } from "./database";
 import { approveDevice, listDevices } from "./enrollment";
 import { createServerIdentity, loadServerIdentity } from "./identity";
 import { createInvitation } from "./invitations";
+import { registerAgent } from "./agent-routing";
+import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
@@ -28,7 +30,10 @@ Usage:
   cocodex-server start [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
-  cocodex-server approve --fingerprint FINGERPRINT [--state-root PATH]`);
+  cocodex-server approve --fingerprint FINGERPRINT [--state-root PATH]
+  cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
+  cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
+  cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--state-root PATH]`);
 }
 
 async function run(): Promise<void> {
@@ -77,7 +82,32 @@ async function run(): Promise<void> {
       console.log(JSON.stringify({ approved: true }));
       return;
     }
-    case "start": {
+    case "project-create": {
+      const db = openDatabase(paths.database);
+      const project = createProject(db, requiredOption("--name"), requiredOption("--owner-device"));
+      db.close();
+      console.log(JSON.stringify(project));
+      return;
+    }
+    case "project-add-member": {
+      const db = openDatabase(paths.database);
+      addProjectMember(db, requiredOption("--project"), requiredOption("--owner-device"), requiredOption("--member-device"));
+      db.close();
+      console.log(JSON.stringify({ added: true }));
+      return;
+    }
+    case "agent-add": {
+      const db = openDatabase(paths.database);
+      const agent = registerAgent(db, {
+        id: requiredOption("--id"),
+        projectId: requiredOption("--project"),
+        hostDeviceId: requiredOption("--host-device"),
+        name: requiredOption("--name"),
+      });
+      db.close();
+      console.log(JSON.stringify(agent));
+      return;
+    }    case "start": {
       const config = loadConfig(paths);
       const identity = loadServerIdentity(paths);
       const db = openDatabase(paths.database);

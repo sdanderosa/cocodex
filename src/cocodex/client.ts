@@ -1,13 +1,16 @@
-import { randomUUID, sign } from "node:crypto";
+import { randomBytes, randomUUID, sign } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
+  agentRequestSigningTranscript,
   decodeInvitation,
   enrollmentSigningTranscript,
+  websocketAuthTranscript,
   type InvitationPayload,
 } from "@cocodex/protocol";
 import { loadOrCreateClientIdentity } from "./identity";
 import { clientPaths, type ClientPaths } from "./paths";
 import { readAndVerifyServerCertificate } from "./tls-pin";
+import { hardenSecretPath } from "../lib/windows-secret-acl";
 
 export interface ClientConnection {
   version: 1;
@@ -15,6 +18,7 @@ export interface ClientConnection {
   port: number;
   serverFingerprint: string;
   serverCertificatePem: string;
+  serverIdentityPublicKeyPem: string;
   deviceId: string;
   displayName: string;
 }
@@ -74,13 +78,14 @@ export async function enrollClient(
     displayName,
     devicePublicKeyPem: identity.publicKeyPem,
     signature,
-  }) as { device: { id: string } };
+  }) as { device: { id: string }; serverIdentityPublicKeyPem: string };
   const connection: ClientConnection = {
     version: 1,
     host: invitation.host,
     port: invitation.port,
     serverFingerprint: invitation.serverFingerprint,
     serverCertificatePem: certificate.pem,
+    serverIdentityPublicKeyPem: enrolled.serverIdentityPublicKeyPem,
     deviceId: enrolled.device.id,
     displayName: displayName.trim(),
   };
@@ -89,10 +94,12 @@ export async function enrollClient(
     flag: "wx",
     mode: 0o600,
   });
+  hardenSecretPath(paths.connection, { required: true });
   return connection;
 }
 
 export function loadClientConnection(paths: ClientPaths = clientPaths()): ClientConnection {
+  hardenSecretPath(paths.connection, { required: true });
   return JSON.parse(readFileSync(paths.connection, "utf8")) as ClientConnection;
 }
 
@@ -112,14 +119,20 @@ export async function connectAuthenticatedClient(paths: ClientPaths = clientPath
       try {
         const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (frame.type === "auth.challenge") {
+          const requestId = randomUUID();
           socket.send(JSON.stringify({
             version: 1,
             type: "auth.response",
-            requestId: randomUUID(),
+            requestId,
             deviceId: connection.deviceId,
             signature: sign(
               null,
-              Buffer.from(`cocodex-websocket-auth-v1\n${String(frame.challenge)}`),
+              websocketAuthTranscript({
+                serverFingerprint: connection.serverFingerprint,
+                deviceId: connection.deviceId,
+                requestId,
+                challenge: String(frame.challenge),
+              }),
               identity.privateKeyPem,
             ).toString("base64url"),
           }));
@@ -140,4 +153,35 @@ export async function connectAuthenticatedClient(paths: ClientPaths = clientPath
       reject(new Error("CoCodex Server connection failed"));
     }, { once: true });
   });
+}
+
+export function sendAgentRequest(
+  socket: WebSocket,
+  projectId: string,
+  agentId: string,
+  prompt: string,
+  paths: ClientPaths = clientPaths(),
+): string {
+  const identity = loadOrCreateClientIdentity(paths);
+  const taskId = randomUUID();
+  const nonce = randomBytes(32).toString("base64url");
+  const issuedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const signature = sign(null, agentRequestSigningTranscript({
+    taskId, projectId, agentId, prompt, nonce, issuedAt, expiresAt,
+  }), identity.privateKeyPem).toString("base64url");
+  socket.send(JSON.stringify({
+    version: 1,
+    type: "agent.request",
+    requestId: randomUUID(),
+    taskId,
+    projectId,
+    agentId,
+    prompt,
+    nonce,
+    issuedAt,
+    expiresAt,
+    signature,
+  }));
+  return taskId;
 }

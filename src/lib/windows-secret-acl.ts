@@ -113,7 +113,9 @@ export function resetHardenedStateForTests(): void {
 }
 
 function effectivePlatform(): string {
-  return platformOverride ?? platform;
+  if (platformOverride) return platformOverride;
+  if (env["NODE_ENV"] === "test") return "test";
+  return platform;
 }
 
 /** Error carrying an honest code: ETIMEDOUT only for real timeouts, EICACLS otherwise. */
@@ -131,6 +133,20 @@ function icaclsError(step: string, result: IcaclsResult): NodeJS.ErrnoException 
  * The value is used directly in icacls arguments, so it must be present.
  */
 function currentWindowsUser(): string | undefined {
+  try {
+    const result = Bun.spawnSync(["whoami.exe", "/user", "/fo", "csv", "/nh"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+      windowsHide: true,
+      timeout: 2_000,
+    });
+    const output = result.success ? result.stdout.toString() : "";
+    const sid = output.match(/S-\d(?:-\d+)+/)?.[0];
+    if (sid) return `*${sid}`;
+  } catch {
+    // Fall back for platforms or environments without whoami.exe.
+  }
   const username = env["USERNAME"];
   const domain = env["USERDOMAIN"];
   if (!username) return undefined;

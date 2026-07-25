@@ -60,6 +60,18 @@ export function createEnrollmentChallenge(
   if (!invitationIsUsable(db, invitation.invitationId, invitation.token, now)) {
     throw new Error("Invitation is invalid, expired, or already used");
   }
+  db.query(`
+    DELETE FROM enrollment_challenges
+    WHERE consumed_at IS NOT NULL OR expires_at <= ?
+  `).run(now.toISOString());
+  const active = db.query(`
+    SELECT COUNT(*) AS count
+    FROM enrollment_challenges
+    WHERE invitation_id = ? AND consumed_at IS NULL AND expires_at > ?
+  `).get(invitation.invitationId, now.toISOString()) as { count: number };
+  if (active.count >= 8) {
+    throw new Error("Too many active enrollment challenges for this invitation");
+  }
   const canonicalPublicKey = canonicalEd25519PublicKey(devicePublicKeyPem);
   const result = {
     id: randomUUID(),

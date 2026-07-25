@@ -7,6 +7,7 @@ import { createInvitation } from "../src/invitations";
 import {
   addProjectMember,
   appendChatEvent,
+  appendChatEventResult,
   chatEventsAfter,
   createProject,
   listProjects,
@@ -78,6 +79,13 @@ describe("authoritative shared state", () => {
         content: first.content,
         clientCreatedAt: first.clientCreatedAt,
       }).sequence).toBe(first.sequence);
+      expect(appendChatEventResult(db, {
+        projectId: project.id,
+        eventId: first.eventId,
+        senderDeviceId: kai,
+        content: first.content,
+        clientCreatedAt: first.clientCreatedAt,
+      })).toEqual({ event: first, created: false });
       expect(chatEventsAfter(db, project.id, kai, first.sequence)).toEqual([second]);
     } finally {
       db.close();

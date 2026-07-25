@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { decodeInvitation, enrollmentSigningTranscript, type ChatEvent } from "@cocodex/protocol";
+import {
+  agentRequestSigningTranscript,
+  decodeInvitation,
+  enrollmentSigningTranscript,
+  websocketAuthTranscript,
+  type ChatEvent,
+} from "@cocodex/protocol";
+import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
 import { openDatabase } from "../src/database";
 import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
@@ -12,7 +19,7 @@ import { createServerIdentity } from "../src/identity";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
-import { startCoCodexServer, websocketAuthMessage } from "../src/server";
+import { startCoCodexServer } from "../src/server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
 
 const roots: string[] = [];
@@ -103,23 +110,29 @@ function nextFrame(
   });
 }
 
-async function connect(port: number, device: TestDevice): Promise<WebSocket> {
+async function connect(port: number, device: TestDevice, serverFingerprint: string): Promise<WebSocket> {
   const socket = new WebSocket(
     `wss://127.0.0.1:${port}/v1/connect`,
     { tls: { rejectUnauthorized: false } } as never,
   );
   sockets.push(socket);
   const challenge = await nextFrame(socket, "auth.challenge");
+  const requestId = randomUUID();
   const proof = sign(
     null,
-    Buffer.from(websocketAuthMessage(String(challenge.challenge)), "utf8"),
+    websocketAuthTranscript({
+      serverFingerprint,
+      deviceId: device.id,
+      requestId,
+      challenge: String(challenge.challenge),
+    }),
     device.privateKey,
   ).toString("base64url");
   const authenticated = nextFrame(socket, "auth.ok");
   socket.send(JSON.stringify({
     version: 1,
     type: "auth.response",
-    requestId: randomUUID(),
+    requestId,
     deviceId: device.id,
     signature: proof,
   }));
@@ -146,8 +159,21 @@ describe("authenticated WSS collaboration", () => {
     const server = startCoCodexServer(config, db, identity);
     servers.push(server);
 
-    const stephenSocket = await connect(server.port, stephen);
-    const kaiSocket = await connect(server.port, kai);
+    registerAgent(db, {
+      id: "local-codex",
+      projectId: project.id,
+      hostDeviceId: stephen.id,
+      name: "Stephen's Codex",
+    });
+    registerAgent(db, {
+      id: "kai-codex",
+      projectId: project.id,
+      hostDeviceId: kai.id,
+      name: "Kai's Codex",
+    });
+
+    const stephenSocket = await connect(server.port, stephen, fingerprint);
+    const kaiSocket = await connect(server.port, kai, fingerprint);
     for (const socket of [stephenSocket, kaiSocket]) {
       const history = nextFrame(socket, "chat.snapshot");
       socket.send(JSON.stringify({
@@ -191,7 +217,7 @@ describe("authenticated WSS collaboration", () => {
     expect(second.sequence).toBeGreaterThan(first.sequence);
 
     kaiSocket.close();
-    const reconnectedKai = await connect(server.port, kai);
+    const reconnectedKai = await connect(server.port, kai, fingerprint);
     const recovered = nextFrame(reconnectedKai, "chat.snapshot");
     reconnectedKai.send(JSON.stringify({
       version: 1,
@@ -203,6 +229,18 @@ describe("authenticated WSS collaboration", () => {
     expect((await recovered).events).toEqual([second]);
 
     const kaiTaskId = randomUUID();
+    const kaiIssuedAt = new Date().toISOString();
+    const kaiExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    const kaiNonce = randomUUID();
+    const kaiSignature = sign(null, agentRequestSigningTranscript({
+      taskId: kaiTaskId,
+      projectId: project.id,
+      agentId: "local-codex",
+      prompt: "Inspect authentication.",
+      nonce: kaiNonce,
+      issuedAt: kaiIssuedAt,
+      expiresAt: kaiExpiresAt,
+    }), kai.privateKey).toString("base64url");
     const taskAtStephen = nextFrame(stephenSocket, "agent.task");
     const acceptedAtKai = nextFrame(reconnectedKai, "agent.accepted");
     reconnectedKai.send(JSON.stringify({
@@ -211,10 +249,12 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId: kaiTaskId,
       projectId: project.id,
-      targetDeviceId: stephen.id,
       agentId: "local-codex",
       prompt: "Inspect authentication.",
-      clientCreatedAt: new Date().toISOString(),
+      nonce: kaiNonce,
+      issuedAt: kaiIssuedAt,
+      expiresAt: kaiExpiresAt,
+      signature: kaiSignature,
     }));
     expect((await taskAtStephen).task).toMatchObject({
       id: kaiTaskId,
@@ -241,6 +281,18 @@ describe("authenticated WSS collaboration", () => {
     });
 
     const stephenTaskId = randomUUID();
+    const stephenIssuedAt = new Date().toISOString();
+    const stephenExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    const stephenNonce = randomUUID();
+    const stephenSignature = sign(null, agentRequestSigningTranscript({
+      taskId: stephenTaskId,
+      projectId: project.id,
+      agentId: "kai-codex",
+      prompt: "Run the reciprocal check.",
+      nonce: stephenNonce,
+      issuedAt: stephenIssuedAt,
+      expiresAt: stephenExpiresAt,
+    }), stephen.privateKey).toString("base64url");
     const taskAtKai = nextFrame(reconnectedKai, "agent.task");
     stephenSocket.send(JSON.stringify({
       version: 1,
@@ -248,10 +300,12 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId: stephenTaskId,
       projectId: project.id,
-      targetDeviceId: kai.id,
-      agentId: "local-codex",
+      agentId: "kai-codex",
       prompt: "Run the reciprocal check.",
-      clientCreatedAt: new Date().toISOString(),
+      nonce: stephenNonce,
+      issuedAt: stephenIssuedAt,
+      expiresAt: stephenExpiresAt,
+      signature: stephenSignature,
     }));
     expect((await taskAtKai).task).toMatchObject({
       id: stephenTaskId,

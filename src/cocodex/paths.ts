@@ -6,6 +6,7 @@ export interface ClientPaths {
   identityPrivateKey: string;
   identityPublicKey: string;
   connection: string;
+  agentPolicy: string;
 }
 
 export function defaultClientStateRoot(): string {
@@ -19,5 +20,6 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     identityPrivateKey: resolve(absoluteRoot, "device-ed25519-private.pem"),
     identityPublicKey: resolve(absoluteRoot, "device-ed25519-public.pem"),
     connection: resolve(absoluteRoot, "connection.json"),
+    agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
   };
 }

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import selfsigned from "selfsigned";
+import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import type { ServerPaths } from "./paths";
 
 export async function createTlsIdentity(paths: ServerPaths, publicHost = "localhost"): Promise<void> {
@@ -36,7 +37,9 @@ export async function createTlsIdentity(paths: ServerPaths, publicHost = "localh
     },
   );
   mkdirSync(dirname(paths.tlsPrivateKey), { recursive: true });
+  hardenSecretDir(dirname(paths.tlsPrivateKey), { required: true });
   writeFileSync(paths.tlsPrivateKey, generated.private, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  hardenSecretPath(paths.tlsPrivateKey, { required: true });
   writeFileSync(paths.tlsCertificate, generated.cert, { encoding: "utf8", mode: 0o644, flag: "wx" });
 }
 
