@@ -12,7 +12,8 @@
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
   lifecycle timeout hardening `0f09345f`, encrypted project artifacts
   `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`, with the
-  authoritative roster and revocation-safe key hardening in `7942452f`.
+  authoritative roster and revocation-safe key hardening in `7942452f`, and
+  atomic project-key initialization in `f80dc082`.
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
   evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
   presence, and disconnected-UI hardening `76647c34`.
@@ -81,10 +82,10 @@ Files:
 The full CoCodex suite was rerun after the slice and encryption hardening:
 
 ```text
-80 pass
+81 pass
 0 fail
-744 expect() calls
-Ran 80 tests across 27 files.  (exit 0)
+758 expect() calls
+Ran 81 tests across 27 files.  (exit 0)
 test:cocodex-dependencies             (exit 0: 7 pass, 0 fail, 46 expectations)
 typecheck:cocodex                 (exit 0)
 lint:gui                          (exit 0; one pre-existing warning)
@@ -118,6 +119,42 @@ project's first key initialization are not retroactively rewritten in this
 slice. They are no longer served through keyed legacy routes; complete
 historical content migration remains a release-gate item and is not claimed as
 finished here.
+
+## Atomic project-key initialization checkpoint
+
+Commit `f80dc082` replaces the client's one-envelope-at-a-time initializer
+with a strict `project.key.initialize` batch. The server requires one
+owner-signed epoch-1 envelope for every approved project member and inserts the
+complete set plus the epoch row in one immediate SQLite transaction. The
+`project.key.initialized` response is idempotent by request ID; the client
+reports success only after that acknowledgement, replays the same request after
+a reconnect, and removes a staged local key when the batch is rejected.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+32 pass
+0 fail
+224 expect() calls
+Ran 32 tests across 4 files.
+```
+
+The full CoCodex suite after this checkpoint is green: `81 pass`, `0 fail`,
+`758 expect() calls` across 27 files (exit `0`). This checkpoint does not close
+the documented whole-project historical migration, ratcheted private messaging,
+file-reference encryption, or full-computer/browser requirements.
 
 ## Focused three-process path
 
