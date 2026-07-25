@@ -6,8 +6,10 @@
   `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
   `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
   context `b70f5675`, client Final Goal/docs `7010d6ec`, and signed usage
-  reports `b2c124f9`, encrypted project chat/key lifecycle `02d24e16`, and
-  encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`.
+  reports `b2c124f9`, encrypted project chat/key lifecycle `02d24e16`,
+  encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
+  private-message hardening `63b552a6`, and PCP direct-hosting fallback
+  `943388d4`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -256,9 +258,32 @@ stores `report_json` plus the signature in migration v9; it never receives
 provider credentials or raw account records. Optional quota percentages/reset
 times remain absent when the local runtime has not supplied them.
 
-Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
-fallback; packet encoding/response validation and diagnostic classification are
-covered by the port-mapping tests. PCP remains a later compatibility extension.
+Automatic direct hosting now attempts UPnP first, NAT-PMP, and PCP as bounded
+UDP fallbacks; packet encoding/response validation and diagnostic classification
+are covered by the port-mapping tests. Manual one-port forwarding remains the
+guaranteed baseline, and failures still explain likely CGNAT or firewall/router
+blocks instead of pretending that a mapping succeeded.
+
+## Private-message crypto boundary and hardening
+
+Implementation commit: `63b552a6`
+
+The private-alpha sealed-box path now rejects non-canonical or undersized
+ciphertexts, bounds decrypted payloads before JSON parsing, and fails closed on
+malformed payloads. The device certificate still binds the recipient's X25519
+messaging key to its Ed25519 fingerprint. ADR 0014 records the deliberate
+single-device boundary: no forward-secret or multi-device claim is made until a
+maintained compatible Matrix/vodozemac-style state machine is selected.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`; relevant output: `4 pass`, `0 fail`, `64 expect() calls`.
 
 ## Project-wrap identity and encrypted Final Goal/context
 
