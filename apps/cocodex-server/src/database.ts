@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS chat_events (
 );
 CREATE INDEX IF NOT EXISTS chat_events_project_sequence
   ON chat_events(project_id, sequence);
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  requester_device_id TEXT NOT NULL REFERENCES devices(id),
+  target_device_id TEXT NOT NULL REFERENCES devices(id),
+  agent_id TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+  client_created_at TEXT NOT NULL,
+  accepted_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_task_events (
+  task_id TEXT NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
+  chat_sequence INTEGER NOT NULL UNIQUE REFERENCES chat_events(sequence) ON DELETE CASCADE,
+  final INTEGER NOT NULL CHECK (final IN (0, 1)),
+  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  PRIMARY KEY (task_id, chat_sequence)
+);
 CREATE TABLE IF NOT EXISTS audit_events (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type TEXT NOT NULL,

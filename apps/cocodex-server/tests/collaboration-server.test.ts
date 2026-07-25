@@ -201,5 +201,62 @@ describe("authenticated WSS collaboration", () => {
       afterSequence: first.sequence,
     }));
     expect((await recovered).events).toEqual([second]);
+
+    const kaiTaskId = randomUUID();
+    const taskAtStephen = nextFrame(stephenSocket, "agent.task");
+    const acceptedAtKai = nextFrame(reconnectedKai, "agent.accepted");
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "agent.request",
+      requestId: randomUUID(),
+      taskId: kaiTaskId,
+      projectId: project.id,
+      targetDeviceId: stephen.id,
+      agentId: "local-codex",
+      prompt: "Inspect authentication.",
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    expect((await taskAtStephen).task).toMatchObject({
+      id: kaiTaskId,
+      requesterDeviceId: kai.id,
+      targetDeviceId: stephen.id,
+    });
+    expect((await acceptedAtKai).task).toMatchObject({ id: kaiTaskId, status: "queued" });
+    const resultAtKai = nextFrame(reconnectedKai, "agent.result");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.result",
+      requestId: randomUUID(),
+      taskId: kaiTaskId,
+      eventId: randomUUID(),
+      content: "Authentication inspection complete.",
+      final: true,
+      status: "completed",
+    }));
+    expect(await resultAtKai).toMatchObject({
+      taskId: kaiTaskId,
+      final: true,
+      status: "completed",
+      event: { senderDeviceId: stephen.id },
+    });
+
+    const stephenTaskId = randomUUID();
+    const taskAtKai = nextFrame(reconnectedKai, "agent.task");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.request",
+      requestId: randomUUID(),
+      taskId: stephenTaskId,
+      projectId: project.id,
+      targetDeviceId: kai.id,
+      agentId: "local-codex",
+      prompt: "Run the reciprocal check.",
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    expect((await taskAtKai).task).toMatchObject({
+      id: stephenTaskId,
+      requesterDeviceId: stephen.id,
+      targetDeviceId: kai.id,
+    });
   }, 15_000);
 });

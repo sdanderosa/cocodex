@@ -32,6 +32,27 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     content: z.string().min(1).max(32_768),
     clientCreatedAt: z.iso.datetime(),
   }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("agent.request"),
+    requestId,
+    taskId: z.uuid(),
+    projectId,
+    targetDeviceId: z.uuid(),
+    agentId: z.string().trim().min(1).max(120),
+    prompt: z.string().min(1).max(32_768),
+    clientCreatedAt: z.iso.datetime(),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("agent.result"),
+    requestId,
+    taskId: z.uuid(),
+    eventId: z.uuid(),
+    content: z.string().min(1).max(32_768),
+    final: z.boolean(),
+    status: z.enum(["running", "completed", "failed"]),
+  }).strict(),
 ]);
 
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
@@ -48,6 +69,18 @@ export interface ChatEvent {
   eventId: string;
   senderDeviceId: string;
   content: string;
+  clientCreatedAt: string;
+  acceptedAt: string;
+}
+
+export interface AgentTask {
+  id: string;
+  projectId: string;
+  requesterDeviceId: string;
+  targetDeviceId: string;
+  agentId: string;
+  prompt: string;
+  status: "queued" | "running" | "completed" | "failed";
   clientCreatedAt: string;
   acceptedAt: string;
 }

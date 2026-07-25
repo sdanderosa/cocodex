@@ -2,6 +2,7 @@ import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import { clientFrameSchema, decodeInvitation, enrollmentClaimSchema } from "@cocodex/protocol";
+import { appendAgentResult, createAgentTask } from "./agent-routing";
 import type { ServerConfig } from "./config";
 import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
@@ -159,6 +160,7 @@ export function startCoCodexServer(
             );
             if (!valid) throw new Error("Invalid device proof");
             socket.data.authenticatedDeviceId = device.id;
+            socket.subscribe(`device:${device.id}`);
             socket.send(JSON.stringify({
               version: 1,
               type: "auth.ok",
@@ -187,6 +189,56 @@ export function startCoCodexServer(
               requestId,
               projectId: message.projectId,
               events,
+            }));
+            return;
+          }
+          if (message.type === "agent.request") {
+            const task = createAgentTask(db, {
+              id: message.taskId,
+              projectId: message.projectId,
+              requesterDeviceId: deviceId,
+              targetDeviceId: message.targetDeviceId,
+              agentId: message.agentId,
+              prompt: message.prompt,
+              clientCreatedAt: message.clientCreatedAt,
+            });
+            server.publish(`device:${task.targetDeviceId}`, JSON.stringify({
+              version: 1,
+              type: "agent.task",
+              task,
+            }));
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "agent.accepted",
+              requestId,
+              task,
+            }));
+            return;
+          }
+          if (message.type === "agent.result") {
+            const result = appendAgentResult(
+              db,
+              deviceId,
+              message.taskId,
+              message.eventId,
+              message.content,
+              message.final,
+              message.status,
+            );
+            server.publish(`project:${result.task.projectId}`, JSON.stringify({
+              version: 1,
+              type: "agent.result",
+              taskId: result.task.id,
+              final: message.final,
+              status: message.status,
+              event: result.event,
+            }));
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "agent.result.accepted",
+              requestId,
+              taskId: result.task.id,
+              sequence: result.event.sequence,
             }));
             return;
           }

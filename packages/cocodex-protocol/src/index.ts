@@ -14,5 +14,6 @@ export {
   clientFrameSchema,
   type ChatEvent,
   type ClientFrame,
+  type AgentTask,
   type SharedProject,
 } from "./collaboration";
