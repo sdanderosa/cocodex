@@ -28,7 +28,8 @@ export interface AgentBridgeSecurity {
 }
 
 function verifyTask(task: AgentTask, security: AgentBridgeSecurity): boolean {
-  if (task.targetDeviceId !== security.localDeviceId || task.status !== "queued") return false;
+  if (task.targetDeviceId !== security.localDeviceId
+    || (task.status !== "queued" && task.status !== "running")) return false;
   const now = (security.now ?? (() => new Date()))().getTime();
   if (Date.parse(task.expiresAt) <= now || Date.parse(task.issuedAt) > now + 60_000) return false;
   const trusted = security.trustedRequesterFingerprints.get(task.requesterDeviceId);
@@ -98,7 +99,10 @@ async function sendResult(
 }
 
 async function recoverTask(socket: WebSocket, security: AgentBridgeSecurity, taskId: string): Promise<void> {
-  if (!security.journalPath) return;
+  if (!security.journalPath) {
+    await sendResult(socket, security, taskId, "Local agent execution was interrupted and was not rerun.", true, "failed");
+    return;
+  }
   let pending = pendingAgentResults(security.journalPath, taskId);
   if (!pending.some(result => result.final)) {
     const interrupted: DurableAgentResult = {

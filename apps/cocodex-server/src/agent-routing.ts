@@ -151,7 +151,7 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
     t.status, t.accepted_at AS acceptedAt
     FROM agent_tasks t JOIN devices d ON d.id = t.requester_device_id
-    WHERE t.target_device_id = ? AND t.status = 'queued' AND t.expires_at > ?
+    WHERE t.target_device_id = ? AND t.status IN ('queued', 'running') AND t.expires_at > ?
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString()) as TaskRow[];
 }
 
