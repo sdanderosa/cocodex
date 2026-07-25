@@ -63,6 +63,16 @@ its local agent policy before invoking the local Codex runtime. Agent results
 are streamed back into the authoritative project chat. Private messages are
 decrypted locally and are never automatically added to an agent prompt.
 
+## Usage sharing
+
+The resident session aggregates local token counters and active-agent state into
+a bounded report, signs it with the device identity, and stores a protected
+copy for reconnect. The CoCodex page displays separate cards for project
+members. Optional quota percentages and reset times appear only when the local
+OpenCodex quota adapter has supplied them; missing data is shown as unreported.
+Provider credentials, refresh tokens, and raw account records never leave the
+client.
+
 ## Offline behavior and emergency control
 
 When the server is offline, normal local OpenCodex use continues. The GUI shows

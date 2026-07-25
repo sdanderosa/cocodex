@@ -12,6 +12,7 @@ export interface ClientPaths {
   agentJournal: string;
   trustedDevices: string;
   outbox: string;
+  usageReport: string;
 }
 
 export function defaultClientStateRoot(): string {
@@ -31,5 +32,6 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),
     trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),
+    usageReport: resolve(absoluteRoot, "usage-report.json"),
   };
 }

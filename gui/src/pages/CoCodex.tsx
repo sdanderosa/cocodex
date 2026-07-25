@@ -57,6 +57,33 @@ interface SharedProjectContext {
   updatedAt: string | null;
 }
 
+interface UsageReport {
+  deviceId: string;
+  revision: number;
+  updatedAt: string;
+  requests: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  activeAgents: number;
+  accountLabel?: string;
+  fiveHourPercent?: number;
+  fiveHourResetAt?: number;
+  weeklyPercent?: number;
+  weeklyResetAt?: number;
+  monthlyPercent?: number;
+  monthlyResetAt?: number;
+  customWindows?: { label: string; percent: number; resetAt?: number }[];
+}
+
+interface UsageReportView {
+  deviceId: string;
+  displayName: string;
+  report: UsageReport | null;
+  acceptedAt: string | null;
+}
+
 interface PresenceMember {
   deviceId: string;
   displayName: string;
@@ -85,6 +112,8 @@ interface SessionValue {
     events?: ChatEvent[];
     event?: ChatEvent;
     context?: SharedProjectContext;
+    reports?: UsageReportView[];
+    report?: UsageReportView;
   };
 }
 
@@ -139,6 +168,16 @@ function updateFromBase64(value: string): Uint8Array {
   return Uint8Array.from(binary, character => character.charCodeAt(0));
 }
 
+function usageResetLabel(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+  return new Date(milliseconds).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function usageTotalTokens(report: UsageReport): number {
+  return report.inputTokens + report.outputTokens;
+}
+
 export default function CoCodex({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [status, setStatus] = useState<Status>();
@@ -152,6 +191,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [sharedPrompt, setSharedPrompt] = useState("");
   const [sharedContext, setSharedContext] = useState<SharedProjectContext>();
   const [finalGoalDraft, setFinalGoalDraft] = useState("");
+  const [usageReports, setUsageReports] = useState<UsageReportView[]>([]);
   const [agentId, setAgentId] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -233,6 +273,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setSharedContext(frame.context);
         setFinalGoalDraft(frame.context.finalGoal);
       }
+      if (frame?.type === "usage.result" && Array.isArray(frame.reports)) {
+        setUsageReports(frame.reports);
+      } else if ((frame?.type === "usage.changed" || frame?.type === "usage.accepted") && frame.report) {
+        setUsageReports(previous => [...previous.filter(item => item.deviceId !== frame.report!.deviceId), frame.report!]
+          .sort((a, b) => a.displayName.localeCompare(b.displayName)));
+      }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
         setProjects(listedProjects);
@@ -312,10 +358,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setPresence([]);
     setSharedContext(undefined);
     setFinalGoalDraft("");
+    setUsageReports([]);
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
     void command({ type: "context.get", projectId });
+    void command({ type: "usage.get", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
 
   const enroll = async (event: FormEvent) => {
@@ -577,6 +625,48 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           </section>
 
           <aside className="card cocodex-private">
+            <section className="cocodex-usage">
+              <div className="cocodex-section-head">
+                <div><strong>{t("cocodex.usage.title")}</strong><small>{t("cocodex.usage.subtitle")}</small></div>
+                <IconRefresh />
+              </div>
+              <div className="cocodex-usage-list">
+                {usageReports.map(view => {
+                  const report = view.report;
+                  const windows = report ? [
+                    [t("cocodex.usage.fiveHour"), report.fiveHourPercent, report.fiveHourResetAt],
+                    [t("cocodex.usage.weekly"), report.weeklyPercent, report.weeklyResetAt],
+                    [t("cocodex.usage.monthly"), report.monthlyPercent, report.monthlyResetAt],
+                    ...(report.customWindows ?? []).map(window => [window.label, window.percent, window.resetAt] as const),
+                  ].filter((row): row is [string, number, number | undefined] => typeof row[1] === "number") : [];
+                  return (
+                    <article key={view.deviceId} className="cocodex-usage-card">
+                      <div className="cocodex-usage-card-head">
+                        <strong>{view.displayName}</strong>
+                        <small>{report ? t("cocodex.usage.updated", { time: new Date(report.updatedAt).toLocaleTimeString() }) : t("cocodex.usage.unreported")}</small>
+                      </div>
+                      {report ? (
+                        <>
+                          <small>{report.accountLabel || t("cocodex.usage.localAccount")}</small>
+                          <div className="cocodex-usage-metrics">
+                            <span>{t("cocodex.usage.requests", { count: report.requests.toLocaleString() })}</span>
+                            <span>{t("cocodex.usage.tokens", { count: usageTotalTokens(report).toLocaleString() })}</span>
+                            <span>{t("cocodex.usage.active", { count: report.activeAgents })}</span>
+                          </div>
+                          {windows.map(([label, percent, resetAt]) => (
+                            <div className="cocodex-usage-window" key={label}>
+                              <span>{label}</span><b>{Math.round(percent)}%</b>
+                              {resetAt !== undefined && <small>{t("cocodex.usage.reset", { time: usageResetLabel(resetAt) })}</small>}
+                            </div>
+                          ))}
+                        </>
+                      ) : <p className="muted">{t("cocodex.usage.noData")}</p>}
+                    </article>
+                  );
+                })}
+                {!usageReports.length && <p className="muted">{t("cocodex.usage.noMembers")}</p>}
+              </div>
+            </section>
             <div className="cocodex-section-head">
               <div><strong>{t("cocodex.private.title")}</strong><small>{t("cocodex.private.encrypted")}</small></div>
               <IconLock />

@@ -326,6 +326,25 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("Kai agent completed");
     expect(existsSync(join(kaiWorkspace, "kai-account-execution.json"))).toBeTrue();
 
+    const usageGetS = randomUUID();
+    const usageGetK = randomUUID();
+    stephen.send({ id: usageGetS, type: "usage.get", projectId: project.id });
+    kai.send({ id: usageGetK, type: "usage.get", projectId: project.id });
+    const [usageS, usageK] = await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "usage.result" && line.frame.requestId === usageGetS),
+      waitFor(kai, line => line.frame?.type === "usage.result" && line.frame.requestId === usageGetK),
+    ]);
+    const usageReportsS = usageS.frame.reports as any[];
+    const usageReportsK = usageK.frame.reports as any[];
+    expect(usageReportsS).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+    ]));
+    expect(usageReportsK).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ inputTokens: expect.any(Number) }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ outputTokens: expect.any(Number) }) }),
+    ]));
+
     const privateCanary = "PRIVATE-CANARY-7cLw9";
     kai.send({
       id: randomUUID(),
@@ -385,6 +404,16 @@ describe("three-process CoCodex private alpha", () => {
       finalGoal: "Complete the private alpha path",
       context: { acceptance: "three-process" },
     });
+    const recoveredUsageRequest = randomUUID();
+    kai.send({ id: recoveredUsageRequest, type: "usage.get", projectId: project.id });
+    const recoveredUsage = await waitFor(
+      kai,
+      line => line.frame?.type === "usage.result" && line.frame.requestId === recoveredUsageRequest,
+    );
+    expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 1 }) }),
+    ]));
 
     traceCheckpoint("recovered snapshots received");
     stephen.send({ id: "stop-s", type: "shutdown" });

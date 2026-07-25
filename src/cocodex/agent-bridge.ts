@@ -25,6 +25,7 @@ export interface AgentBridgeSecurity {
   serverPublicKeyPem: string;
   trustedRequesterFingerprints: ReadonlyMap<string, string>;
   journalPath?: string;
+  onActiveAgents?: (count: number) => void;
   now?: () => Date;
 }
 
@@ -167,6 +168,7 @@ export function attachLocalAgentBridge(
   const executionControllers = new Map<string, AbortController>();
   const MAX_LOCAL_AGENT_QUEUE = 8;
   let executionChain = Promise.resolve();
+  const reportActiveAgents = () => security.onActiveAgents?.(activeTasks.size);
   const listener = (event: MessageEvent) => {
     let raw: unknown;
     try {
@@ -187,6 +189,7 @@ export function attachLocalAgentBridge(
     executionControllers.set(task.id, executionController);
     if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
       activeTasks.add(task.id);
+      reportActiveAgents();
       const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
       const mustRecover = task.status === "running" || journalState === "started";
       executionChain = executionChain
@@ -199,10 +202,12 @@ export function attachLocalAgentBridge(
         .finally(() => {
           executionControllers.delete(task.id);
           activeTasks.delete(task.id);
+          reportActiveAgents();
         });
       return;
     }
     activeTasks.add(task.id);
+    reportActiveAgents();
     const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
     const mustRecover = task.status === "running" || journalState === "started";
     executionChain = executionChain
@@ -215,6 +220,7 @@ export function attachLocalAgentBridge(
       .finally(() => {
         executionControllers.delete(task.id);
         activeTasks.delete(task.id);
+        reportActiveAgents();
       });
   };
   socket.addEventListener("message", listener);

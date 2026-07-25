@@ -189,6 +189,19 @@ CREATE TABLE shared_project_context (
   revision INTEGER NOT NULL DEFAULT 0,
   updated_by_device_id TEXT REFERENCES devices(id),
   updated_at TEXT NOT NULL
-);`,
+  );`,
+  },
+  {
+    version: 9,
+    sql: `
+CREATE TABLE usage_reports (
+  device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+  report_json TEXT NOT NULL,
+  report_signature TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX usage_reports_updated ON usage_reports(updated_at);`,
   },
 ];

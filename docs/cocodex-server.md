@@ -90,6 +90,11 @@ replay rules, then routes a request to the host client. The host client
 revalidates and executes locally. Private-message rows contain ciphertext and
 routing metadata only; plaintext is not logged or passed into agent context.
 
+Signed usage reports are a separate sanitized server record. The server checks
+the reporting device's Ed25519 signature and revision, stores the latest report
+only, and returns it only to approved members of a shared project. It never
+receives provider credentials or raw quota/account records.
+
 The private alpha deliberately defers relay/libp2p traversal, automatic
 failover, full multi-device ratchets, and cross-platform service installers.
 Those are later requirements and must not be presented as available by the

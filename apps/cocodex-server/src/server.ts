@@ -24,6 +24,7 @@ import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts"
 import { serverEpoch } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
 import { getSharedProjectContext, updateSharedProjectContext } from "./shared-context";
+import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./usage";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -40,6 +41,7 @@ interface SocketData {
   subscribedProjects: Set<string>;
   subscribedPrompts: Set<string>;
   subscribedContexts: Set<string>;
+  subscribedUsages: Set<string>;
   agentReady: boolean;
 }
 
@@ -195,6 +197,25 @@ export function startCoCodexServer(
     }
   }
 
+  function sendToUsage(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedUsages.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedUsages.delete(projectId);
+      }
+    }
+  }
+
   function sendPresence(projectId: string, frame: unknown): void {
     sendToProject(projectId, frame);
   }
@@ -303,6 +324,7 @@ export function startCoCodexServer(
           subscribedProjects: new Set(),
           subscribedPrompts: new Set(),
           subscribedContexts: new Set(),
+          subscribedUsages: new Set(),
           agentReady: false,
         };
         if (bunServer.upgrade(request, { data })) return;
@@ -565,6 +587,39 @@ export function startCoCodexServer(
             socket.data.subscribedContexts.add(message.projectId);
             socket.send(JSON.stringify({ version: 1, type: "context.updated", requestId, context }));
             sendToContext(message.projectId, { version: 1, type: "context.changed", context });
+            return;
+          }
+          if (message.type === "usage.get") {
+            socket.data.subscribedUsages.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "usage.result",
+              requestId,
+              projectId: message.projectId,
+              reports: listUsageReports(db, message.projectId, deviceId),
+            }));
+            return;
+          }
+          if (message.type === "usage.report") {
+            const accepted = acceptUsageReport(db, deviceId, {
+              report: message.report,
+              signature: message.signature,
+            });
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "usage.accepted",
+              requestId,
+              report: accepted.view,
+            }));
+            if (accepted.created) {
+              for (const projectId of usageReportProjectIds(db, deviceId)) {
+                sendToUsage(projectId, {
+                  version: 1,
+                  type: "usage.changed",
+                  report: accepted.view,
+                });
+              }
+            }
             return;
           }
           if (message.type === "artifact.list") {

@@ -58,6 +58,10 @@ describe("CoCodex GUI bridge", () => {
       finalGoal: "Keep the shared goal authoritative",
       context: { source: "gui-test" },
     }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "usage.get",
+      projectId: crypto.randomUUID(),
+    }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.approval", taskId: "task-1", approved: true }).accepted).toBe(true);
     bridge.stop();
     await Bun.sleep(5);
@@ -65,6 +69,7 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
     expect(received.some((value: any) => value.type === "context.get")).toBe(true);
     expect(received.some((value: any) => value.type === "context.update" && value.finalGoal === "Keep the shared goal authoritative")).toBe(true);
+    expect(received.some((value: any) => value.type === "usage.get")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.approval" && value.approved === true)).toBe(true);
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");

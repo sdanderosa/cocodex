@@ -15,6 +15,7 @@ const ALLOWED_COMMANDS = new Set([
   "prompt.update",
   "context.get",
   "context.update",
+  "usage.get",
   "presence.update",
   "agent.request",
   "agent.cancel",

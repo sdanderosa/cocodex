@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { usageReportSchema } from "./usage";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -183,6 +184,19 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     requestId,
     projectId,
   }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("usage.get"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("usage.report"),
+    requestId,
+    report: usageReportSchema,
+    signature: z.string().min(64).max(256),
+  }).strict(),
 ]);
 
 export const agentTaskSchema = z.object({
@@ -283,3 +297,5 @@ export interface PrivateMessageEnvelope {
   clientCreatedAt: string;
   acceptedAt: string;
 }
+
+export type { UsageReport, UsageReportView } from "./usage";

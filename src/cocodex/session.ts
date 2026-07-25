@@ -11,6 +11,7 @@ import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
+import { loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
 
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
@@ -44,15 +45,37 @@ export async function runJsonLineSession(
   const chatCursors = new Map<string, number>();
   const promptSubscriptions = new Set<string>();
   const contextSubscriptions = new Set<string>();
+  const usageSubscriptions = new Set<string>();
   let privateCursor = 0;
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
+  let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
   const send = (frame: unknown) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("CoCodex Server is offline");
     socket.send(JSON.stringify(frame));
+  };
+  const publishUsage = (changes: Partial<typeof usageReport> = {}) => {
+    usageReport = {
+      ...usageReport,
+      ...changes,
+      revision: usageReport.revision + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    saveUsageReport(paths.usageReport, usageReport);
+    try {
+      send({
+        version: 1,
+        type: "usage.report",
+        requestId: randomUUID(),
+        report: usageReport,
+        signature: signUsageReport(usageReport, identity),
+      });
+    } catch {
+      // The protected local report is retried on the next connection.
+    }
   };
   const flush = () => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(0);
@@ -173,15 +196,34 @@ export async function runJsonLineSession(
     for (const projectId of contextSubscriptions) {
       send({ version: 1, type: "context.get", requestId: randomUUID(), projectId });
     }
+    for (const projectId of usageSubscriptions) {
+      send({ version: 1, type: "usage.get", requestId: randomUUID(), projectId });
+    }
+    try {
+      send({
+        version: 1,
+        type: "usage.report",
+        requestId: randomUUID(),
+        report: usageReport,
+        signature: signUsageReport(usageReport, identity),
+      });
+    } catch {
+      // The session will retry the persisted report on its next reconnect.
+    }
     send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
     let detachAgent: (() => void | Promise<void>) | undefined;
     if (existsSync(paths.agentPolicy)) {
       const policy = loadLocalAgentPolicy(paths.agentPolicy);
-      const onUsage = (usage: CodexUsage) => emit({
-        source: "local-usage",
-        deviceId: connection.deviceId,
-        usage,
-      });
+      const onUsage = (usage: CodexUsage) => {
+        emit({ source: "local-usage", deviceId: connection.deviceId, usage });
+        publishUsage({
+          requests: usageReport.requests + 1,
+          inputTokens: usageReport.inputTokens + (usage.inputTokens ?? 0),
+          cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
+          outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
+          reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
+        });
+      };
       detachAgent = attachLocalAgentBridge(connected, new CodexAgentAdapter({
         projectId: policy.projectId,
         agentId: policy.agentId,
@@ -194,6 +236,7 @@ export async function runJsonLineSession(
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
         trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
         journalPath: paths.agentJournal,
+        onActiveAgents: activeAgents => publishUsage({ activeAgents }),
       });
     }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
@@ -253,6 +296,15 @@ export async function runJsonLineSession(
           send({
             version: 1,
             type: "context.get",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
+        } else if (command.type === "usage.get") {
+          const projectId = String(command.projectId);
+          usageSubscriptions.add(projectId);
+          send({
+            version: 1,
+            type: "usage.get",
             requestId: controlRequestId(command.id),
             projectId,
           });

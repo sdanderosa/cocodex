@@ -9,8 +9,10 @@ import {
   agentRequestSigningTranscript,
   decodeInvitation,
   enrollmentSigningTranscript,
+  usageReportSigningTranscript,
   websocketAuthTranscript,
   type ChatEvent,
+  type UsageReport,
   publicKeyFingerprint,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
@@ -170,6 +172,25 @@ async function connect(
   return socket;
 }
 
+function usageReport(deviceId: string, revision = 1): UsageReport {
+  return {
+    version: 1,
+    deviceId,
+    revision,
+    updatedAt: new Date().toISOString(),
+    requests: revision,
+    inputTokens: 100 * revision,
+    cachedInputTokens: 20 * revision,
+    outputTokens: 50 * revision,
+    reasoningOutputTokens: 5 * revision,
+    activeAgents: revision,
+    accountLabel: "Main",
+    fiveHourPercent: 68,
+    weeklyPercent: 41,
+    monthlyPercent: 75,
+  };
+}
+
 describe("authenticated WSS collaboration", () => {
   test("two members share authoritative chat order and recover history by cursor", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-collaboration-"));
@@ -291,6 +312,44 @@ describe("authenticated WSS collaboration", () => {
     expect((await contextChangedAtStephen).context).toMatchObject({ revision: 1, updatedByDeviceId: kai.id });
     expect((await contextChangedAtKai).context).toMatchObject({ revision: 1, updatedByDeviceId: kai.id });
 
+    const usageResultAtStephen = nextFrame(stephenSocket, "usage.result");
+    const usageResultAtKai = nextFrame(kaiSocket, "usage.result");
+    for (const socket of [stephenSocket, kaiSocket]) {
+      socket.send(JSON.stringify({
+        version: 1,
+        type: "usage.get",
+        requestId: randomUUID(),
+        projectId: project.id,
+      }));
+    }
+    expect((await usageResultAtStephen).reports).toEqual([
+      expect.objectContaining({ deviceId: stephen.id, displayName: "Stephen", report: null }),
+      expect.objectContaining({ deviceId: kai.id, displayName: "Kai", report: null }),
+    ]);
+    expect((await usageResultAtKai).reports).toEqual([
+      expect.objectContaining({ deviceId: stephen.id, displayName: "Stephen", report: null }),
+      expect.objectContaining({ deviceId: kai.id, displayName: "Kai", report: null }),
+    ]);
+    const stephenUsage = usageReport(stephen.id);
+    const usageChangedAtStephen = nextFrame(stephenSocket, "usage.changed");
+    const usageChangedAtKai = nextFrame(kaiSocket, "usage.changed");
+    const usageAccepted = nextFrame(stephenSocket, "usage.accepted");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "usage.report",
+      requestId: randomUUID(),
+      report: stephenUsage,
+      signature: sign(null, usageReportSigningTranscript(stephenUsage), stephen.privateKey).toString("base64url"),
+    }));
+    expect((await usageAccepted).report).toMatchObject({ deviceId: stephen.id, report: stephenUsage });
+    expect((await usageChangedAtStephen).report).toMatchObject({ deviceId: stephen.id, report: stephenUsage });
+    expect((await usageChangedAtKai).report).toMatchObject({ deviceId: stephen.id, report: stephenUsage });
+    const storedUsage = db.query("SELECT report_json, report_signature FROM usage_reports WHERE device_id = ?").get(stephen.id) as {
+      report_json: string; report_signature: string;
+    };
+    expect(JSON.parse(storedUsage.report_json)).toEqual(stephenUsage);
+    expect(storedUsage.report_signature).toBeString();
+
     const privatePlaintext = "Stephen-only recovery phrase";
     const privateMessageId = randomUUID();
     const privateCreatedAt = new Date().toISOString();
@@ -334,6 +393,17 @@ describe("authenticated WSS collaboration", () => {
 
     kaiSocket.close();
     const reconnectedKai = await connect(server.port, kai, fingerprint);
+    const recoveredUsage = nextFrame(reconnectedKai, "usage.result");
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "usage.get",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await recoveredUsage).reports).toEqual([
+      expect.objectContaining({ deviceId: stephen.id, report: stephenUsage }),
+      expect.objectContaining({ deviceId: kai.id, report: null }),
+    ]);
     const recoveredPrivate = nextFrame(reconnectedKai, "private.snapshot");
     reconnectedKai.send(JSON.stringify({
       version: 1,

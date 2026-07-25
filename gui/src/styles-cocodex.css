@@ -47,6 +47,16 @@
 .cocodex-final-goal small, .cocodex-goal-revision { color: var(--muted); font-size: var(--text-caption); }
 .cocodex-final-goal textarea { resize: vertical; min-height: 52px; }
 .cocodex-goal-save { justify-self: end; }
+.cocodex-usage { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; }
+.cocodex-usage-list { display: grid; gap: 8px; max-height: 260px; overflow-y: auto; }
+.cocodex-usage-card { padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 45%, var(--raised)); }
+.cocodex-usage-card-head, .cocodex-usage-window { display: flex; align-items: baseline; gap: 7px; }
+.cocodex-usage-card-head { justify-content: space-between; }
+.cocodex-usage-card small, .cocodex-usage-window small { color: var(--muted); font-size: var(--text-caption); }
+.cocodex-usage-metrics { display: flex; flex-wrap: wrap; gap: 5px 9px; margin: 5px 0; color: var(--muted); font-size: var(--text-caption); }
+.cocodex-usage-window { margin-top: 3px; font-size: var(--text-caption); }
+.cocodex-usage-window span { flex: 1; }
+.cocodex-usage-window b { color: var(--green); }
 .cocodex-message-list { flex: 1; overflow-y: auto; padding: 16px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
 .cocodex-message-list article { max-width: 82%; margin: 0 0 12px; padding: 10px 12px; border-radius: 4px var(--radius) var(--radius) var(--radius); background: var(--raised); }
 .cocodex-message-list article.mine { margin-left: auto; border-radius: var(--radius) 4px var(--radius) var(--radius); background: color-mix(in srgb, #7c3aed 18%, var(--raised)); }
