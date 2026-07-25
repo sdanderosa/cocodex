@@ -176,10 +176,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-72 pass
+77 pass
 0 fail
-663 expect() calls
-Ran 72 tests across 26 files.
+716 expect() calls
+Ran 77 tests across 27 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
