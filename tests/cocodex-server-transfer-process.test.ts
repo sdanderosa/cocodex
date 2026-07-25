@@ -1,21 +1,24 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openDatabase } from "../apps/cocodex-server/src/database";
-import { approveDevice } from "../apps/cocodex-server/src/enrollment";
+import { approveDevice, devicePublicKeys } from "../apps/cocodex-server/src/enrollment";
 import { createInvitation } from "../apps/cocodex-server/src/invitations";
 import { loadServerIdentity } from "../apps/cocodex-server/src/identity";
 import { serverPaths } from "../apps/cocodex-server/src/paths";
-import { createProject } from "../apps/cocodex-server/src/shared-state";
+import { addProjectMember, createProject } from "../apps/cocodex-server/src/shared-state";
 import { tlsCertificateFingerprint } from "../apps/cocodex-server/src/tls";
 import {
   acceptServerAuthorityTransfer,
   connectAuthenticatedClient,
   enrollClient,
+  loadClientConnection,
 } from "../src/cocodex/client";
+import { loadOrCreateClientIdentity } from "../src/cocodex/identity";
 import { clientPaths } from "../src/cocodex/paths";
+import { openSignedPrivateMessage, sealSignedPrivateMessage } from "../src/cocodex/private-messaging";
 
 const roots: string[] = [];
 const children: Bun.Subprocess[] = [];
@@ -121,11 +124,13 @@ async function nextFrame(socket: WebSocket, expectedType: string): Promise<Recor
   });
 }
 
-test("hands a live server to a prepared process and reconnects a resident client", async () => {
+test("hands a live server to a prepared process and reconnects both resident clients with shared state", async () => {
   const sourceRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-source-process-"));
   const destinationRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-destination-process-"));
-  const clientRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-client-process-"));
-  roots.push(sourceRoot, destinationRoot, clientRoot);
+  const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-stephen-process-"));
+  const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-kai-process-"));
+  const staleRoot = mkdtempSync(join(tmpdir(), "cocodex-transfer-stale-process-"));
+  roots.push(sourceRoot, destinationRoot, stephenRoot, kaiRoot, staleRoot);
 
   const sourcePort = reservePort();
   const destinationPort = reservePort();
@@ -152,27 +157,91 @@ test("hands a live server to a prepared process and reconnects a resident client
   expect(JSON.parse(prepared.stdout)).toMatchObject({ prepared: true, targetRequest: targetRequestPath });
 
   const sourcePaths = serverPaths(sourceRoot);
-  const sourceIdentity = loadServerIdentity(sourcePaths);
   const sourceDatabase = openDatabase(sourcePaths.database);
-  const invitation = createInvitation(sourceDatabase, {
+  const sourceFingerprint = tlsCertificateFingerprint(sourcePaths.tlsCertificate);
+  const stephenInvitation = createInvitation(sourceDatabase, {
     host: "127.0.0.1",
     port: sourcePort,
-    serverFingerprint: tlsCertificateFingerprint(sourcePaths.tlsCertificate),
+    serverFingerprint: sourceFingerprint,
+  });
+  const kaiInvitation = createInvitation(sourceDatabase, {
+    host: "127.0.0.1",
+    port: sourcePort,
+    serverFingerprint: sourceFingerprint,
   });
   sourceDatabase.close();
 
   const source = await startServer(cli, sourceRoot);
   await waitForHealth(sourcePort);
 
-  const kaiPaths = clientPaths(clientRoot);
-  const connection = await enrollClient(invitation, "Kai", kaiPaths);
+  const stephenPaths = clientPaths(stephenRoot);
+  const kaiPaths = clientPaths(kaiRoot);
+  const stephenConnection = await enrollClient(stephenInvitation, "Stephen", stephenPaths);
+  const kaiConnection = await enrollClient(kaiInvitation, "Kai", kaiPaths);
   const approvalDatabase = openDatabase(sourcePaths.database);
-  const pending = approvalDatabase.query("SELECT fingerprint FROM devices WHERE id = ?")
-    .get(connection.deviceId) as { fingerprint: string } | null;
-  expect(pending?.fingerprint).toBeTruthy();
-  expect(approveDevice(approvalDatabase, pending!.fingerprint)).toBeTrue();
-  const project = createProject(approvalDatabase, "Transfer Alpha", connection.deviceId);
+  const stephenPending = approvalDatabase.query("SELECT fingerprint FROM devices WHERE id = ?")
+    .get(stephenConnection.deviceId) as { fingerprint: string } | null;
+  const kaiPending = approvalDatabase.query("SELECT fingerprint FROM devices WHERE id = ?")
+    .get(kaiConnection.deviceId) as { fingerprint: string } | null;
+  expect(stephenPending?.fingerprint).toBeTruthy();
+  expect(kaiPending?.fingerprint).toBeTruthy();
+  expect(approveDevice(approvalDatabase, stephenPending!.fingerprint)).toBeTrue();
+  expect(approveDevice(approvalDatabase, kaiPending!.fingerprint)).toBeTrue();
+  const project = createProject(approvalDatabase, "Transfer Alpha", stephenConnection.deviceId);
+  addProjectMember(approvalDatabase, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
   approvalDatabase.close();
+
+  const sourceStephen = await connectAuthenticatedClient(stephenPaths);
+  const sourceKai = await connectAuthenticatedClient(kaiPaths);
+  const transferMessageId = randomUUID();
+  const transferMessageCreatedAt = new Date().toISOString();
+  const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
+  const sourceKeyDatabase = openDatabase(sourcePaths.database);
+  const kaiDevice = devicePublicKeys(sourceKeyDatabase, kaiConnection.deviceId);
+  sourceKeyDatabase.close();
+  const transferCiphertext = await sealSignedPrivateMessage({
+    messageId: transferMessageId,
+    senderDeviceId: stephenConnection.deviceId,
+    recipientDeviceId: kaiConnection.deviceId,
+    text: "transfer-private-secret",
+    clientCreatedAt: transferMessageCreatedAt,
+  }, stephenIdentity.privateKeyPem, stephenIdentity.publicKeyPem, kaiDevice.messagingPublicKeyPem);
+  try {
+    const chatRequestId = randomUUID();
+    sourceStephen.send(JSON.stringify({
+      version: 1,
+      type: "chat.send",
+      requestId: chatRequestId,
+      projectId: project.id,
+      eventId: randomUUID(),
+      content: "chat-before-transfer",
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    const chatAccepted = await nextFrame(sourceStephen, "chat.accepted");
+    expect(chatAccepted.requestId).toBe(chatRequestId);
+    expect((chatAccepted.event as Record<string, unknown>).content).toBe("chat-before-transfer");
+
+    const privateRequestId = randomUUID();
+    sourceStephen.send(JSON.stringify({
+      version: 1,
+      type: "private.send",
+      requestId: privateRequestId,
+      messageId: transferMessageId,
+      recipientDeviceId: kaiConnection.deviceId,
+      ciphertext: transferCiphertext,
+      clientCreatedAt: transferMessageCreatedAt,
+    }));
+    const privateAccepted = await nextFrame(sourceStephen, "private.accepted");
+    expect(privateAccepted.requestId).toBe(privateRequestId);
+    expect((privateAccepted.message as Record<string, unknown>).messageId).toBe(transferMessageId);
+  } finally {
+    sourceStephen.close();
+    sourceKai.close();
+  }
+
+  // Preserve a pre-transfer connection as a local replay/stale-authority fixture.
+  rmSync(staleRoot, { recursive: true, force: true });
+  cpSync(kaiRoot, staleRoot, { recursive: true });
 
   const stopped = await runCli(cli, ["stop", "--state-root", sourceRoot]);
   expect(stopped.exitCode).toBe(0);
@@ -214,16 +283,74 @@ test("hands a live server to a prepared process and reconnects a resident client
 
   const destination = await startServer(cli, destinationRoot);
   await waitForHealth(destinationPort);
-  acceptServerAuthorityTransfer(exportResult.authorityCode, kaiPaths);
-  const socket = await connectAuthenticatedClient(kaiPaths);
+  const destinationPaths = serverPaths(destinationRoot);
+  const destinationIdentity = loadServerIdentity(destinationPaths);
+  const destinationFingerprint = tlsCertificateFingerprint(destinationPaths.tlsCertificate);
+  const stephenNext = acceptServerAuthorityTransfer(exportResult.authorityCode, stephenPaths);
+  const kaiNext = acceptServerAuthorityTransfer(exportResult.authorityCode, kaiPaths);
+  expect(stephenNext).toMatchObject({
+    host: "127.0.0.1",
+    port: destinationPort,
+    serverFingerprint: destinationFingerprint,
+    serverIdentityPublicKeyPem: destinationIdentity.publicKeyPem,
+    serverEpoch: 2,
+  });
+  expect(kaiNext).toMatchObject({
+    host: stephenNext.host,
+    port: stephenNext.port,
+    serverFingerprint: stephenNext.serverFingerprint,
+    serverCertificatePem: stephenNext.serverCertificatePem,
+    serverIdentityPublicKeyPem: stephenNext.serverIdentityPublicKeyPem,
+    serverEpoch: stephenNext.serverEpoch,
+  });
+  expect(loadClientConnection(clientPaths(staleRoot)).serverEpoch).toBe(1);
+  expect(() => acceptServerAuthorityTransfer(exportResult.authorityCode, kaiPaths))
+    .toThrow("currently trusted server");
+
+  const stephenSocket = await connectAuthenticatedClient(stephenPaths);
+  const kaiSocket = await connectAuthenticatedClient(kaiPaths);
   try {
-    const requestId = randomUUID();
-    socket.send(JSON.stringify({ version: 1, type: "project.list", requestId }));
-    const result = await nextFrame(socket, "project.list.result");
-    expect(result.requestId).toBe(requestId);
-    expect(result.projects).toEqual([{ id: project.id, name: "Transfer Alpha", role: "owner" }]);
+    for (const [socket, role] of [[stephenSocket, "owner"], [kaiSocket, "member"]] as const) {
+      const requestId = randomUUID();
+      socket.send(JSON.stringify({ version: 1, type: "project.list", requestId }));
+      const result = await nextFrame(socket, "project.list.result");
+      expect(result.requestId).toBe(requestId);
+      expect(result.projects).toEqual([{ id: project.id, name: "Transfer Alpha", role }]);
+
+      const chatRequestId = randomUUID();
+      socket.send(JSON.stringify({ version: 1, type: "chat.subscribe", requestId: chatRequestId, projectId: project.id, afterSequence: 0 }));
+      const chatSnapshot = await nextFrame(socket, "chat.snapshot");
+      expect(chatSnapshot.requestId).toBe(chatRequestId);
+      expect((chatSnapshot.events as Array<Record<string, unknown>>).map(event => event.content))
+        .toEqual(["chat-before-transfer"]);
+
+      const privateRequestId = randomUUID();
+      socket.send(JSON.stringify({ version: 1, type: "private.subscribe", requestId: privateRequestId, afterSequence: 0 }));
+      const privateSnapshot = await nextFrame(socket, "private.snapshot");
+      expect(privateSnapshot.requestId).toBe(privateRequestId);
+      const messages = privateSnapshot.messages as Array<Record<string, unknown>>;
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        messageId: transferMessageId,
+        senderDeviceId: stephenConnection.deviceId,
+        recipientDeviceId: kaiConnection.deviceId,
+        ciphertext: transferCiphertext,
+      });
+      if (role === "member") {
+        const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+        const opened = await openSignedPrivateMessage(
+          String(messages[0].ciphertext),
+          kaiIdentity.messagingPrivateKeyPem,
+          kaiIdentity.messagingPublicKeyPem,
+          messages[0] as { messageId: string; senderDeviceId: string; recipientDeviceId: string; clientCreatedAt: string },
+          stephenPending!.fingerprint,
+        );
+        expect(opened.text).toBe("transfer-private-secret");
+      }
+    }
   } finally {
-    socket.close();
+    stephenSocket.close();
+    kaiSocket.close();
   }
   const finalStatus = JSON.parse((await runCli(cli, ["status", "--state-root", destinationRoot])).stdout) as Record<string, unknown>;
   expect(finalStatus.running).toBeTrue();
@@ -231,4 +358,10 @@ test("hands a live server to a prepared process and reconnects a resident client
   expect(destinationStopped.exitCode).toBe(0);
   await destination.exited;
   expect(readFileSync(join(destinationRoot, "config.json"), "utf8")).toContain(String(destinationPort));
+  const destinationDatabase = openDatabase(destinationPaths.database);
+  const storedPrivate = destinationDatabase.query("SELECT ciphertext FROM private_messages WHERE message_id = ?")
+    .get(transferMessageId) as { ciphertext: string } | null;
+  destinationDatabase.close();
+  expect(storedPrivate?.ciphertext).toBe(transferCiphertext);
+  expect(storedPrivate?.ciphertext).not.toContain("transfer-private-secret");
 }, 60_000);
