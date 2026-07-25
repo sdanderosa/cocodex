@@ -5,7 +5,7 @@
   `72ce0f41` / `cc206faa` / `5230f979`, shared-prompt and lifecycle work
   `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
   `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
-  context `b70f5675`.
+  context `b70f5675`, and client Final Goal/docs `7010d6ec`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -30,7 +30,7 @@ Relevant output:
 ```text
 1 pass
 0 fail
-13 expect() calls
+18 expect() calls
 Ran 1 test across 1 file.
 ```
 
@@ -53,7 +53,9 @@ The exercised path includes:
   signed/sealed private messages, and protected fingerprint verification;
 - server ciphertext-only persistence;
 - durable offline chat queues, stable IDs, restart recovery, and duplicate-ID
-  checks.
+  checks;
+- revisioned server-authoritative Final Goal/context get, update, broadcast,
+  and recovery after the server restart.
 
 The current hardening suite also covers malformed-frame rejection, loopback GUI
 capability/origin checks, cancellation of in-flight local execution on client
@@ -186,9 +188,44 @@ The post-change rerun of the full three-process harness was attempted with:
 ```
 
 It exited `124` after the outer 120-second command timeout without test output
-and left no live CoCodex process. This is recorded as an incomplete rerun, not
-as evidence of a private-alpha pass; the previously recorded isolated
-three-process result above remains the last successful process-harness result.
+and left no live CoCodex process. A subsequent immediate retry completed and is
+recorded below; the cold-start timeout remains a known Windows load-sensitivity
+issue.
+
+Current retry command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'; .\node_modules\bun\bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Retry exit status: `0`.
+
+```text
+1 pass
+0 fail
+18 expect() calls
+Ran 1 test across 1 file. [8.74s]
+```
+
+The trace reached artifact build, both client connections, reciprocal local
+agent execution, private-message decryption, server stop, offline queueing,
+reconnect, recovered snapshots, and clean client shutdown. No CoCodex process
+remained afterward.
+
+## Client Final Goal surface and operator documentation
+
+Commit: `7010d6ec`
+
+The CoCodex page now loads the shared project context after project selection,
+renders the server revision, queues bounded `context.update` requests through
+the GUI bridge, and applies authoritative update/change frames. The bridge test
+asserts that context commands are capability-gated and forwarded without
+surfacing private ciphertext. `docs/cocodex-client.md` and
+`docs/cocodex-server.md` document separate builds, enrollment, direct hosting,
+manual forwarding, security boundaries, offline behavior, and deferred
+features; `docs/README.md` links them with the architecture references and
+evidence report.
 
 Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
 fallback; packet encoding/response validation and diagnostic classification are
