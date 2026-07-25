@@ -95,6 +95,12 @@ the reporting device's Ed25519 signature and revision, stores the latest report
 only, and returns it only to approved members of a shared project. It never
 receives provider credentials or raw quota/account records.
 
+Project-content encryption is not yet enabled. Shared chat, prompt state,
+Final Goal/context, task prompts, and artifacts remain server-readable in this
+alpha checkpoint; do not describe the current server as an end-to-end encrypted
+project store. The planned project-key epoch design is tracked in the
+architecture references and must be implemented before that claim is made.
+
 The private alpha deliberately defers relay/libp2p traversal, automatic
 failover, full multi-device ratchets, and cross-platform service installers.
 Those are later requirements and must not be presented as available by the

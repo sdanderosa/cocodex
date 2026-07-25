@@ -5,7 +5,8 @@
   `72ce0f41` / `cc206faa` / `5230f979`, shared-prompt and lifecycle work
   `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
   `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
-  context `b70f5675`, and client Final Goal/docs `7010d6ec`.
+  context `b70f5675`, client Final Goal/docs `7010d6ec`, and signed usage
+  reports `b2c124f9`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
@@ -55,7 +56,9 @@ The exercised path includes:
 - durable offline chat queues, stable IDs, restart recovery, and duplicate-ID
   checks;
 - revisioned server-authoritative Final Goal/context get, update, broadcast,
-  and recovery after the server restart.
+  and recovery after the server restart;
+- signed sanitized usage reports from both isolated clients, membership-scoped
+  usage cards, and usage recovery after the server restart.
 
 The current hardening suite also covers malformed-frame rejection, loopback GUI
 capability/origin checks, cancellation of in-flight local execution on client
@@ -109,10 +112,10 @@ Exit status: `0`
 Relevant output:
 
 ```text
-41 pass
+50 pass
 0 fail
-301 expect() calls
-Ran 41 tests across 21 files.
+388 expect() calls
+Ran 50 tests across 22 files.
 dist/cocodex-server.exe compiled
 dist/cocodex-client.exe compiled
 GUI production build completed
@@ -204,8 +207,8 @@ Retry exit status: `0`.
 ```text
 1 pass
 0 fail
-18 expect() calls
-Ran 1 test across 1 file. [8.74s]
+21 expect() calls
+Ran 1 test across 1 file. [8.44s]
 ```
 
 The trace reached artifact build, both client connections, reciprocal local
@@ -226,6 +229,31 @@ surfacing private ciphertext. `docs/cocodex-client.md` and
 manual forwarding, security boundaries, offline behavior, and deferred
 features; `docs/README.md` links them with the architecture references and
 evidence report.
+
+## Signed sanitized usage reports
+
+Commit: `b2c124f9`
+
+Commands:
+
+```powershell
+.\node_modules\bun\bin\bun.exe run typecheck:cocodex
+.\node_modules\bun\bin\bun.exe run --cwd gui build
+.\node_modules\bun\bin\bun.exe run --cwd gui lint
+.\node_modules\bun\bin\bun.exe run test:cocodex
+```
+
+Exit status: `0` for every command.
+
+The protocol test covers bounded report fields and transcript binding. The
+server usage test covers Ed25519 verification, stale revision rejection,
+membership filtering, idempotent persistence, and explicit missing reports.
+The real WSS collaboration test covers report, project-scoped get, broadcast,
+and reconnect. The three-process harness proves both isolated clients publish
+local token summaries and recover them after a server restart. The server
+stores `report_json` plus the signature in migration v9; it never receives
+provider credentials or raw account records. Optional quota percentages/reset
+times remain absent when the local runtime has not supplied them.
 
 Automatic direct hosting now attempts UPnP first and NAT-PMP as a bounded UDP
 fallback; packet encoding/response validation and diagnostic classification are
@@ -278,6 +306,8 @@ The following also remain deferred or insufficiently evidenced:
   identity/endpoint, reconnecting both clients, and retiring the old authority;
 - a dedicated 501-event network recovery test for both chat and private
   message pagination;
+- project-content encryption and key epochs are not implemented: shared chat,
+  prompts, Final Goal/context, tasks, and artifacts remain server-readable.
 - NAT-PMP/PCP, robust CGNAT detection, relay, libp2p,
   forward-secret ratcheted messaging, multi-device messaging, and revocation
   UI. The current GUI/server path includes a bounded Yjs shared-prompt
