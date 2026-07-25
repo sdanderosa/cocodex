@@ -12,6 +12,8 @@
   `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
   lifecycle timeout hardening `0f09345f`, encrypted project artifacts
   `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`.
+- authenticated prompt presence and lifecycle hardening `203dc406`, with
+  evidence `0cd1ec49` and client/server guidance `48f8aef3`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
