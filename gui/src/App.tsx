@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Dashboard from "./pages/Dashboard";
+import CoCodex from "./pages/CoCodex";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
 import Combos from "./pages/Combos";
@@ -12,7 +13,7 @@ import ApiKeys from "./pages/ApiKeys";
 import ClaudeCode from "./pages/ClaudeCode";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar, IconLock } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -25,6 +26,7 @@ type Theme = "light" | "dark" | "system";
 
 const PAGE_TKEY: Record<Page, TKey> = {
   dashboard: "nav.dashboard",
+  cocodex: "nav.cocodex",
   startup: "nav.startup",
   providers: "nav.providers",
   models: "nav.models",
@@ -43,6 +45,7 @@ const THEME_KEY = "ocx-theme";
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
   { id: "dashboard", tkey: "nav.dashboard", Icon: IconGrid },
+  { id: "cocodex", tkey: "nav.cocodex", Icon: IconLock },
   { id: "providers", tkey: "nav.providers", Icon: IconServer },
   { id: "models", tkey: "nav.models", Icon: IconBoxes },
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
@@ -184,7 +187,7 @@ export default function App() {
   const brand = (
     <div className="brand">
       <span className="brand-logo" role="img" aria-label={t("app.logoAria")} />
-      <span className="name">opencodex</span>
+      <span className="name">CoCodex</span>
       <span className="ver">v{displayedVersion}</span>
     </div>
   );
@@ -258,7 +261,7 @@ export default function App() {
             aria-label={t("dash.stop")} title={t("dash.stop")}>
             <IconPower /> <span className="mode">{stopping ? t("dash.stopping") : t("dash.stop")}</span>
           </button>
-          <a className="sidebar-link" href="https://github.com/lidge-jun/opencodex" target="_blank" rel="noreferrer">
+          <a className="sidebar-link" href="https://github.com/sdanderosa/cocodex" target="_blank" rel="noreferrer">
             <IconGithub /> {t("common.github")}
           </a>
         </div>
@@ -275,6 +278,7 @@ export default function App() {
             reloadLabel={t("errorBoundary.reload")}
           >
             {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
+            {page === "cocodex" && <CoCodex apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
             {page === "models" && <Models apiBase={API_BASE} />}

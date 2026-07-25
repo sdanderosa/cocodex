@@ -73,7 +73,7 @@ export async function enrollClient(
     messagingPublicKeyPem: identity.messagingPublicKeyPem,
   }), identity.privateKeyPem).toString("base64url");
   const enrolled = await postPinned(invitation, certificate.pem, "/v1/enroll", {
-    version: 1,
+    version: 1 as const,
     invitationCode,
     challengeId: challenge.id,
     challenge: challenge.challenge,
@@ -206,6 +206,17 @@ export function sendAgentRequest(
   prompt: string,
   paths: ClientPaths = clientPaths(),
 ): string {
+  const frame = createAgentRequest(projectId, agentId, prompt, paths);
+  socket.send(JSON.stringify(frame));
+  return frame.taskId;
+}
+
+export function createAgentRequest(
+  projectId: string,
+  agentId: string,
+  prompt: string,
+  paths: ClientPaths = clientPaths(),
+) {
   const identity = loadOrCreateClientIdentity(paths);
   const taskId = randomUUID();
   const nonce = randomBytes(32).toString("base64url");
@@ -214,9 +225,9 @@ export function sendAgentRequest(
   const signature = sign(null, agentRequestSigningTranscript({
     taskId, projectId, agentId, prompt, nonce, issuedAt, expiresAt,
   }), identity.privateKeyPem).toString("base64url");
-  socket.send(JSON.stringify({
+  return {
     version: 1,
-    type: "agent.request",
+    type: "agent.request" as const,
     requestId: randomUUID(),
     taskId,
     projectId,
@@ -226,6 +237,5 @@ export function sendAgentRequest(
     issuedAt,
     expiresAt,
     signature,
-  }));
-  return taskId;
+  };
 }

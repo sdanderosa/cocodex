@@ -4,7 +4,7 @@ import { clientFrameSchema, type ClientFrame } from "@cocodex/protocol";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "private.send" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "private.send" | "agent.request" }>;
 
 interface OutboxFile {
   version: 1;
@@ -18,7 +18,7 @@ function parseOutbox(path: string): OutboxFile {
   if (value.version !== 1 || !Array.isArray(value.events)) throw new Error("Invalid CoCodex outbox");
   const events = value.events.map(event => {
     const frame = clientFrameSchema.parse(event);
-    if (frame.type !== "chat.send" && frame.type !== "private.send") {
+    if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request") {
       throw new Error("Unsupported durable CoCodex event");
     }
     return frame;
@@ -47,8 +47,8 @@ export function queuedEvents(paths: ClientPaths): DurableFrame[] {
 
 export function enqueueDurableEvent(paths: ClientPaths, value: unknown): DurableFrame {
   const frame = clientFrameSchema.parse(value);
-  if (frame.type !== "chat.send" && frame.type !== "private.send") {
-    throw new Error("Only chat and private-message sends can be queued durably");
+  if (frame.type !== "chat.send" && frame.type !== "private.send" && frame.type !== "agent.request") {
+    throw new Error("Only chat, private-message, and agent requests can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
   const duplicate = events.find(event => event.requestId === frame.requestId);
@@ -67,12 +67,17 @@ export async function drainDurableOutbox(
   paths: ClientPaths,
   deliver: (frame: DurableFrame) => Promise<void>,
 ): Promise<number> {
-  const events = parseOutbox(paths.outbox).events;
   let delivered = 0;
-  while (delivered < events.length) {
-    await deliver(events[delivered]!);
+  while (true) {
+    const next = parseOutbox(paths.outbox).events[0];
+    if (!next) break;
+    await deliver(next);
+    const current = parseOutbox(paths.outbox).events;
+    const index = current.findIndex(event => event.requestId === next.requestId);
+    if (index < 0) continue;
+    current.splice(index, 1);
+    saveOutbox(paths.outbox, current);
     delivered += 1;
-    saveOutbox(paths.outbox, events.slice(delivered));
   }
   return delivered;
 }
@@ -91,7 +96,8 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
       const response = JSON.parse(String(event.data)) as Record<string, unknown>;
       if (response.requestId !== frame.requestId) return;
       if (response.type === "error") finish(new Error(String(response.error)));
-      else if (response.type === "chat.accepted" || response.type === "private.accepted") finish();
+      else if (response.type === "chat.accepted" || response.type === "private.accepted"
+        || response.type === "agent.accepted") finish();
     };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose, { once: true });

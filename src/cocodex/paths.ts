@@ -9,6 +9,8 @@ export interface ClientPaths {
   messagingPublicKey: string;
   connection: string;
   agentPolicy: string;
+  agentJournal: string;
+  trustedDevices: string;
   outbox: string;
 }
 
@@ -26,6 +28,8 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     messagingPublicKey: resolve(absoluteRoot, "messaging-x25519-public.pem"),
     connection: resolve(absoluteRoot, "connection.json"),
     agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
+    agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),
+    trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),
   };
 }

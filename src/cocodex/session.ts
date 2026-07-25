@@ -4,16 +4,19 @@ import { createInterface } from "node:readline";
 import { attachLocalAgentBridge } from "./agent-bridge";
 import { loadLocalAgentPolicy } from "./agent-policy";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
-import { loadClientConnection, maintainAuthenticatedClient, sendAgentRequest } from "./client";
+import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
 import { loadOrCreateClientIdentity } from "./identity";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
+import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 
 interface ControlCommand extends Record<string, unknown> {
   id?: string;
   type: string;
 }
+
+const SNAPSHOT_PAGE_SIZE = 500;
 
 export interface JsonLineSessionOptions {
   input?: NodeJS.ReadableStream;
@@ -42,8 +45,42 @@ export async function runJsonLineSession(
   };
   const flush = () => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(0);
-    flushChain = flushChain.then(() => flushDurableOutbox(socket!, paths));
+    // A connection can disappear while an outbox flush is in flight. Recover
+    // the serialization chain so that a transient failure cannot permanently
+    // prevent later reconnects from draining durable events.
+    flushChain = flushChain.catch(() => 0).then(() => flushDurableOutbox(socket!, paths));
     return flushChain;
+  };
+  const openPrivateEnvelope = (message: {
+    messageId: string;
+    senderDeviceId: string;
+    recipientDeviceId: string;
+    clientCreatedAt: string;
+    ciphertext: string;
+    sequence?: number;
+  }) => {
+    if (message.recipientDeviceId !== connection.deviceId) return;
+    const trusted = loadTrustedDevices(paths.trustedDevices)[message.senderDeviceId];
+    if (!trusted) {
+      emitError({
+        source: "private",
+        error: `Private-message sender ${message.senderDeviceId} is not an approved device`,
+      });
+      return;
+    }
+    void openSignedPrivateMessage(
+      message.ciphertext,
+      identity.messagingPrivateKeyPem,
+      identity.messagingPublicKeyPem,
+      message,
+      trusted,
+    ).then(opened => emit({
+      source: "private",
+      message: { ...message, ciphertext: undefined, text: opened.text },
+    })).catch(error => emitError({
+      source: "private",
+      error: error instanceof Error ? error.message : String(error),
+    }));
   };
 
   const session = maintainAuthenticatedClient(paths, async connected => {
@@ -51,35 +88,39 @@ export async function runJsonLineSession(
     const listener = (event: MessageEvent) => {
       const frame = JSON.parse(String(event.data)) as Record<string, any>;
       if (frame.type === "chat.snapshot") {
-        const latest = frame.events?.at(-1)?.sequence;
+        const events = Array.isArray(frame.events) ? frame.events : [];
+        const latest = events.at(-1)?.sequence;
         if (typeof latest === "number") chatCursors.set(frame.projectId, latest);
+        if (events.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
+          send({
+            version: 1,
+            type: "chat.subscribe",
+            requestId: randomUUID(),
+            projectId: frame.projectId,
+            afterSequence: latest,
+          });
+        }
       } else if (frame.type === "chat.event" || frame.type === "agent.result") {
         const item = frame.event;
         if (item?.projectId && typeof item.sequence === "number") {
           chatCursors.set(item.projectId, Math.max(chatCursors.get(item.projectId) ?? 0, item.sequence));
         }
       } else if (frame.type === "private.snapshot") {
-        const latest = frame.messages?.at(-1)?.sequence;
+        const messages = Array.isArray(frame.messages) ? frame.messages : [];
+        for (const message of messages) openPrivateEnvelope(message);
+        const latest = messages.at(-1)?.sequence;
         if (typeof latest === "number") privateCursor = Math.max(privateCursor, latest);
+        if (messages.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
+          send({
+            version: 1,
+            type: "private.subscribe",
+            requestId: randomUUID(),
+            afterSequence: latest,
+          });
+        }
       } else if (frame.type === "private.message" && typeof frame.message?.sequence === "number") {
         privateCursor = Math.max(privateCursor, frame.message.sequence);
-        if (frame.message.recipientDeviceId === connection.deviceId) {
-          const policy = existsSync(paths.agentPolicy) ? loadLocalAgentPolicy(paths.agentPolicy) : undefined;
-          const trusted = policy?.trustedRequesterFingerprints[frame.message.senderDeviceId];
-          void openSignedPrivateMessage(
-            frame.message.ciphertext,
-            identity.messagingPrivateKeyPem,
-            identity.messagingPublicKeyPem,
-            frame.message,
-            trusted,
-          ).then(opened => emit({
-            source: "private",
-            message: { ...frame.message, ciphertext: undefined, text: opened.text },
-          })).catch(error => emitError({
-            source: "private",
-            error: error instanceof Error ? error.message : String(error),
-          }));
-        }
+        openPrivateEnvelope(frame.message);
       }
       emit({ source: "server", frame });
     };
@@ -107,6 +148,7 @@ export async function runJsonLineSession(
         localDeviceId: connection.deviceId,
         serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
         trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+        journalPath: paths.agentJournal,
       });
     }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
@@ -165,15 +207,28 @@ export async function runJsonLineSession(
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, eventId });
         } else if (command.type === "agent.request") {
-          if (!socket) throw new Error("CoCodex Server is offline");
-          const taskId = sendAgentRequest(
-            socket,
+          const request = createAgentRequest(
             String(command.projectId),
             String(command.agentId),
             String(command.prompt),
             paths,
           );
-          emit({ source: "control", id: command.id, ok: true, taskId });
+          enqueueDurableEvent(paths, {
+            ...request,
+          });
+          const delivered = await flush();
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            queued: delivered === 0,
+            taskId: request.taskId,
+          });
+        } else if (command.type === "device.trust") {
+          const deviceId = String(command.deviceId);
+          const fingerprint = String(command.fingerprint);
+          trustDevice(paths.trustedDevices, deviceId, fingerprint);
+          emit({ source: "control", id: command.id, ok: true, deviceId });
         } else if (command.type === "private.send") {
           const messageId = String(command.messageId ?? randomUUID());
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());

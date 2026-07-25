@@ -8,6 +8,21 @@ import type { LocalAgentAdapter } from "./agent-bridge";
 const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
+const SAFE_ENVIRONMENT_KEYS = [
+  "APPDATA", "CODEX_CLI_PATH", "CODEX_HOME", "HOME", "HOMEDRIVE", "HOMEPATH",
+  "LOCALAPPDATA", "PATH", "PATHEXT", "SystemDrive", "SystemRoot",
+  "TEMP", "TMP", "USERPROFILE", "WINDIR",
+  // Deterministic integration-runtime inputs; neither contains credentials.
+  "COCODEX_ACCOUNT_FIXTURE", "CODEX_RUNTIME_MARKER",
+] as const;
+
+function codexEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {};
+  for (const key of SAFE_ENVIRONMENT_KEYS) {
+    if (source[key] !== undefined) result[key] = source[key];
+  }
+  return result;
+}
 
 export interface CodexUsage {
   inputTokens?: number;
@@ -73,7 +88,7 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       invocation.args,
       {
         cwd: this.options.workspaceRoot,
-        env: process.env,
+        env: codexEnvironment(process.env),
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments: invocation.options.windowsVerbatimArguments,

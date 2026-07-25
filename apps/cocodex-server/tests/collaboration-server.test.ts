@@ -154,6 +154,11 @@ async function connect(port: number, device: TestDevice, serverFingerprint: stri
     signature: proof,
   }));
   await authenticated;
+  socket.send(JSON.stringify({
+    version: 1,
+    type: "agent.ready",
+    requestId: randomUUID(),
+  }));
   return socket;
 }
 

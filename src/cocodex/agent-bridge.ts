@@ -6,6 +6,13 @@ import {
   publicKeyFingerprint,
   type AgentTask,
 } from "@cocodex/protocol";
+import {
+  acknowledgeAgentResult,
+  appendAgentResult,
+  beginAgentTask,
+  pendingAgentResults,
+  type DurableAgentResult,
+} from "./agent-journal";
 
 export interface LocalAgentAdapter {
   authorize(task: AgentTask): boolean | Promise<boolean>;
@@ -16,6 +23,7 @@ export interface AgentBridgeSecurity {
   localDeviceId: string;
   serverPublicKeyPem: string;
   trustedRequesterFingerprints: ReadonlyMap<string, string>;
+  journalPath?: string;
   now?: () => Date;
 }
 
@@ -50,9 +58,61 @@ function verifyTask(task: AgentTask, security: AgentBridgeSecurity): boolean {
   }), createPublicKey(security.serverPublicKeyPem), Buffer.from(task.serverSignature, "base64url"));
 }
 
-function sendResult(socket: WebSocket, taskId: string, content: string, final: boolean, status: "running" | "completed" | "failed"): void {
-  socket.send(JSON.stringify({ version: 1, type: "agent.result", requestId: randomUUID(), taskId,
-    eventId: randomUUID(), content, final, status }));
+function deliverResult(socket: WebSocket, result: DurableAgentResult): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => finish(new Error("Timed out waiting for agent result acknowledgement")), 10_000);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("close", onClose);
+      error ? reject(error) : resolve();
+    };
+    const onClose = () => finish(new Error("Connection closed while delivering agent result"));
+    const onMessage = (event: MessageEvent) => {
+      let frame: Record<string, unknown>;
+      try { frame = JSON.parse(String(event.data)) as Record<string, unknown>; }
+      catch { return; }
+      if (frame.requestId !== result.requestId) return;
+      if (frame.type === "agent.result.accepted") finish();
+      else if (frame.type === "error") finish(new Error(String(frame.error)));
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("close", onClose, { once: true });
+    socket.send(JSON.stringify(result));
+  });
+}
+
+async function sendResult(
+  socket: WebSocket,
+  security: AgentBridgeSecurity,
+  taskId: string,
+  content: string,
+  final: boolean,
+  status: "running" | "completed" | "failed",
+): Promise<void> {
+  const result: DurableAgentResult = { version: 1, type: "agent.result", requestId: randomUUID(), taskId,
+    eventId: randomUUID(), content, final, status };
+  if (security.journalPath) appendAgentResult(security.journalPath, taskId, result);
+  await deliverResult(socket, result);
+  if (security.journalPath) acknowledgeAgentResult(security.journalPath, taskId, result.eventId);
+}
+
+async function recoverTask(socket: WebSocket, security: AgentBridgeSecurity, taskId: string): Promise<void> {
+  if (!security.journalPath) return;
+  let pending = pendingAgentResults(security.journalPath, taskId);
+  if (!pending.some(result => result.final)) {
+    const interrupted: DurableAgentResult = {
+      version: 1, type: "agent.result", requestId: randomUUID(), taskId,
+      eventId: randomUUID(), content: "Local agent execution was interrupted and was not rerun.",
+      final: true, status: "failed",
+    };
+    appendAgentResult(security.journalPath, taskId, interrupted);
+    pending = [...pending, interrupted];
+  }
+  for (const result of pending) {
+    await deliverResult(socket, result);
+    acknowledgeAgentResult(security.journalPath, taskId, result.eventId);
+  }
 }
 
 function chunks(value: string): string[] {
@@ -61,22 +121,31 @@ function chunks(value: string): string[] {
   return result;
 }
 
-async function executeTask(socket: WebSocket, adapter: LocalAgentAdapter, task: AgentTask): Promise<void> {
+async function executeTask(
+  socket: WebSocket,
+  adapter: LocalAgentAdapter,
+  task: AgentTask,
+  security: AgentBridgeSecurity,
+): Promise<void> {
   if (!await adapter.authorize(task)) {
-    sendResult(socket, task.id, "Local execution policy rejected this task.", true, "failed");
+    await sendResult(socket, security, task.id, "Local execution policy rejected this task.", true, "failed");
     return;
   }
   try {
     let pending: string | undefined;
     for await (const output of adapter.execute(task)) {
       for (const chunk of chunks(output)) {
-        if (pending !== undefined) sendResult(socket, task.id, pending, false, "running");
+        if (pending !== undefined) await sendResult(socket, security, task.id, pending, false, "running");
         pending = chunk;
       }
     }
-    sendResult(socket, task.id, pending ?? "Task completed without textual output.", true, "completed");
+    await sendResult(socket, security, task.id, pending ?? "Task completed without textual output.", true, "completed");
   } catch {
-    sendResult(socket, task.id, "Local agent execution failed. Review the host client logs.", true, "failed");
+    try {
+      await sendResult(socket, security, task.id, "Local agent execution failed. Review the host client logs.", true, "failed");
+    } catch {
+      // The durable journal will replay the final result after reconnect.
+    }
   }
 }
 
@@ -86,6 +155,8 @@ export function attachLocalAgentBridge(
   security: AgentBridgeSecurity,
 ): () => void {
   const activeTasks = new Set<string>();
+  const MAX_LOCAL_AGENT_QUEUE = 8;
+  let executionChain = Promise.resolve();
   const listener = (event: MessageEvent) => {
     let raw: unknown;
     try {
@@ -97,9 +168,31 @@ export function attachLocalAgentBridge(
     if (!parsed.success) return;
     const task = parsed.data.task;
     if (activeTasks.has(task.id) || !verifyTask(task, security)) return;
+    if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
+      activeTasks.add(task.id);
+      const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
+      executionChain = executionChain
+        .catch(() => undefined)
+        .then(() => journalState === "new"
+          ? sendResult(socket, security, task.id, "Local execution queue is full.", true, "failed")
+          : journalState === "started" ? recoverTask(socket, security, task.id) : undefined)
+        .finally(() => activeTasks.delete(task.id));
+      return;
+    }
     activeTasks.add(task.id);
-    void executeTask(socket, adapter, task).finally(() => activeTasks.delete(task.id));
+    const journalState = security.journalPath ? beginAgentTask(security.journalPath, task.id) : "new";
+    executionChain = executionChain
+      .catch(() => undefined)
+      .then(() => journalState === "new"
+        ? executeTask(socket, adapter, task, security)
+        : journalState === "started" ? recoverTask(socket, security, task.id) : undefined)
+      .finally(() => activeTasks.delete(task.id));
   };
   socket.addEventListener("message", listener);
+  socket.send(JSON.stringify({
+    version: 1,
+    type: "agent.ready",
+    requestId: randomUUID(),
+  }));
   return () => socket.removeEventListener("message", listener);
 }

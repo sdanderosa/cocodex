@@ -10,6 +10,10 @@ const bun = resolve(root, "node_modules/bun/bin/bun.exe");
 const temporaryRoots: string[] = [];
 const residents: Resident[] = [];
 
+function traceCheckpoint(name: string): void {
+  if (process.env.COCODEX_TEST_TRACE === "1") console.error(`[private-alpha] ${name}`);
+}
+
 interface Resident {
   process: ReturnType<typeof Bun.spawn>;
   lines: Array<Record<string, any>>;
@@ -155,6 +159,7 @@ describe("three-process CoCodex private alpha", () => {
     mkdirSync(stephenWorkspace, { recursive: true });
     mkdirSync(kaiWorkspace, { recursive: true });
     await buildArtifacts(serverExe, clientExe, fixtureExe);
+    traceCheckpoint("artifacts built");
     await run(serverExe, [
       "init", "--public-host", "127.0.0.1", "--port", String(port), "--state-root", serverRoot,
     ]);
@@ -223,6 +228,7 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(stephen, line => line.source === "session" && line.state === "connected"),
       waitFor(kai, line => line.source === "session" && line.state === "connected"),
     ]);
+    traceCheckpoint("clients connected");
     const stephenPid = stephen.process.pid;
     const kaiPid = kai.process.pid;
 
@@ -266,6 +272,7 @@ describe("three-process CoCodex private alpha", () => {
     await waitFor(stephen, line => line.source === "local-usage" && line.deviceId === stephenDevice.id);
     await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.final === true
       && line.frame.event?.content?.includes("stephen-account"));
+    traceCheckpoint("Stephen agent completed");
     expect(existsSync(join(stephenWorkspace, "stephen-account-execution.json"))).toBeTrue();
     expect(existsSync(join(kaiWorkspace, "stephen-account-execution.json"))).toBeFalse();
 
@@ -279,6 +286,7 @@ describe("three-process CoCodex private alpha", () => {
     await waitFor(kai, line => line.source === "local-usage" && line.deviceId === kaiDevice.id);
     await waitFor(stephen, line => line.frame?.type === "agent.result" && line.frame.final === true
       && line.frame.event?.content?.includes("kai-account"));
+    traceCheckpoint("Kai agent completed");
     expect(existsSync(join(kaiWorkspace, "kai-account-execution.json"))).toBeTrue();
 
     const privateCanary = "PRIVATE-CANARY-7cLw9";
@@ -290,9 +298,12 @@ describe("three-process CoCodex private alpha", () => {
       text: privateCanary,
     });
     await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);
+    traceCheckpoint("private message decrypted");
 
+    traceCheckpoint("stopping first server");
     server.process.kill();
     await server.process.exited;
+    traceCheckpoint("first server stopped");
     residents.splice(residents.indexOf(server), 1);
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "disconnected"),
@@ -307,6 +318,7 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(kai, line => line.source === "control" && line.id === offlineK && line.queued === true),
     ]);
 
+    traceCheckpoint("offline queues accepted");
     server = startServer();
     await waitFor(server, line => line.ready === true);
     await Promise.all([
@@ -315,16 +327,21 @@ describe("three-process CoCodex private alpha", () => {
     ]);
     expect(stephen.process.pid).toBe(stephenPid);
     expect(kai.process.pid).toBe(kaiPid);
+    traceCheckpoint("clients reconnected");
     await Promise.all([
-      waitFor(stephen, line => line.frame?.type === "chat.snapshot"
-        && line.frame.events?.some((item: any) => item.content === "Kai offline queued")),
-      waitFor(kai, line => line.frame?.type === "chat.snapshot"
-        && line.frame.events?.some((item: any) => item.content === "Stephen offline queued")),
+      waitFor(stephen, line => (line.frame?.type === "chat.snapshot"
+        && line.frame.events?.some((item: any) => item.content === "Kai offline queued"))
+        || (line.frame?.type === "chat.event" && line.frame.event?.content === "Kai offline queued")),
+      waitFor(kai, line => (line.frame?.type === "chat.snapshot"
+        && line.frame.events?.some((item: any) => item.content === "Stephen offline queued"))
+        || (line.frame?.type === "chat.event" && line.frame.event?.content === "Stephen offline queued")),
     ]);
 
+    traceCheckpoint("recovered snapshots received");
     stephen.send({ id: "stop-s", type: "shutdown" });
     kai.send({ id: "stop-k", type: "shutdown" });
     await Promise.all([stephen.process.exited, kai.process.exited]);
+    traceCheckpoint("clients stopped");
     residents.splice(residents.indexOf(stephen), 1);
     residents.splice(residents.indexOf(kai), 1);
     server.process.kill();

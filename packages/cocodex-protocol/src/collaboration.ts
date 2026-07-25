@@ -72,6 +72,11 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("agent.ready"),
+    requestId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("agent.result"),
     requestId,
     taskId: z.uuid(),

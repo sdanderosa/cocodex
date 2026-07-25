@@ -91,7 +91,10 @@ describe("official Codex local agent adapter", () => {
         shell: false,
         windowsHide: true,
       });
-      expect(invoked?.options.env).toBe(process.env);
+      expect(invoked?.options.env).not.toBe(process.env);
+      expect(invoked?.options.env?.PATH).toBe(process.env.PATH);
+      expect(invoked?.options.env?.OPENAI_API_KEY).toBeUndefined();
+      expect(invoked?.options.env?.COCODEX_ENV_CANARY).toBeUndefined();
       expect(invoked?.args).toContain("--json");
       expect(invoked?.args).toContain("--ephemeral");
       expect(invoked?.args).toContain("workspace-write");

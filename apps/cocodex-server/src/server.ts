@@ -23,6 +23,8 @@ import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
+const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 8;
+const MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE = 30;
 const AUTHENTICATION_TIMEOUT_MS = 10_000;
 
 interface SocketData {
@@ -30,7 +32,9 @@ interface SocketData {
   authenticatedDeviceId?: string;
   authTimer?: ReturnType<typeof setTimeout>;
   preAuthCounted: boolean;
+  remoteAddress: string;
   subscribedProjects: Set<string>;
+  agentReady: boolean;
 }
 
 interface DeviceAuthRow {
@@ -83,6 +87,8 @@ export function startCoCodexServer(
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
   const sockets = new Set<ServerWebSocket<SocketData>>();
   let unauthenticatedSocketCount = 0;
+  const unauthenticatedByIp = new Map<string, number>();
+  const connectionAttemptsByIp = new Map<string, number[]>();
 
   function clearPreAuth(socket: ServerWebSocket<SocketData>): void {
     if (socket.data.authTimer) {
@@ -92,15 +98,20 @@ export function startCoCodexServer(
     if (socket.data.preAuthCounted) {
       socket.data.preAuthCounted = false;
       unauthenticatedSocketCount -= 1;
+      const remaining = (unauthenticatedByIp.get(socket.data.remoteAddress) ?? 1) - 1;
+      if (remaining > 0) unauthenticatedByIp.set(socket.data.remoteAddress, remaining);
+      else unauthenticatedByIp.delete(socket.data.remoteAddress);
     }
   }
 
-  function sendToDevice(deviceId: string, frame: unknown): void {
+  function sendToDevice(deviceId: string, frame: unknown, requireAgentReady = false): void {
     const device = deviceForAuthentication(db, deviceId);
     if (!device || device.status !== "approved") return;
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
-      if (socket.data.authenticatedDeviceId === deviceId) socket.send(encoded);
+      if (socket.data.authenticatedDeviceId === deviceId && (!requireAgentReady || socket.data.agentReady)) {
+        socket.send(encoded);
+      }
     }
   }
 
@@ -182,18 +193,36 @@ export function startCoCodexServer(
         }
       }
       if (url.pathname === "/v1/connect") {
+        const remoteAddress = bunServer.requestIP(request)?.address ?? "unknown";
+        const cutoff = Date.now() - 60_000;
+        const attempts = (connectionAttemptsByIp.get(remoteAddress) ?? [])
+          .filter(timestamp => timestamp > cutoff);
+        if (attempts.length >= MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE) {
+          return json({ error: "Connection rate limit exceeded" }, 429);
+        }
+        attempts.push(Date.now());
+        connectionAttemptsByIp.set(remoteAddress, attempts);
         if (unauthenticatedSocketCount >= MAX_UNAUTHENTICATED_SOCKETS) {
           return json({ error: "Too many unauthenticated connections" }, 503);
         }
+        if ((unauthenticatedByIp.get(remoteAddress) ?? 0) >= MAX_UNAUTHENTICATED_SOCKETS_PER_IP) {
+          return json({ error: "Too many unauthenticated connections from this address" }, 429);
+        }
         const challenge = randomBytes(32).toString("base64url");
         unauthenticatedSocketCount += 1;
+        unauthenticatedByIp.set(remoteAddress, (unauthenticatedByIp.get(remoteAddress) ?? 0) + 1);
         const data: SocketData = {
           challenge,
           preAuthCounted: true,
+          remoteAddress,
           subscribedProjects: new Set(),
+          agentReady: false,
         };
         if (bunServer.upgrade(request, { data })) return;
         unauthenticatedSocketCount -= 1;
+        const remaining = (unauthenticatedByIp.get(remoteAddress) ?? 1) - 1;
+        if (remaining > 0) unauthenticatedByIp.set(remoteAddress, remaining);
+        else unauthenticatedByIp.delete(remoteAddress);
         return json({ error: "WebSocket upgrade failed" }, 400);
       }
       return json({ error: "Not found" }, 404);
@@ -243,9 +272,6 @@ export function startCoCodexServer(
               deviceId: device.id,
               serverIdentityPublicKeyPem: identity.publicKeyPem,
             }));
-            for (const task of pendingAgentTasks(db, device.id)) {
-              socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
-            }
             return;
           }
           if (message.type === "auth.response") throw new Error("Device is already authenticated");
@@ -253,6 +279,18 @@ export function startCoCodexServer(
           const currentDevice = deviceForAuthentication(db, deviceId);
           if (!currentDevice || currentDevice.status !== "approved") {
             socket.close(1008, "Device authorization was revoked");
+            return;
+          }
+          if (message.type === "agent.ready") {
+            socket.data.agentReady = true;
+            for (const task of pendingAgentTasks(db, deviceId)) {
+              socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
+            }
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "agent.ready.accepted",
+              requestId,
+            }));
             return;
           }
           if (message.type === "project.list") {
@@ -324,7 +362,7 @@ export function startCoCodexServer(
               version: 1,
               type: "agent.task",
               task,
-            });
+            }, true);
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.accepted",
@@ -343,14 +381,16 @@ export function startCoCodexServer(
               message.final,
               message.status,
             );
-            sendToProject(result.task.projectId, {
-              version: 1,
-              type: "agent.result",
-              taskId: result.task.id,
-              final: message.final,
-              status: message.status,
-              event: result.event,
-            });
+            if (result.created) {
+              sendToProject(result.task.projectId, {
+                version: 1,
+                type: "agent.result",
+                taskId: result.task.id,
+                final: message.final,
+                status: message.status,
+                event: result.event,
+              });
+            }
             socket.send(JSON.stringify({
               version: 1,
               type: "agent.result.accepted",

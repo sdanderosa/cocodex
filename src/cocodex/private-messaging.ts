@@ -95,7 +95,7 @@ export async function openSignedPrivateMessage(
   recipientPrivateKeyPem: string,
   recipientPublicKeyPem: string,
   envelope: { messageId: string; senderDeviceId: string; recipientDeviceId: string; clientCreatedAt: string },
-  expectedSenderFingerprint?: string,
+  expectedSenderFingerprint: string,
 ): Promise<PrivateMessagePlaintext> {
   const decoded = JSON.parse(await openPrivateMessage(ciphertext, recipientPrivateKeyPem, recipientPublicKeyPem)) as PrivateMessagePlaintext;
   if (decoded.version !== 1 || decoded.messageId !== envelope.messageId
@@ -106,7 +106,7 @@ export async function openSignedPrivateMessage(
     || typeof decoded.senderPublicKeyPem !== "string" || typeof decoded.signature !== "string") {
     throw new Error("Private-message envelope validation failed");
   }
-  if (expectedSenderFingerprint && publicKeyFingerprint(decoded.senderPublicKeyPem) !== expectedSenderFingerprint) {
+  if (publicKeyFingerprint(decoded.senderPublicKeyPem) !== expectedSenderFingerprint) {
     throw new Error("Private-message sender identity is not trusted");
   }
   const valid = verify(null, privateMessageTranscript(decoded), createPublicKey(decoded.senderPublicKeyPem), Buffer.from(decoded.signature, "base64url"));

@@ -1,0 +1,55 @@
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
+import { join } from "node:path";
+import { CoCodexGuiBridge } from "../src/cocodex/gui-bridge";
+import { clientPaths } from "../src/cocodex/paths";
+
+describe("CoCodex GUI bridge", () => {
+  test("runs the resident session without exposing private ciphertext", async () => {
+    const root = join(import.meta.dir, ".tmp", crypto.randomUUID());
+    mkdirSync(root, { recursive: true });
+    const paths = clientPaths(root);
+    writeFileSync(paths.connection, JSON.stringify({
+      version: 1,
+      host: "server.example",
+      port: 48120,
+      serverFingerprint: "server-fingerprint",
+      serverCertificatePem: "certificate",
+      serverIdentityPublicKeyPem: "identity",
+      deviceId: crypto.randomUUID(),
+      displayName: "Stephen",
+    }));
+
+    const received: unknown[] = [];
+    const runner = async (_paths: typeof paths, options: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream }) => {
+      const input = options.input as PassThrough;
+      const output = options.output as PassThrough;
+      output.write(`${JSON.stringify({ source: "session", state: "connected", deviceId: "device" })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: { type: "private.message", message: { messageId: "message", ciphertext: "secret-box" } },
+      })}\n`);
+      for await (const chunk of input) {
+        for (const line of String(chunk).trim().split("\n")) {
+          const command = JSON.parse(line);
+          received.push(command);
+          if (command.type === "shutdown") return;
+        }
+      }
+    };
+    const bridge = new CoCodexGuiBridge(paths, runner);
+
+    expect(bridge.start().configured).toBe(true);
+    await Bun.sleep(5);
+    expect(bridge.status().state).toBe("connected");
+    expect(bridge.command({ type: "project.list" }).accepted).toBe(true);
+    bridge.stop();
+    await Bun.sleep(5);
+
+    expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    const privateEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "private.message");
+    expect(JSON.stringify(privateEvent)).not.toContain("secret-box");
+  });
+});

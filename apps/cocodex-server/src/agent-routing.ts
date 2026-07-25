@@ -8,10 +8,11 @@ import {
   type ChatEvent,
 } from "@cocodex/protocol";
 import type { ServerIdentity } from "./identity";
-import { appendChatEvent, requireProjectMembership } from "./shared-state";
+import { appendChatEventResult, requireProjectMembership } from "./shared-state";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_TASK_LIFETIME_MS = 5 * 60_000;
+const MAX_PENDING_TASKS_PER_REQUESTER = 8;
 
 export interface RegisterAgentInput {
   id: string;
@@ -99,6 +100,12 @@ export function createAgentTask(
   const requester = db.query(`SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?`)
     .get(input.requesterDeviceId) as DeviceKeyRow | null;
   if (!requester || requester.status !== "approved") throw new Error("Requester device is not approved");
+  const pending = db.query(`SELECT COUNT(*) AS count FROM agent_tasks
+    WHERE requester_device_id = ? AND status IN ('queued', 'running')`)
+    .get(input.requesterDeviceId) as { count: number };
+  if (pending.count >= MAX_PENDING_TASKS_PER_REQUESTER) {
+    throw new Error("Requester has too many pending agent tasks");
+  }
   const requestValid = verify(null, agentRequestSigningTranscript({
     taskId: input.id,
     projectId: input.projectId,
@@ -157,21 +164,36 @@ export function appendAgentResult(
   final: boolean,
   status: "running" | "completed" | "failed",
   now = new Date(),
-): { task: AgentTask; event: ChatEvent } {
+): { task: AgentTask; event: ChatEvent; created: boolean } {
   return db.transaction(() => {
     const task = taskById(db, taskId);
     if (!task || task.targetDeviceId !== targetDeviceId) throw new Error("Agent task is not assigned to this device");
     requireProjectMembership(db, task.projectId, targetDeviceId);
+    const existing = db.query(`SELECT c.sequence, c.project_id AS projectId, c.event_id AS eventId,
+      c.sender_device_id AS senderDeviceId, c.content, c.client_created_at AS clientCreatedAt,
+      c.accepted_at AS acceptedAt, e.task_id AS taskId, e.final, e.status
+      FROM chat_events c JOIN agent_task_events e ON e.chat_sequence = c.sequence
+      WHERE c.event_id = ?`).get(eventId) as (ChatEvent & {
+        taskId: string; final: number; status: string;
+      }) | null;
+    if (existing) {
+      if (existing.taskId !== taskId || existing.senderDeviceId !== targetDeviceId
+        || existing.content !== content || Boolean(existing.final) !== final || existing.status !== status) {
+        throw new Error("Agent result event ID was reused with different content");
+      }
+      return { task: { ...task, status: status }, event: existing, created: false };
+    }
     if (task.status === "completed" || task.status === "failed") throw new Error("Agent task is already final");
     if (final !== (status === "completed" || status === "failed")) throw new Error("Agent result final flag and status disagree");
-    const event = appendChatEvent(db, {
+    const appended = appendChatEventResult(db, {
       projectId: task.projectId, eventId, senderDeviceId: targetDeviceId, content,
       clientCreatedAt: now.toISOString(),
     }, now);
+    const event = appended.event;
     db.query(`INSERT INTO agent_task_events (task_id, chat_sequence, final, status) VALUES (?, ?, ?, ?)`)
       .run(task.id, event.sequence, final ? 1 : 0, status);
     db.query(`UPDATE agent_tasks SET status = ?, completed_at = CASE WHEN ? THEN ? ELSE completed_at END WHERE id = ?`)
       .run(status, final ? 1 : 0, now.toISOString(), task.id);
-    return { task: { ...task, status }, event };
+    return { task: { ...task, status }, event, created: true };
   }).immediate();
 }

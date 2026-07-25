@@ -15,6 +15,7 @@ import { loadOrCreateClientIdentity } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import { runJsonLineSession } from "./session";
+import { trustDevice } from "./trusted-devices";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -72,6 +73,7 @@ async function run(): Promise<void> {
           [trustedDeviceId]: required("--trust-fingerprint"),
         },
       });
+      trustDevice(paths.trustedDevices, trustedDeviceId, required("--trust-fingerprint"));
       console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId }));
       return;
     }
@@ -106,7 +108,7 @@ async function run(): Promise<void> {
       const socket = await connectAuthenticatedClient(paths);
       const connection = loadClientConnection(paths);
       const identity = loadOrCreateClientIdentity(paths);
-      const expectedFingerprint = option("--trust-fingerprint");
+      const expectedFingerprint = required("--trust-fingerprint");
       const render = async (message: any) => {
         if (message.recipientDeviceId !== connection.deviceId) return;
         const opened = await openSignedPrivateMessage(
@@ -191,9 +193,10 @@ async function run(): Promise<void> {
           });
           detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
             localDeviceId: connection.deviceId,
-            serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-            trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
-          });
+        serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
+        trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+        journalPath: paths.agentJournal,
+      });
         }
         console.log(JSON.stringify({
           connected: true,
@@ -209,6 +212,10 @@ async function run(): Promise<void> {
       });
       return;
     }
+    case "trust-device":
+      trustDevice(paths.trustedDevices, required("--device"), required("--fingerprint"));
+      console.log(JSON.stringify({ trusted: true }));
+      return;
     default:
       console.log(`CoCodex Client
 
@@ -217,7 +224,7 @@ Usage:
   cocodex-client status [--state-root PATH]
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-key PEM_PATH --message TEXT [--state-root PATH]
-  cocodex-client private-listen [--after SEQUENCE] [--trust-fingerprint FP] [--state-root PATH]
+  cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex-client chat-send --project ID --message TEXT [--state-root PATH]
   cocodex-client request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
   cocodex-client connect [--json-lines] [--state-root PATH]`);

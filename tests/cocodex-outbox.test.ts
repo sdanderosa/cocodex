@@ -41,4 +41,34 @@ describe("CoCodex durable offline outbox", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("does not erase an event enqueued while an earlier acknowledgement is pending", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-outbox-race-"));
+    const paths = clientPaths(root);
+    try {
+      const projectId = randomUUID();
+      const event = (content: string) => ({
+        version: 1 as const, type: "chat.send" as const, requestId: randomUUID(),
+        projectId, eventId: randomUUID(), content, clientCreatedAt: new Date().toISOString(),
+      });
+      const first = event("first");
+      const second = event("second");
+      enqueueDurableEvent(paths, first);
+      let release!: () => void;
+      const delayed = new Promise<void>(resolve => { release = resolve; });
+      const delivered: string[] = [];
+      const draining = drainDurableOutbox(paths, async frame => {
+        delivered.push(frame.requestId);
+        if (frame.requestId === first.requestId) await delayed;
+      });
+      await Bun.sleep(10);
+      enqueueDurableEvent(paths, second);
+      release();
+      await draining;
+      expect(delivered).toEqual([first.requestId, second.requestId]);
+      expect(queuedEvents(paths)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
