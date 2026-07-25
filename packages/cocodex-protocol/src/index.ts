@@ -10,3 +10,9 @@ export {
   enrollmentSigningTranscript,
   type EnrollmentClaim,
 } from "./enrollment";
+export {
+  clientFrameSchema,
+  type ChatEvent,
+  type ClientFrame,
+  type SharedProject,
+} from "./collaboration";

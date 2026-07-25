@@ -35,6 +35,30 @@ CREATE TABLE IF NOT EXISTS enrollment_challenges (
   consumed_at TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_by_device_id TEXT NOT NULL REFERENCES devices(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id),
+  role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, device_id)
+);
+CREATE TABLE IF NOT EXISTS chat_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id),
+  content TEXT NOT NULL,
+  client_created_at TEXT NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_events_project_sequence
+  ON chat_events(project_id, sequence);
 CREATE TABLE IF NOT EXISTS audit_events (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type TEXT NOT NULL,
