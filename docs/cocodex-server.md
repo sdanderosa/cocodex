@@ -111,6 +111,12 @@ replay rules, then routes a request to the host client. The host client
 revalidates and executes locally. Private-message rows contain ciphertext and
 routing metadata only; plaintext is not logged or passed into agent context.
 
+The server cannot enable a host's full-computer profile. That profile and its
+durable emergency-stop state live only in the destination Client; even a
+trusted-device task must pass the local policy immediately before the official
+Codex runtime starts. The server therefore has no raw shell, desktop, browser,
+or elevation capability to expose. See ADR 0021.
+
 The `agent.list` route is the authoritative named-agent roster. It is scoped to
 the requesting project member and derives each agent's host display name,
 approved-device state, socket readiness, active/queued task counts, and latest

@@ -78,6 +78,13 @@ reviewed again before release.
   Legacy agent frames remain only for projects without a key. See ADR 0016.
 - **Agent events:** reuse OpenCodex and official Codex runtime behavior;
   borrow only typed event and isolation concepts from OpenHands.
+- **Local access profiles:** reuse the installed official Codex runtime's
+  supported `--sandbox danger-full-access` mode only after an explicit local
+  policy opt-in. The Client owns the policy and emergency stop; the Server
+  never receives a shell or desktop capability. No runtime source is copied.
+  See ADR 0021. Elevated Windows helpers, browser control, and remote desktop
+  remain separate requirements rather than metadata pretending to implement
+  them.
 - **Agent roster:** adapt MeshCentral's authoritative server/device boundary.
   `agent.list.result` is server-derived from approved host readiness and task
   rows; the client renders discovery only, while every dispatch still passes

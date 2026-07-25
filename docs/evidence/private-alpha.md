@@ -780,6 +780,38 @@ return real usage on Stephen's current local account. A second independently
 authenticated Kai account was not available in this environment, so mandatory
 claims 15 and 18 are not fully evidenced with two real accounts.
 
+## Local full-computer access profile and emergency controls
+
+Implementation scope: the Client now has a durable `project-only` /
+`full-computer` access profile. Full-computer mode is an explicit local opt-in
+to the official Codex `danger-full-access` sandbox; the Server protocol is
+unchanged and never receives a shell capability. Atomic local safety state
+supports emergency stop, resume, and separate full-computer enable/disable.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-agent-safety.test.ts `
+  .\tests\cocodex-agent-safety-cli.test.ts `
+  .\tests\cocodex-codex-agent-adapter.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `13 pass`, `0 fail`, `88 expect()` calls.
+The adapter test proves absent opt-in never spawns Codex, the safety test proves
+atomic persistence and downgrade fail-closed behavior, the bridge test proves
+an active task is aborted by emergency stop, and the GUI test proves the local
+safety commands are allowlisted and private ciphertext remains redacted.
+
+Files: `src/cocodex/agent-policy.ts`, `src/cocodex/agent-safety.ts`,
+  `src/cocodex/codex-agent-adapter.ts`, `src/cocodex/agent-bridge.ts`,
+`src/cocodex/session.ts`, `src/cocodex/cli.ts`, `src/cocodex/gui-bridge.ts`,
+`src/cocodex/paths.ts`, ADR 0021, and the five focused test files.
+
+The commit SHA will be recorded here after the implementation is committed.
+
 ## Incomplete release gate
 
 The complete inherited `bun test` run does not pass reliably under full Windows

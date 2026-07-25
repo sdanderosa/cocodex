@@ -137,6 +137,54 @@ describe("official Codex local agent adapter", () => {
     }
   });
 
+  test("requires explicit opt-in and maps the full-computer profile to Codex danger-full-access", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "cocodex-agent-full-computer-"));
+    try {
+      let invoked: { args: string[] } | undefined;
+      const adapter = new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: workspace,
+        sandbox: "danger-full-access",
+        accessProfile: "full-computer",
+        fullComputerOptIn: true,
+        authorizeTask: () => true,
+        resolveRuntime: () => ({
+          runtime: { command: "codex", version: "1.2.3", source: "path" },
+          failures: [],
+        }),
+        spawnProcess: (file, args) => {
+          invoked = { args };
+          return fakeProcess(() => {}, [
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Full access is explicitly enabled."}}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n',
+          ]);
+        },
+      });
+      const output: string[] = [];
+      for await (const chunk of adapter.execute(task)) output.push(chunk);
+      expect(output).toEqual(["Full access is explicitly enabled."]);
+      expect(invoked?.args).toContain("danger-full-access");
+      expect(invoked?.args).not.toContain("--yolo");
+
+      const denied = new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: workspace,
+        sandbox: "danger-full-access",
+        accessProfile: "full-computer",
+        fullComputerOptIn: false,
+        authorizeTask: () => true,
+        spawnProcess: () => { throw new Error("spawn must not be reached"); },
+      });
+      await expect(async () => {
+        for await (const _ of denied.execute(task)) { /* consume */ }
+      }).toThrow("explicit local opt-in");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("loads legacy trusted-device policies without adding repetitive approvals", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-policy-"));
     const policyPath = join(root, "policy.json");

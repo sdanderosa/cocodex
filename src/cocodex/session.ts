@@ -12,8 +12,15 @@ import {
 } from "@cocodex/protocol";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { attachLocalAgentBridge } from "./agent-bridge";
+import { attachLocalAgentBridge, type LocalAgentBridgeHandle } from "./agent-bridge";
 import { loadLocalAgentPolicy } from "./agent-policy";
+import {
+  emergencyStopAgent,
+  loadAgentSafety,
+  resumeAgent,
+  setFullComputerEnabled,
+  type LocalAgentSafetyState,
+} from "./agent-safety";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
 import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
@@ -112,6 +119,9 @@ export async function runJsonLineSession(
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
   let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
+  let localAgentBridge: LocalAgentBridgeHandle | undefined;
+  let localAgentPolicy: ReturnType<typeof loadLocalAgentPolicy> | undefined;
+  let localAgentSafety: LocalAgentSafetyState | undefined;
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
   const pendingProjectKeyInitializations = new Map<string, {
     projectId: string;
@@ -121,6 +131,25 @@ export async function runJsonLineSession(
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
+  const ensureLocalAgentPolicy = (): ReturnType<typeof loadLocalAgentPolicy> => {
+    if (!localAgentPolicy) {
+      if (!existsSync(paths.agentPolicy)) throw new Error("No local agent policy is configured");
+      localAgentPolicy = loadLocalAgentPolicy(paths.agentPolicy);
+      localAgentSafety = loadAgentSafety(paths.agentSafety, localAgentPolicy);
+    }
+    return localAgentPolicy;
+  };
+  const emitAgentSafety = (id?: string) => emit({
+    source: "agent-safety",
+    id,
+    ...(localAgentSafety ? {
+      executionEnabled: localAgentSafety.executionEnabled,
+      fullComputerEnabled: localAgentSafety.fullComputerEnabled,
+      updatedAt: localAgentSafety.updatedAt,
+      reason: localAgentSafety.reason,
+      accessProfile: localAgentPolicy?.accessProfile,
+    } : { executionEnabled: false, fullComputerEnabled: false, accessProfile: undefined }),
+  });
   for (const pending of loadPendingProjectKeyInitializations(paths.projectKeys)) {
     if (!loadProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch)) {
       clearProjectKeyInitialization(paths.projectKeys, pending.requestId);
@@ -1224,6 +1253,8 @@ export async function runJsonLineSession(
     let detachAgent: (() => void | Promise<void>) | undefined;
     if (existsSync(paths.agentPolicy)) {
       const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      localAgentPolicy = policy;
+      localAgentSafety = loadAgentSafety(paths.agentSafety, policy);
       const onUsage = (usage: CodexUsage) => {
         emit({ source: "local-usage", deviceId: connection.deviceId, usage });
         publishUsage({
@@ -1238,9 +1269,15 @@ export async function runJsonLineSession(
         projectId: policy.projectId,
         agentId: policy.agentId,
         workspaceRoot: policy.workspaceRoot,
-        sandbox: policy.sandbox,
+        sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
+        accessProfile: policy.accessProfile,
+        fullComputerOptIn: policy.fullComputerOptIn,
         onUsage,
-        authorizeTask: policy.approvalMode === "always" ? authorizeAgentTask : () => true,
+        authorizeTask: async (task, signal) => {
+          if (!localAgentSafety?.executionEnabled) return false;
+          if (policy.accessProfile === "full-computer" && !localAgentSafety.fullComputerEnabled) return false;
+          return policy.approvalMode === "always" ? authorizeAgentTask(task, signal) : true;
+        },
       }), {
         localDeviceId: connection.deviceId,
         agentId: policy.agentId,
@@ -1250,12 +1287,20 @@ export async function runJsonLineSession(
         onActiveAgents: activeAgents => publishUsage({ activeAgents }),
         decryptTaskPrompt: decryptEncryptedAgentPrompt,
         encryptResult: encryptAgentResult,
+        isExecutionAllowed: () => Boolean(localAgentSafety?.executionEnabled
+          && (policy.accessProfile !== "full-computer" || localAgentSafety.fullComputerEnabled)),
       });
+      localAgentBridge = detachAgent as LocalAgentBridgeHandle;
+      if (!localAgentSafety.executionEnabled) localAgentBridge.emergencyStop(localAgentSafety.reason);
+      emitAgentSafety();
     }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
     return async () => {
       connected.removeEventListener("message", listener);
       await detachAgent?.();
+      localAgentBridge = undefined;
+      localAgentPolicy = undefined;
+      localAgentSafety = undefined;
       if (socket === connected) socket = undefined;
       emit({ source: "session", state: "disconnected", deviceId: connection.deviceId });
     };
@@ -1742,6 +1787,35 @@ export async function runJsonLineSession(
             reason: String(command.reason ?? "Cancelled by the host user."),
           });
           emit({ source: "control", id: command.id, ok: true, taskId: String(command.taskId) });
+        } else if (command.type === "agent.safety.status") {
+          ensureLocalAgentPolicy();
+          emitAgentSafety(command.id);
+          emit({ source: "control", id: command.id, ok: true, safety: localAgentSafety ?? null });
+        } else if (command.type === "agent.emergency.stop") {
+          ensureLocalAgentPolicy();
+          localAgentSafety = emergencyStopAgent(paths.agentSafety, String(command.reason ?? "Stopped by the local host user."));
+          localAgentBridge?.emergencyStop(localAgentSafety.reason);
+          emitAgentSafety(command.id);
+          emit({ source: "control", id: command.id, ok: true, executionEnabled: false });
+        } else if (command.type === "agent.emergency.resume") {
+          const policy = ensureLocalAgentPolicy();
+          localAgentSafety = resumeAgent(paths.agentSafety, policy);
+          localAgentBridge?.resume();
+          emitAgentSafety(command.id);
+          emit({ source: "control", id: command.id, ok: true, executionEnabled: localAgentSafety.executionEnabled });
+        } else if (command.type === "agent.full-computer.enable") {
+          if (command.confirm !== true) throw new Error("Full-computer access requires an explicit local confirmation");
+          const policy = ensureLocalAgentPolicy();
+          localAgentSafety = setFullComputerEnabled(paths.agentSafety, policy, true);
+          localAgentBridge?.resume();
+          emitAgentSafety(command.id);
+          emit({ source: "control", id: command.id, ok: true, fullComputerEnabled: true });
+        } else if (command.type === "agent.full-computer.disable") {
+          const policy = ensureLocalAgentPolicy();
+          localAgentSafety = setFullComputerEnabled(paths.agentSafety, policy, false);
+          localAgentBridge?.emergencyStop("Full-computer access disabled locally.");
+          emitAgentSafety(command.id);
+          emit({ source: "control", id: command.id, ok: true, fullComputerEnabled: false });
         } else if (command.type === "presence.update") {
           send({
             version: 1,

@@ -71,6 +71,11 @@ describe("CoCodex GUI bridge", () => {
       projectId: crypto.randomUUID(),
     }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.approval", taskId: "task-1", approved: true }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.safety.status" }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.emergency.stop", reason: "GUI safety test" }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.emergency.resume" }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.full-computer.enable", confirm: true }).accepted).toBe(true);
+    expect(bridge.command({ type: "agent.full-computer.disable" }).accepted).toBe(true);
     bridge.stop();
     await Bun.sleep(5);
 
@@ -81,6 +86,9 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "context.update" && value.finalGoal === "Keep the shared goal authoritative")).toBe(true);
     expect(received.some((value: any) => value.type === "usage.get")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.approval" && value.approved === true)).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.safety.status")).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.emergency.stop")).toBe(true);
+    expect(received.some((value: any) => value.type === "agent.emergency.resume")).toBe(true);
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");

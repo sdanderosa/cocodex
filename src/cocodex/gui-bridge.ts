@@ -4,6 +4,8 @@ import { PassThrough } from "node:stream";
 import { enrollClient, loadClientConnection } from "./client";
 import { clientPaths, type ClientPaths } from "./paths";
 import { runJsonLineSession, type JsonLineSessionOptions } from "./session";
+import { loadLocalAgentPolicy } from "./agent-policy";
+import { loadAgentSafety } from "./agent-safety";
 
 const MAX_EVENTS = 500;
 const ALLOWED_COMMANDS = new Set([
@@ -33,6 +35,11 @@ const ALLOWED_COMMANDS = new Set([
   "agent.task.list",
   "agent.cancel",
   "agent.approval",
+  "agent.safety.status",
+  "agent.emergency.stop",
+  "agent.emergency.resume",
+  "agent.full-computer.enable",
+  "agent.full-computer.disable",
   "private.send",
   "artifact.publish",
   "artifact.list",
@@ -56,6 +63,9 @@ export interface CoCodexGuiStatus {
   displayName?: string;
   server?: { host: string; port: number };
   agentConfigured: boolean;
+  agentAccessProfile?: "project-only" | "full-computer";
+  agentExecutionEnabled?: boolean;
+  agentFullComputerEnabled?: boolean;
   latestEventSequence: number;
 }
 
@@ -113,6 +123,20 @@ export class CoCodexGuiBridge {
         // The resident session reports a precise local error when started.
       }
     }
+    let agentAccessProfile: CoCodexGuiStatus["agentAccessProfile"];
+    let agentExecutionEnabled: boolean | undefined;
+    let agentFullComputerEnabled: boolean | undefined;
+    if (existsSync(this.paths.agentPolicy)) {
+      try {
+        const policy = loadLocalAgentPolicy(this.paths.agentPolicy);
+        agentAccessProfile = policy.accessProfile;
+        const safety = loadAgentSafety(this.paths.agentSafety, policy);
+        agentExecutionEnabled = safety.executionEnabled;
+        agentFullComputerEnabled = safety.fullComputerEnabled;
+      } catch {
+        // The resident session reports malformed policy details as an event.
+      }
+    }
     return {
       configured,
       running: this.running,
@@ -123,6 +147,9 @@ export class CoCodexGuiBridge {
         server: { host: connection.host, port: connection.port },
       } : {}),
       agentConfigured: existsSync(this.paths.agentPolicy),
+      agentAccessProfile,
+      agentExecutionEnabled,
+      agentFullComputerEnabled,
       latestEventSequence: this.sequence,
     };
   }

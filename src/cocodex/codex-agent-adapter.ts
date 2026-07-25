@@ -35,7 +35,9 @@ export interface CodexAgentAdapterOptions {
   projectId: string;
   agentId: string;
   workspaceRoot: string;
-  sandbox?: "read-only" | "workspace-write";
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  accessProfile?: "project-only" | "full-computer";
+  fullComputerOptIn?: boolean;
   timeoutMs?: number;
   onUsage?: (usage: CodexUsage) => void;
   authorizeTask?: (task: AgentTask, signal?: AbortSignal) => boolean | Promise<boolean>;
@@ -74,6 +76,11 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
 
   async *execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string> {
     if (signal?.aborted) throw new Error("Local agent execution was cancelled");
+    const sandbox = this.options.sandbox ?? "workspace-write";
+    if (sandbox === "danger-full-access"
+      && (this.options.accessProfile !== "full-computer" || this.options.fullComputerOptIn !== true)) {
+      throw new Error("Full-computer Codex execution requires an explicit local opt-in");
+    }
     const runtime = (this.options.resolveRuntime ?? resolveCodexRuntime)({
       discoverAlternatives: false,
     }).runtime;
@@ -84,7 +91,7 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       "--json",
       "--ephemeral",
       "--sandbox",
-      this.options.sandbox ?? "workspace-write",
+      sandbox,
       "-",
     ]);
     const child = (this.options.spawnProcess ?? spawn)(

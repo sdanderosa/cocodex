@@ -177,6 +177,29 @@ metadata and cannot fabricate a host result during encrypted cancellation.
 Projects without a key retain the legacy `agent.*` route. Private-message
 ciphertext and file references are never added to agent context implicitly.
 
+## Local access profiles and emergency stop
+
+Agent policies default to `project-only`, preserving the configured Codex
+`read-only` or `workspace-write` sandbox. A host can explicitly opt into the
+official Codex `danger-full-access` mode with:
+
+```powershell
+cocodex-client configure-agent --project PROJECT_ID --agent AGENT_ID `
+  --workspace PATH --trust-device DEVICE_ID --trust-fingerprint FINGERPRINT `
+  --access full-computer --confirm-full-computer
+```
+
+This writes a protected local policy and an atomic safety state. The remote
+server still cannot widen that policy. The resident session exposes local-only
+controls for `agent.emergency.stop`, `agent.emergency.resume`,
+`agent.full-computer.enable`, and `agent.full-computer.disable`; the CLI has
+equivalent `emergency-stop`, `emergency-resume`, and full-computer enable /
+disable commands. Emergency stop aborts active local Codex work, blocks queued
+tasks, and remains effective while the server is offline. Full-computer enable
+requires a second explicit confirmation after an emergency stop. The access
+profile does not claim an elevated Windows helper, browser automation, or
+remote desktop implementation; those are later, separately reviewed slices.
+
 This is still not a claim that every project record is encrypted yet. File
 references and the full multi-device/forward-secret messaging lifecycle remain
 on the explicitly documented follow-up path.

@@ -34,7 +34,15 @@ export interface AgentBridgeSecurity {
   now?: () => Date;
   decryptTaskPrompt?: (task: EncryptedAgentTask) => Promise<string>;
   encryptResult?: (result: DurableAgentResult) => Promise<ProjectContentEnvelope | undefined>;
+  /** Local host safety state. A remote task never overrides this callback. */
+  isExecutionAllowed?: () => boolean;
 }
+
+export type LocalAgentBridgeHandle = (() => Promise<void>) & {
+  emergencyStop: (reason?: string) => void;
+  resume: () => void;
+  isEmergencyStopped: () => boolean;
+};
 
 async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentBridgeSecurity): Promise<AgentTask | null> {
   if (task.targetDeviceId !== security.localDeviceId
@@ -191,9 +199,15 @@ async function executeTask(
   encrypted: boolean,
   wasCancelled: () => boolean,
   sendCancellation: () => Promise<void>,
+  executionAllowed: () => boolean,
 ): Promise<void> {
   if (encrypted && wasCancelled()) {
     await sendCancellation();
+    return;
+  }
+  if (!executionAllowed()) {
+    if (wasCancelled()) await sendCancellation();
+    else await sendResult(socket, security, task.id, "Local execution is disabled by the host safety control.", true, "failed");
     return;
   }
   if (!await adapter.authorize(task, signal)) {
@@ -233,14 +247,16 @@ export function attachLocalAgentBridge(
   socket: WebSocket,
   adapter: LocalAgentAdapter,
   security: AgentBridgeSecurity,
-): () => Promise<void> {
+): LocalAgentBridgeHandle {
   const activeTasks = new Set<string>();
   const executionControllers = new Map<string, AbortController>();
   const taskModes = new Map<string, boolean>();
   const pendingCancellations = new Set<string>();
   const cancelledEncryptedTasks = new Set<string>();
   const cancellationResultsSent = new Set<string>();
+  const emergencyCancelledTasks = new Set<string>();
   const MAX_LOCAL_AGENT_QUEUE = 8;
+  let emergencyStopped = false;
   let executionChain = Promise.resolve();
   const reportActiveAgents = () => security.onActiveAgents?.(activeTasks.size);
   const sendCancellation = (taskId: string): Promise<void> => {
@@ -279,7 +295,8 @@ export function attachLocalAgentBridge(
       if (pendingCancellations.delete(task.id) && encrypted) cancelledEncryptedTasks.add(task.id);
       const executionController = new AbortController();
       executionControllers.set(task.id, executionController);
-      const cancelled = () => encrypted && cancelledEncryptedTasks.has(task.id);
+      const cancelled = () => (encrypted && cancelledEncryptedTasks.has(task.id)) || emergencyCancelledTasks.has(task.id);
+      const executionAllowed = () => !emergencyStopped && (security.isExecutionAllowed?.() ?? true);
       if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
         activeTasks.add(task.id);
         reportActiveAgents();
@@ -289,6 +306,8 @@ export function attachLocalAgentBridge(
           .catch(() => undefined)
           .then(() => cancelled()
             ? sendCancellation(task.id)
+            : !executionAllowed()
+              ? sendResult(socket, security, task.id, "Local execution is disabled by the host safety control.", true, "failed")
             : mustRecover
               ? recoverTask(socket, security, task.id, encrypted)
               : journalState === "new"
@@ -300,6 +319,7 @@ export function attachLocalAgentBridge(
             taskModes.delete(task.id);
             pendingCancellations.delete(task.id);
             cancelledEncryptedTasks.delete(task.id);
+            emergencyCancelledTasks.delete(task.id);
             cancellationResultsSent.delete(task.id);
             reportActiveAgents();
           });
@@ -311,12 +331,14 @@ export function attachLocalAgentBridge(
       const mustRecover = task.status === "running" || journalState === "started";
       executionChain = executionChain
         .catch(() => undefined)
-        .then(() => cancelled()
-          ? sendCancellation(task.id)
-          : mustRecover
+          .then(() => cancelled()
+            ? sendCancellation(task.id)
+            : !executionAllowed()
+              ? sendResult(socket, security, task.id, "Local execution is disabled by the host safety control.", true, "failed")
+            : mustRecover
             ? recoverTask(socket, security, task.id, encrypted)
             : journalState === "new"
-              ? executeTask(socket, adapter, task, security, executionController.signal, encrypted, cancelled, () => sendCancellation(task.id))
+                ? executeTask(socket, adapter, task, security, executionController.signal, encrypted, cancelled, () => sendCancellation(task.id), executionAllowed)
               : undefined)
         .finally(() => {
           executionControllers.delete(task.id);
@@ -324,6 +346,7 @@ export function attachLocalAgentBridge(
           taskModes.delete(task.id);
           pendingCancellations.delete(task.id);
           cancelledEncryptedTasks.delete(task.id);
+          emergencyCancelledTasks.delete(task.id);
           cancellationResultsSent.delete(task.id);
           reportActiveAgents();
         });
@@ -336,9 +359,21 @@ export function attachLocalAgentBridge(
     requestId: randomUUID(),
     ...(security.agentId ? { agentId: security.agentId } : {}),
   }));
-  return async () => {
+  const emergencyStop = (_reason?: string) => {
+    emergencyStopped = true;
+    for (const taskId of executionControllers.keys()) emergencyCancelledTasks.add(taskId);
+    for (const controller of executionControllers.values()) controller.abort();
+  };
+  const resume = () => { emergencyStopped = false; };
+  const detach = async () => {
     socket.removeEventListener("message", listener);
     for (const controller of executionControllers.values()) controller.abort();
     await executionChain.catch(() => undefined);
   };
+  Object.assign(detach, {
+    emergencyStop,
+    resume,
+    isEmergencyStopped: () => emergencyStopped,
+  });
+  return detach as LocalAgentBridgeHandle;
 }

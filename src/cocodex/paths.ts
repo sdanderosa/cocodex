@@ -12,6 +12,7 @@ export interface ClientPaths {
   projectKeys: string;
   connection: string;
   agentPolicy: string;
+  agentSafety: string;
   agentJournal: string;
   trustedDevices: string;
   outbox: string;
@@ -35,6 +36,7 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     projectKeys: resolve(absoluteRoot, "project-keys.json"),
     connection: resolve(absoluteRoot, "connection.json"),
     agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
+    agentSafety: resolve(absoluteRoot, "local-agent-safety.json"),
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),
     trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),

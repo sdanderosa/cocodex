@@ -9,9 +9,23 @@ const policySchema = z.object({
   agentId: z.string().trim().min(1).max(120),
   workspaceRoot: z.string().min(1),
   sandbox: z.enum(["read-only", "workspace-write"]),
+  /**
+   * `project-only` is the safe default. `full-computer` is an explicit local
+   * opt-in that maps to Codex's supported `danger-full-access` sandbox.
+   */
+  accessProfile: z.enum(["project-only", "full-computer"]).default("project-only"),
+  fullComputerOptIn: z.boolean().default(false),
   approvalMode: z.enum(["trusted-device", "always"]).default("trusted-device"),
   trustedRequesterFingerprints: z.record(z.uuid(), z.string().min(16).max(256)),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.accessProfile === "full-computer" && !value.fullComputerOptIn) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["fullComputerOptIn"],
+      message: "Full-computer access requires an explicit local opt-in",
+    });
+  }
+});
 
 export type LocalAgentPolicy = z.infer<typeof policySchema>;
 

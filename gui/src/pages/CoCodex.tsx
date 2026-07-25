@@ -14,6 +14,9 @@ interface Status {
   displayName?: string;
   server?: { host: string; port: number };
   agentConfigured: boolean;
+  agentAccessProfile?: "project-only" | "full-computer";
+  agentExecutionEnabled?: boolean;
+  agentFullComputerEnabled?: boolean;
   latestEventSequence: number;
 }
 
@@ -136,6 +139,9 @@ interface SessionValue {
   source?: string;
   state?: ConnectionState | "key-available" | "rotation-required";
   approvalState?: "pending" | "resolved";
+  executionEnabled?: boolean;
+  fullComputerEnabled?: boolean;
+  accessProfile?: "project-only" | "full-computer";
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
@@ -325,6 +331,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       const nextState = value?.state;
       if (value?.source === "session" && isConnectionState(nextState)) {
         setStatus(previous => previous ? { ...previous, state: nextState, running: nextState !== "stopped" } : previous);
+      }
+      if (value?.source === "agent-safety") {
+        setStatus(previous => previous ? {
+          ...previous,
+          agentExecutionEnabled: value.executionEnabled === true,
+          agentFullComputerEnabled: value.fullComputerEnabled === true,
+          ...(value.accessProfile === "project-only" || value.accessProfile === "full-computer"
+            ? { agentAccessProfile: value.accessProfile }
+            : {}),
+        } : previous);
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
@@ -565,6 +581,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const localSafetyCommand = async (type: string, confirm = false) => {
+    try {
+      await command({ type, ...(confirm ? { confirm: true } : {}) });
+      await loadStatus();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const saveFinalGoal = async (event: FormEvent) => {
     event.preventDefault();
     if (!projectId || !sharedContext || status?.state !== "connected") return;
@@ -727,6 +752,22 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <strong>{status.displayName}</strong>
               <code>{status.deviceId?.slice(0, 12)}</code>
               <span>{t(status.agentConfigured ? "cocodex.agent.ready" : "cocodex.agent.none")}</span>
+              {status.agentConfigured && <div className="cocodex-agent-safety">
+                <small>{t("cocodex.agent.access", { profile: status.agentAccessProfile ?? "project-only" })}</small>
+                <small>{t(status.agentExecutionEnabled === false ? "cocodex.agent.execution.stopped" : "cocodex.agent.execution.enabled")}
+                  {status.agentAccessProfile === "full-computer" && status.agentFullComputerEnabled === false ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
+                <div className="cocodex-agent-safety-actions">
+                  <button type="button" className="btn btn-danger btn-ghost" disabled={!status.running}
+                    onClick={() => void localSafetyCommand("agent.emergency.stop")}>{t("cocodex.agent.safety.stop")}</button>
+                  <button type="button" className="btn btn-ghost" disabled={!status.running}
+                    onClick={() => void localSafetyCommand("agent.emergency.resume")}>{t("cocodex.agent.safety.resume")}</button>
+                  {status.agentAccessProfile === "full-computer" && <button type="button" className="btn btn-ghost" disabled={!status.running}
+                    onClick={() => {
+                      if (status.agentFullComputerEnabled) void localSafetyCommand("agent.full-computer.disable");
+                      else if (window.confirm(t("cocodex.agent.fullComputer.confirm"))) void localSafetyCommand("agent.full-computer.enable", true);
+                    }}>{t(status.agentFullComputerEnabled ? "cocodex.agent.fullComputer.disable" : "cocodex.agent.fullComputer.enable")}</button>}
+                </div>
+              </div>}
             </div>
           </aside>
 

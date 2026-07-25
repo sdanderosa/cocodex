@@ -8,9 +8,16 @@ import {
   maintainAuthenticatedClient,
   sendAgentRequest,
 } from "./client";
-import { attachLocalAgentBridge } from "./agent-bridge";
+import { attachLocalAgentBridge, type LocalAgentBridgeHandle } from "./agent-bridge";
 import { CodexAgentAdapter } from "./codex-agent-adapter";
 import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
+import {
+  configureAgentSafety,
+  emergencyStopAgent,
+  loadAgentSafety,
+  resumeAgent,
+  setFullComputerEnabled,
+} from "./agent-safety";
 import { clientPaths } from "./paths";
 import { createDeviceKeyCertificate, loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
@@ -80,19 +87,59 @@ async function run(): Promise<void> {
       if (approvalMode !== "trusted-device" && approvalMode !== "always") {
         throw new Error("--approval must be trusted-device or always");
       }
+      const accessProfile = option("--access") ?? "project-only";
+      if (accessProfile !== "project-only" && accessProfile !== "full-computer") {
+        throw new Error("--access must be project-only or full-computer");
+      }
+      const fullComputerOptIn = Bun.argv.includes("--confirm-full-computer");
+      if (accessProfile === "full-computer" && !fullComputerOptIn) {
+        throw new Error("Full-computer access requires --confirm-full-computer");
+      }
       const policy = saveLocalAgentPolicy(paths.agentPolicy, {
         version: 1,
         projectId: required("--project"),
         agentId: required("--agent"),
         workspaceRoot: required("--workspace"),
         sandbox: option("--sandbox") === "read-only" ? "read-only" : "workspace-write",
+        accessProfile,
+        fullComputerOptIn,
         approvalMode,
         trustedRequesterFingerprints: {
           [trustedDeviceId]: required("--trust-fingerprint"),
         },
       });
+      configureAgentSafety(paths.agentSafety, policy);
       trustDevice(paths.trustedDevices, trustedDeviceId, required("--trust-fingerprint"));
-      console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId }));
+      console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId, accessProfile: policy.accessProfile }));
+      return;
+    }
+    case "agent-safety-status": {
+      const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      console.log(JSON.stringify({
+        policy: { accessProfile: policy.accessProfile, fullComputerOptIn: policy.fullComputerOptIn },
+        safety: loadAgentSafety(paths.agentSafety, policy),
+      }, null, 2));
+      return;
+    }
+    case "emergency-stop": {
+      loadLocalAgentPolicy(paths.agentPolicy);
+      console.log(JSON.stringify({ stopped: true, safety: emergencyStopAgent(paths.agentSafety, option("--reason") ?? "Stopped by the local host user.") }));
+      return;
+    }
+    case "emergency-resume": {
+      const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      console.log(JSON.stringify({ resumed: true, safety: resumeAgent(paths.agentSafety, policy) }));
+      return;
+    }
+    case "full-computer-enable": {
+      if (!Bun.argv.includes("--confirm")) throw new Error("Full-computer access requires --confirm");
+      const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      console.log(JSON.stringify({ enabled: true, safety: setFullComputerEnabled(paths.agentSafety, policy, true) }));
+      return;
+    }
+    case "full-computer-disable": {
+      const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      console.log(JSON.stringify({ enabled: false, safety: setFullComputerEnabled(paths.agentSafety, policy, false) }));
       return;
     }
     case "private-send": {
@@ -207,22 +254,41 @@ async function run(): Promise<void> {
       const connection = loadClientConnection(paths);
       await maintainAuthenticatedClient(paths, async socket => {
         const flushedEvents = await flushDurableOutbox(socket, paths);
-        let detachAgentBridge: (() => void | Promise<void>) | undefined;
+        let detachAgentBridge: LocalAgentBridgeHandle | undefined;
+        let safetyPoll: ReturnType<typeof setInterval> | undefined;
         if (existsSync(paths.agentPolicy)) {
           const policy = loadLocalAgentPolicy(paths.agentPolicy);
+          let safety = loadAgentSafety(paths.agentSafety, policy);
+          const executionAllowed = () => {
+            try {
+              safety = loadAgentSafety(paths.agentSafety, policy);
+              return safety.executionEnabled && (policy.accessProfile !== "full-computer" || safety.fullComputerEnabled);
+            } catch {
+              return false;
+            }
+          };
           const adapter = new CodexAgentAdapter({
             projectId: policy.projectId,
             agentId: policy.agentId,
             workspaceRoot: policy.workspaceRoot,
-            sandbox: policy.sandbox,
-            authorizeTask: () => true,
+            sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
+            accessProfile: policy.accessProfile,
+            fullComputerOptIn: policy.fullComputerOptIn,
+            authorizeTask: () => executionAllowed(),
           });
           detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
             localDeviceId: connection.deviceId,
-        serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-        trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
-        journalPath: paths.agentJournal,
-      });
+            serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
+            trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+            journalPath: paths.agentJournal,
+            isExecutionAllowed: executionAllowed,
+          });
+          if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
+          safetyPoll = setInterval(() => {
+            if (!detachAgentBridge) return;
+            if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
+            else if (detachAgentBridge.isEmergencyStopped()) detachAgentBridge.resume();
+          }, 250);
         }
         console.log(JSON.stringify({
           connected: true,
@@ -230,7 +296,10 @@ async function run(): Promise<void> {
           agentEnabled: Boolean(detachAgentBridge),
           flushedEvents,
         }));
-        return detachAgentBridge;
+        return async () => {
+          if (safetyPoll) clearInterval(safetyPoll);
+          await detachAgentBridge?.();
+        };
       }, {
         onConnectionError: error => {
           console.error(JSON.stringify({ connected: false, retrying: true, error: error.message }));
@@ -251,7 +320,12 @@ Usage:
   cocodex-client accept-transfer --code CODE [--state-root PATH]
   cocodex-client accept-transfer --code-file FILE [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
-  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--state-root PATH]
+  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
+  cocodex-client agent-safety-status [--state-root PATH]
+  cocodex-client emergency-stop [--reason TEXT] [--state-root PATH]
+  cocodex-client emergency-resume [--state-root PATH]
+  cocodex-client full-computer-enable --confirm [--state-root PATH]
+  cocodex-client full-computer-disable [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
   cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex-client chat-send --project ID --message TEXT [--state-root PATH]

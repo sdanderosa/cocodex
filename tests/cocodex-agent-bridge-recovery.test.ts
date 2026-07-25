@@ -375,4 +375,47 @@ describe("CoCodex local agent crash recovery", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("emergency stop aborts an active local task and blocks queued work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-emergency-stop-"));
+    const journalPath = join(root, "agent-journal.json");
+    const localDeviceId = randomUUID();
+    const fixture = signedTask(localDeviceId, "queued");
+    const socket = new AcknowledgingSocket();
+    let started = false;
+    let aborted = false;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute(_task, signal) {
+        started = true;
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve();
+          else signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        aborted = Boolean(signal?.aborted);
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([[fixture.task.requesterDeviceId, fixture.requesterFingerprint]]),
+      journalPath,
+      isExecutionAllowed: () => !detach.isEmergencyStopped(),
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "agent.task", task: fixture.task }),
+      }));
+      for (let attempt = 0; attempt < 100 && !started; attempt += 1) await Bun.sleep(5);
+      expect(started).toBeTrue();
+      detach.emergencyStop("Host incident response");
+      for (let attempt = 0; attempt < 100 && !aborted; attempt += 1) await Bun.sleep(5);
+      expect(aborted).toBeTrue();
+      expect(detach.isEmergencyStopped()).toBeTrue();
+      detach.resume();
+      expect(detach.isEmergencyStopped()).toBeFalse();
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -37,6 +37,9 @@
 .cocodex-project-list small, .cocodex-device small, .cocodex-device span { color: var(--muted); font-size: var(--text-caption); }
 .cocodex-device { border-top: 1px solid var(--border); padding: 14px; }
 .cocodex-device code { font-size: var(--text-caption); color: var(--muted); }
+.cocodex-agent-safety { display: grid; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.cocodex-agent-safety-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.cocodex-agent-safety-actions .btn { font-size: var(--text-caption); padding: 5px 8px; }
 .cocodex-shared-prompt { padding: 10px 12px; display: grid; gap: 7px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, #7c3aed 7%, var(--raised)); }
 .cocodex-shared-prompt > span { display: flex; justify-content: space-between; gap: 12px; }
 .cocodex-shared-prompt small { color: var(--muted); }
