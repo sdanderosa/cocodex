@@ -18,6 +18,10 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
+  const messaging = generateKeyPairSync("x25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
   const invitation = decodeInvitation(createInvitation(db, {
     host: "server.test",
     port: 10443,
@@ -32,6 +36,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
     challenge: challenge.challenge,
     displayName: name,
     devicePublicKeyPem: pair.publicKey,
+    messagingPublicKeyPem: messaging.publicKey,
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
@@ -39,6 +44,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
     challenge: challenge.challenge,
     displayName: name,
     devicePublicKeyPem: pair.publicKey,
+    messagingPublicKeyPem: messaging.publicKey,
     signature,
   }, now);
   expect(approveDevice(db, device.fingerprint, now)).toBeTrue();

@@ -19,6 +19,7 @@ export {
   type ClientFrame,
   type AgentTask,
   type AgentDefinition,
+  type PrivateMessageEnvelope,
   type SharedProject,
 } from "./collaboration";
 export * from "./agent-signing";

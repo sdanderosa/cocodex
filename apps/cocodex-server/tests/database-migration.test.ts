@@ -7,7 +7,7 @@ import { openDatabase } from "../src/database";
 import { migrations } from "../src/migrations";
 
 describe("CoCodex database migrations", () => {
-  test("preserves legacy unsigned agent tables while installing signed task schema", () => {
+  test("preserves legacy unsigned agent tables while installing signed task schema", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-migration-"));
     const path = join(root, "server.sqlite3");
     try {
@@ -46,10 +46,19 @@ describe("CoCodex database migrations", () => {
       const columns = migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>;
       expect(columns.map(column => column.name)).toContain("requester_signature");
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
       migrated.close();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      Bun.gc(true);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          rmSync(root, { recursive: true, force: true });
+          break;
+        } catch (error) {
+          if (attempt === 19) throw error;
+          await Bun.sleep(25);
+        }
+      }
     }
   });
 });

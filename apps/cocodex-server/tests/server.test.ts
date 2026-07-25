@@ -31,10 +31,15 @@ function temporaryRoot(): string {
 }
 
 function deviceIdentity() {
-  return generateKeyPairSync("ed25519", {
+  const signing = generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
+  const messaging = generateKeyPairSync("x25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  return { ...signing, messagingPublicKey: messaging.publicKey };
 }
 
 describe("CoCodex Server enrollment boundary", () => {
@@ -73,6 +78,7 @@ describe("CoCodex Server enrollment boundary", () => {
       challenge: challenge.challenge,
       displayName: "Kai",
       devicePublicKeyPem: pair.publicKey,
+      messagingPublicKeyPem: pair.messagingPublicKey,
     }), pair.privateKey).toString("base64url");
     const enrollmentBody = {
       version: 1,
@@ -81,6 +87,7 @@ describe("CoCodex Server enrollment boundary", () => {
       challenge: challenge.challenge,
       displayName: "Kai",
       devicePublicKeyPem: pair.publicKey,
+      messagingPublicKeyPem: pair.messagingPublicKey,
       signature,
     };
 
@@ -140,6 +147,7 @@ describe("CoCodex Server enrollment boundary", () => {
       challenge: challenge.challenge,
       displayName: "Kai",
       devicePublicKeyPem: claimed.publicKey,
+      messagingPublicKeyPem: claimed.messagingPublicKey,
     }), attacker.privateKey).toString("base64url");
 
     const response = await fetch(`https://127.0.0.1:${running.port}/v1/enroll`, {
@@ -153,6 +161,7 @@ describe("CoCodex Server enrollment boundary", () => {
         challenge: challenge.challenge,
         displayName: "Kai",
         devicePublicKeyPem: claimed.publicKey,
+        messagingPublicKeyPem: claimed.messagingPublicKey,
         signature,
       }),
     });

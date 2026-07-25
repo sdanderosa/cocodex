@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, verify } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   canonicalEd25519PublicKey,
@@ -20,6 +20,7 @@ export interface EnrollmentRequest {
   challenge: string;
   displayName: string;
   devicePublicKeyPem: string;
+  messagingPublicKeyPem: string;
   signature: string;
 }
 
@@ -45,6 +46,12 @@ function validateDisplayName(value: string): string {
     throw new Error("Display name must be 1-80 characters");
   }
   return normalized;
+}
+
+function canonicalX25519PublicKey(value: string): string {
+  const key = createPublicKey(value);
+  if (key.asymmetricKeyType !== "x25519") throw new Error("Messaging key must be X25519");
+  return key.export({ type: "spki", format: "pem" }).toString();
 }
 
 export function createEnrollmentChallenge(
@@ -96,6 +103,7 @@ export function createEnrollmentChallenge(
 export function enrollDevice(db: Database, request: EnrollmentRequest, now = new Date()): DeviceRecord {
   const displayName = validateDisplayName(request.displayName);
   const canonicalPublicKey = canonicalEd25519PublicKey(request.devicePublicKeyPem);
+  const messagingPublicKeyPem = canonicalX25519PublicKey(request.messagingPublicKeyPem);
   const transaction = db.transaction(() => {
     const challenge = db.query(`
       SELECT
@@ -124,6 +132,7 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
       challenge: challenge.challenge,
       displayName,
       devicePublicKeyPem: canonicalPublicKey,
+      messagingPublicKeyPem,
     });
     const signature = Buffer.from(request.signature, "base64url");
     if (!verify(null, proof, canonicalPublicKey, signature)) {
@@ -142,11 +151,13 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
     };
     db.query(`
       INSERT INTO devices (
-        id, public_key_pem, fingerprint, display_name, status, invitation_id, enrolled_at
-      ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+        id, public_key_pem, messaging_public_key_pem, fingerprint, display_name,
+        status, invitation_id, enrolled_at
+      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
     `).run(
       record.id,
       canonicalPublicKey,
+      messagingPublicKeyPem,
       record.fingerprint,
       record.displayName,
       request.invitation.invitationId,
@@ -181,4 +192,19 @@ export function listDevices(db: Database): DeviceRecord[] {
     SELECT id, fingerprint, display_name AS displayName, status
     FROM devices ORDER BY enrolled_at ASC
   `).all() as DeviceRecord[];
+}
+
+export function devicePublicKeys(db: Database, deviceId: string): {
+  deviceId: string;
+  fingerprint: string;
+  devicePublicKeyPem: string;
+  messagingPublicKeyPem: string;
+} {
+  const row = db.query(`SELECT id AS deviceId, fingerprint,
+    public_key_pem AS devicePublicKeyPem, messaging_public_key_pem AS messagingPublicKeyPem
+    FROM devices WHERE id = ? AND status = 'approved'`).get(deviceId) as {
+      deviceId: string; fingerprint: string; devicePublicKeyPem: string; messagingPublicKeyPem: string | null;
+    } | null;
+  if (!row || !row.messagingPublicKeyPem) throw new Error("Approved device messaging keys were not found");
+  return { ...row, messagingPublicKeyPem: row.messagingPublicKeyPem };
 }

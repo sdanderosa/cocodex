@@ -44,6 +44,7 @@ describe("CoCodex protocol", () => {
       challenge: "nonce",
       displayName: "Kai",
       devicePublicKeyPem: "key",
+      messagingPublicKeyPem: "messaging-key",
     };
     const baseline = enrollmentSigningTranscript(input);
     expect(baseline.subarray(0, 19).toString()).toBe("COCODEX-ENROLLMENT\u0000");

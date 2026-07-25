@@ -10,6 +10,7 @@ import {
   enrollmentSigningTranscript,
   websocketAuthTranscript,
   type ChatEvent,
+  publicKeyFingerprint,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
@@ -21,6 +22,7 @@ import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { startCoCodexServer } from "../src/server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
+import { openSignedPrivateMessage, sealSignedPrivateMessage } from "../../../src/cocodex/private-messaging";
 
 const roots: string[] = [];
 const servers: Array<{ stop(force?: boolean): Promise<void> }> = [];
@@ -49,10 +51,16 @@ interface TestDevice {
   id: string;
   privateKey: string;
   publicKey: string;
+  messagingPrivateKey: string;
+  messagingPublicKey: string;
 }
 
 function approvedDevice(db: Database, fingerprint: string, displayName: string): TestDevice {
   const pair = generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const messagingPair = generateKeyPairSync("x25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
@@ -69,6 +77,7 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     challenge: challenge.challenge,
     displayName,
     devicePublicKeyPem: pair.publicKey,
+    messagingPublicKeyPem: messagingPair.publicKey,
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
@@ -76,10 +85,17 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     challenge: challenge.challenge,
     displayName,
     devicePublicKeyPem: pair.publicKey,
+    messagingPublicKeyPem: messagingPair.publicKey,
     signature,
   });
   expect(approveDevice(db, device.fingerprint)).toBeTrue();
-  return { id: device.id, privateKey: pair.privateKey, publicKey: pair.publicKey };
+  return {
+    id: device.id,
+    privateKey: pair.privateKey,
+    publicKey: pair.publicKey,
+    messagingPrivateKey: messagingPair.privateKey,
+    messagingPublicKey: messagingPair.publicKey,
+  };
 }
 
 function nextFrame(
@@ -216,8 +232,59 @@ describe("authenticated WSS collaboration", () => {
     expect((await stephenAtKai).event).toEqual(second);
     expect(second.sequence).toBeGreaterThan(first.sequence);
 
+    const privatePlaintext = "Stephen-only recovery phrase";
+    const privateMessageId = randomUUID();
+    const privateCreatedAt = new Date().toISOString();
+    const privateCiphertext = await sealSignedPrivateMessage({
+      messageId: privateMessageId,
+      senderDeviceId: kai.id,
+      recipientDeviceId: stephen.id,
+      text: privatePlaintext,
+      clientCreatedAt: privateCreatedAt,
+    }, kai.privateKey, kai.publicKey, stephen.messagingPublicKey);
+    const privateAtStephen = nextFrame(stephenSocket, "private.message");
+    const privateAccepted = nextFrame(kaiSocket, "private.accepted");
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.send",
+      requestId: randomUUID(),
+      messageId: privateMessageId,
+      recipientDeviceId: stephen.id,
+      ciphertext: privateCiphertext,
+      clientCreatedAt: privateCreatedAt,
+    }));
+    const privateEnvelope = (await privateAtStephen).message as {
+      messageId: string; senderDeviceId: string; recipientDeviceId: string;
+      ciphertext: string; clientCreatedAt: string;
+    };
+    expect((await privateAccepted).message).toEqual(expect.objectContaining({
+      senderDeviceId: kai.id,
+      recipientDeviceId: stephen.id,
+    }));
+    expect((await openSignedPrivateMessage(
+      privateEnvelope.ciphertext,
+      stephen.messagingPrivateKey,
+      stephen.messagingPublicKey,
+      privateEnvelope,
+      publicKeyFingerprint(kai.publicKey),
+    )).text).toBe(privatePlaintext);
+    const storedPrivate = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };
+    expect(storedPrivate.ciphertext).toBe(privateCiphertext);
+    expect(storedPrivate.ciphertext).not.toContain(privatePlaintext);
+    expect(db.query("SELECT 1 FROM chat_events WHERE content = ?").get(privatePlaintext)).toBeNull();
+
     kaiSocket.close();
     const reconnectedKai = await connect(server.port, kai, fingerprint);
+    const recoveredPrivate = nextFrame(reconnectedKai, "private.snapshot");
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "private.subscribe",
+      requestId: randomUUID(),
+      afterSequence: 0,
+    }));
+    expect((await recoveredPrivate).messages).toEqual([
+      expect.objectContaining({ ciphertext: privateCiphertext }),
+    ]);
     const recovered = nextFrame(reconnectedKai, "chat.snapshot");
     reconnectedKai.send(JSON.stringify({
       version: 1,

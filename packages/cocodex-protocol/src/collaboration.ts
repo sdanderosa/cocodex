@@ -80,6 +80,21 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     final: z.boolean(),
     status: z.enum(["running", "completed", "failed"]),
   }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("private.subscribe"),
+    requestId,
+    afterSequence: z.number().int().nonnegative(),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("private.send"),
+    requestId,
+    messageId: z.uuid(),
+    recipientDeviceId: z.uuid(),
+    ciphertext: z.string().min(64).max(96_000),
+    clientCreatedAt: z.iso.datetime(),
+  }).strict(),
 ]);
 
 export const agentTaskSchema = z.object({
@@ -145,4 +160,14 @@ export interface AgentDefinition {
   name: string;
   hostDeviceId: string;
   enabled: boolean;
+}
+
+export interface PrivateMessageEnvelope {
+  sequence: number;
+  messageId: string;
+  senderDeviceId: string;
+  recipientDeviceId: string;
+  ciphertext: string;
+  clientCreatedAt: string;
+  acceptedAt: string;
 }

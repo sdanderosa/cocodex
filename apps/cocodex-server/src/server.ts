@@ -19,6 +19,7 @@ import {
   requireProjectMembership,
 } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
+import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -172,6 +173,7 @@ export function startCoCodexServer(
             challenge: body.challenge,
             displayName: body.displayName,
             devicePublicKeyPem: body.devicePublicKeyPem,
+            messagingPublicKeyPem: body.messagingPublicKeyPem,
             signature: body.signature,
           });
           return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem }, 202);
@@ -272,6 +274,38 @@ export function startCoCodexServer(
               projectId: message.projectId,
               events,
             }));
+            return;
+          }
+          if (message.type === "private.subscribe") {
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "private.snapshot",
+              requestId,
+              messages: privateMessagesAfter(db, deviceId, message.afterSequence),
+            }));
+            return;
+          }
+          if (message.type === "private.send") {
+            const appended = appendPrivateMessage(db, {
+              messageId: message.messageId,
+              senderDeviceId: deviceId,
+              recipientDeviceId: message.recipientDeviceId,
+              ciphertext: message.ciphertext,
+              clientCreatedAt: message.clientCreatedAt,
+            });
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "private.accepted",
+              requestId,
+              message: appended.envelope,
+            }));
+            if (appended.created) {
+              sendToDevice(appended.envelope.recipientDeviceId, {
+                version: 1,
+                type: "private.message",
+                message: appended.envelope,
+              });
+            }
             return;
           }
           if (message.type === "agent.request") {

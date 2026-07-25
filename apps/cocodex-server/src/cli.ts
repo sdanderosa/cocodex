@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
-import { approveDevice, listDevices } from "./enrollment";
+import { approveDevice, devicePublicKeys, listDevices } from "./enrollment";
 import { createServerIdentity, loadServerIdentity } from "./identity";
 import { createInvitation } from "./invitations";
 import { registerAgent } from "./agent-routing";
@@ -30,6 +30,7 @@ Usage:
   cocodex-server start [--state-root PATH]
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
+  cocodex-server device-keys --device ID [--state-root PATH]
   cocodex-server approve --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
   cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
@@ -74,7 +75,13 @@ async function run(): Promise<void> {
       db.close();
       return;
     }
-    case "approve": {
+    case "device-keys": {
+      const db = openDatabase(paths.database);
+      const keys = devicePublicKeys(db, requiredOption("--device"));
+      db.close();
+      console.log(JSON.stringify(keys, null, 2));
+      return;
+    }    case "approve": {
       const db = openDatabase(paths.database);
       const approved = approveDevice(db, requiredOption("--fingerprint"));
       db.close();

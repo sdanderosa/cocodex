@@ -8,6 +8,7 @@ export const enrollmentClaimSchema = z
     challenge: z.string().min(43).max(128),
     displayName: z.string().trim().min(1).max(80),
     devicePublicKeyPem: z.string().min(64).max(2048),
+    messagingPublicKeyPem: z.string().min(64).max(2048),
     signature: z.string().min(64).max(256),
   })
   .strict();
@@ -21,6 +22,7 @@ interface EnrollmentTranscriptInput {
   challenge: string;
   displayName: string;
   devicePublicKeyPem: string;
+  messagingPublicKeyPem: string;
 }
 
 function lengthPrefix(value: string): Buffer {
@@ -40,5 +42,6 @@ export function enrollmentSigningTranscript(input: EnrollmentTranscriptInput): B
     lengthPrefix(input.challenge),
     lengthPrefix(input.displayName.trim()),
     lengthPrefix(input.devicePublicKeyPem),
+    lengthPrefix(input.messagingPublicKeyPem),
   ]);
 }

@@ -28,6 +28,10 @@ describe("device enrollment persistence", () => {
       publicKeyEncoding: { type: "spki", format: "pem" },
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
     });
+    const messaging = generateKeyPairSync("x25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
     const code = createInvitation(db, {
       host: "server.example",
       port: 10443,
@@ -53,6 +57,7 @@ describe("device enrollment persistence", () => {
       challenge: challenge.challenge,
       displayName: "Kai",
       devicePublicKeyPem: pair.publicKey,
+      messagingPublicKeyPem: messaging.publicKey,
     }), pair.privateKey).toString("base64url");
     const request = {
       invitation,
@@ -60,6 +65,7 @@ describe("device enrollment persistence", () => {
       challenge: challenge.challenge,
       displayName: "Kai",
       devicePublicKeyPem: pair.publicKey,
+      messagingPublicKeyPem: messaging.publicKey,
       signature,
     };
     const device = enrollDevice(db, request, new Date("2027-01-01T00:01:00.000Z"));

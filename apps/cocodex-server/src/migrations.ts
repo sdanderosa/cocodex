@@ -104,4 +104,22 @@ CREATE TABLE agent_task_events (
 );
 CREATE INDEX agent_tasks_target_status ON agent_tasks(target_device_id, status, accepted_at);`,
   },
+  {
+    version: 3,
+    sql: `
+ALTER TABLE devices ADD COLUMN messaging_public_key_pem TEXT;
+CREATE TABLE private_messages (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL UNIQUE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id),
+  recipient_device_id TEXT NOT NULL REFERENCES devices(id),
+  ciphertext TEXT NOT NULL,
+  client_created_at TEXT NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX private_messages_recipient_sequence
+  ON private_messages(recipient_device_id, sequence);
+CREATE INDEX private_messages_sender_sequence
+  ON private_messages(sender_device_id, sequence);`,
+  },
 ];

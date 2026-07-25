@@ -61,6 +61,7 @@ export async function enrollClient(
   const challenge = await postPinned(invitation, certificate.pem, "/v1/enrollment/challenge", {
     invitationCode,
     devicePublicKeyPem: identity.publicKeyPem,
+    messagingPublicKeyPem: identity.messagingPublicKeyPem,
   }) as { id: string; challenge: string };
   const signature = sign(null, enrollmentSigningTranscript({
     serverFingerprint: invitation.serverFingerprint,
@@ -69,6 +70,7 @@ export async function enrollClient(
     challenge: challenge.challenge,
     displayName,
     devicePublicKeyPem: identity.publicKeyPem,
+    messagingPublicKeyPem: identity.messagingPublicKeyPem,
   }), identity.privateKeyPem).toString("base64url");
   const enrolled = await postPinned(invitation, certificate.pem, "/v1/enroll", {
     version: 1,
@@ -77,6 +79,7 @@ export async function enrollClient(
     challenge: challenge.challenge,
     displayName,
     devicePublicKeyPem: identity.publicKeyPem,
+    messagingPublicKeyPem: identity.messagingPublicKeyPem,
     signature,
   }) as { device: { id: string }; serverIdentityPublicKeyPem: string };
   const connection: ClientConnection = {

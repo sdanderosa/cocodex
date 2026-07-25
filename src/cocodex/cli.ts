@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { connectAuthenticatedClient, enrollClient, loadClientConnection, sendAgentRequest } from "./client";
 import { attachLocalAgentBridge } from "./agent-bridge";
 import { CodexAgentAdapter } from "./codex-agent-adapter";
 import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
 import { clientPaths } from "./paths";
+import { loadOrCreateClientIdentity } from "./identity";
+import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -64,6 +66,53 @@ async function run(): Promise<void> {
       });
       console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId }));
       return;
+    }    case "private-send": {
+      const socket = await connectAuthenticatedClient(paths);
+      const connection = loadClientConnection(paths);
+      const identity = loadOrCreateClientIdentity(paths);
+      const recipientDeviceId = required("--recipient-device");
+      const messageId = crypto.randomUUID();
+      const clientCreatedAt = new Date().toISOString();
+      const ciphertext = await sealSignedPrivateMessage({
+        messageId,
+        senderDeviceId: connection.deviceId,
+        recipientDeviceId,
+        text: required("--message"),
+        clientCreatedAt,
+      }, identity.privateKeyPem, identity.publicKeyPem, readFileSync(required("--recipient-key"), "utf8"));
+      const accepted = nextFrame(socket, "private.accepted");
+      socket.send(JSON.stringify({
+        version: 1, type: "private.send", requestId: crypto.randomUUID(), messageId,
+        recipientDeviceId, ciphertext, clientCreatedAt,
+      }));
+      console.log(JSON.stringify(await accepted));
+      socket.close();
+      return;
+    }
+    case "private-listen": {
+      const socket = await connectAuthenticatedClient(paths);
+      const connection = loadClientConnection(paths);
+      const identity = loadOrCreateClientIdentity(paths);
+      const expectedFingerprint = option("--trust-fingerprint");
+      const render = async (message: any) => {
+        if (message.recipientDeviceId !== connection.deviceId) return;
+        const opened = await openSignedPrivateMessage(
+          message.ciphertext, identity.messagingPrivateKeyPem, identity.messagingPublicKeyPem, message, expectedFingerprint,
+        );
+        console.log(JSON.stringify({ ...message, ciphertext: undefined, text: opened.text }));
+      };
+      const snapshot = nextFrame(socket, "private.snapshot");
+      socket.send(JSON.stringify({
+        version: 1, type: "private.subscribe", requestId: crypto.randomUUID(),
+        afterSequence: Number(option("--after") ?? "0"),
+      }));
+      for (const message of ((await snapshot).messages as any[])) await render(message);
+      socket.addEventListener("message", event => {
+        const frame = JSON.parse(String(event.data)) as any;
+        if (frame.type === "private.message") void render(frame.message);
+      });
+      await new Promise<void>(resolve => socket.addEventListener("close", () => resolve(), { once: true }));
+      return;
     }    case "request-agent": {
       const socket = await connectAuthenticatedClient(paths);
       const projectId = required("--project");
@@ -109,6 +158,8 @@ Usage:
   cocodex-client enroll --invite CODE --name NAME [--state-root PATH]
   cocodex-client status [--state-root PATH]
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--state-root PATH]
+  cocodex-client private-send --recipient-device ID --recipient-key PEM_PATH --message TEXT [--state-root PATH]
+  cocodex-client private-listen [--after SEQUENCE] [--trust-fingerprint FP] [--state-root PATH]
   cocodex-client request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
   cocodex-client connect [--state-root PATH]`);
   }
