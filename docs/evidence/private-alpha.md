@@ -85,7 +85,7 @@ The full CoCodex suite was rerun after the slice and encryption hardening:
 ```text
 82 pass
 0 fail
-764 expect() calls
+765 expect() calls
 Ran 81 tests across 27 files.  (exit 0)
 test:cocodex-dependencies             (exit 0: 7 pass, 0 fail, 46 expectations)
 typecheck:cocodex                 (exit 0)
@@ -158,7 +158,7 @@ Ran 32 tests across 4 files.
 
 The focused run includes the durable pending-intent store test and a
 project-scoped idempotency test. The full CoCodex suite after this checkpoint
-is green: `82 pass`, `0 fail`, `764 expect() calls` across 27 files (exit `0`).
+is green: `82 pass`, `0 fail`, `765 expect() calls` across 27 files (exit `0`).
 This checkpoint does not close
 the documented whole-project historical migration, ratcheted private messaging,
 file-reference encryption, or full-computer/browser requirements.
