@@ -127,7 +127,12 @@ function nextFrame(
   });
 }
 
-async function connect(port: number, device: TestDevice, serverFingerprint: string): Promise<WebSocket> {
+async function connect(
+  port: number,
+  device: TestDevice,
+  serverFingerprint: string,
+  announceAgentReady = true,
+): Promise<WebSocket> {
   const socket = new WebSocket(
     `wss://127.0.0.1:${port}/v1/connect`,
     { tls: { rejectUnauthorized: false } } as never,
@@ -154,11 +159,13 @@ async function connect(port: number, device: TestDevice, serverFingerprint: stri
     signature: proof,
   }));
   await authenticated;
-  socket.send(JSON.stringify({
-    version: 1,
-    type: "agent.ready",
-    requestId: randomUUID(),
-  }));
+  if (announceAgentReady) {
+    socket.send(JSON.stringify({
+      version: 1,
+      type: "agent.ready",
+      requestId: randomUUID(),
+    }));
+  }
   return socket;
 }
 
@@ -386,6 +393,22 @@ describe("authenticated WSS collaboration", () => {
       requesterDeviceId: stephen.id,
       targetDeviceId: kai.id,
     });
+    const partialAtStephen = nextFrame(stephenSocket, "agent.result");
+    reconnectedKai.send(JSON.stringify({
+      version: 1,
+      type: "agent.result",
+      requestId: randomUUID(),
+      taskId: stephenTaskId,
+      eventId: randomUUID(),
+      content: "Reciprocal check began.",
+      final: false,
+      status: "running",
+    }));
+    expect(await partialAtStephen).toMatchObject({
+      taskId: stephenTaskId,
+      final: false,
+      status: "running",
+    });
 
     for (const socket of sockets.splice(0)) socket.close();
     await Bun.sleep(25);
@@ -401,7 +424,18 @@ describe("authenticated WSS collaboration", () => {
     const restartedServer = startCoCodexServer(config, restartedDb, identity);
     servers.push(restartedServer);
     const restartedStephen = await connect(restartedServer.port, stephen, fingerprint);
-    const restartedKai = await connect(restartedServer.port, kai, fingerprint);
+    const restartedKai = await connect(restartedServer.port, kai, fingerprint, false);
+    const recoveredRunningTask = nextFrame(restartedKai, "agent.task");
+    restartedKai.send(JSON.stringify({
+      version: 1,
+      type: "agent.ready",
+      requestId: randomUUID(),
+    }));
+    expect((await recoveredRunningTask).task).toMatchObject({
+      id: stephenTaskId,
+      status: "running",
+      targetDeviceId: kai.id,
+    });
     const restartedChat = nextFrame(restartedKai, "chat.snapshot");
     restartedKai.send(JSON.stringify({
       version: 1,
@@ -411,7 +445,7 @@ describe("authenticated WSS collaboration", () => {
       afterSequence: 0,
     }));
     expect(((await restartedChat).events as ChatEvent[]).map(event => event.sequence))
-      .toEqual([first.sequence, second.sequence, expect.any(Number)]);
+      .toEqual([first.sequence, second.sequence, expect.any(Number), expect.any(Number)]);
     const restartedPrivate = nextFrame(restartedStephen, "private.snapshot");
     restartedStephen.send(JSON.stringify({
       version: 1,
