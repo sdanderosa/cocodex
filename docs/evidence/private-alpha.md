@@ -523,6 +523,28 @@ Files: `packages/cocodex-protocol/src/server-transfer.ts`,
 `tests/cocodex-server-transfer-process.test.ts`,
 `apps/cocodex-server/tests/backup.test.ts`, and ADR 0017.
 
+## Offline encrypted private-message round trip
+
+Implementation commit: `0792469f`
+
+The three-process private-alpha test now queues one encrypted private message
+in each direction while the server is stopped. Both messages remain in the
+protected client outboxes, are acknowledged after the server restarts, and are
+decrypted only by the intended recipient. The same test still proves the
+resident client processes retain their PIDs, recover shared chat and encrypted
+agent results, and recover after restart.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `45 expect() calls`.
+The observed trace reached `offline queues accepted`, `clients reconnected`,
+and `recovered snapshots received` before clean shutdown.
+
 ## Official Codex runtime smoke
 
 Runtime discovered from the installed Codex desktop application:
