@@ -28,14 +28,15 @@ const databases: Database[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.stop(true)));
   for (const database of databases.splice(0)) database.close();
+  Bun.gc(true);
   for (const root of roots.splice(0)) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         rmSync(root, { recursive: true, force: true });
         break;
       } catch (error) {
-        if (attempt === 19) throw error;
-        await Bun.sleep(25);
+        if (attempt === 99) throw error;
+        await Bun.sleep(50);
       }
     }
   }
