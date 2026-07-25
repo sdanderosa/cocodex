@@ -6,8 +6,33 @@ import type * as Sodium from "libsodium-wrappers-sumo";
 // maintained CommonJS export uses the same reviewed implementation and API.
 const sodium = require("libsodium-wrappers-sumo") as typeof Sodium;
 
+const SEALED_BOX_OVERHEAD = 48;
+const MAX_PRIVATE_PLAINTEXT_BYTES = 64 * 1024;
+const MAX_PRIVATE_CIPHERTEXT_BYTES = 72 * 1024;
+
 function decodeBase64Url(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "base64url"));
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("Invalid base64url value");
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value) throw new Error("Invalid base64url value");
+  return new Uint8Array(decoded);
+}
+
+function decodeCiphertext(value: string): Uint8Array {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Private message ciphertext is not canonical base64url");
+  }
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.byteLength < SEALED_BOX_OVERHEAD || decoded.byteLength > MAX_PRIVATE_CIPHERTEXT_BYTES
+    || decoded.toString("base64url") !== value) {
+    throw new Error("Private message ciphertext is outside the supported bounds");
+  }
+  return new Uint8Array(decoded);
+}
+
+function assertPlaintextBounds(plaintext: Uint8Array): void {
+  if (plaintext.byteLength < 1 || plaintext.byteLength > MAX_PRIVATE_PLAINTEXT_BYTES) {
+    throw new Error("Private message plaintext is outside the supported bounds");
+  }
 }
 
 function x25519PublicKey(value: string): Uint8Array {
@@ -27,8 +52,10 @@ export async function sealPrivateMessage(
   recipientX25519PublicKeyPem: string,
 ): Promise<string> {
   await sodium.ready;
+  const plaintextBytes = sodium.from_string(plaintext);
+  assertPlaintextBounds(plaintextBytes);
   return sodium.to_base64(
-    sodium.crypto_box_seal(sodium.from_string(plaintext), x25519PublicKey(recipientX25519PublicKeyPem)),
+    sodium.crypto_box_seal(plaintextBytes, x25519PublicKey(recipientX25519PublicKeyPem)),
     sodium.base64_variants.URLSAFE_NO_PADDING,
   );
 }
@@ -40,11 +67,13 @@ export async function openPrivateMessage(
 ): Promise<string> {
   await sodium.ready;
   try {
+    const sealed = decodeCiphertext(ciphertext);
     const plaintext = sodium.crypto_box_seal_open(
-      sodium.from_base64(ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING),
+      sealed,
       x25519PublicKey(recipientX25519PublicKeyPem),
       x25519PrivateKey(recipientX25519PrivateKeyPem),
     );
+    assertPlaintextBounds(plaintext);
     return sodium.to_string(plaintext);
   } catch {
     throw new Error("Private message could not be decrypted");
@@ -97,7 +126,12 @@ export async function openSignedPrivateMessage(
   envelope: { messageId: string; senderDeviceId: string; recipientDeviceId: string; clientCreatedAt: string },
   expectedSenderFingerprint: string,
 ): Promise<PrivateMessagePlaintext> {
-  const decoded = JSON.parse(await openPrivateMessage(ciphertext, recipientPrivateKeyPem, recipientPublicKeyPem)) as PrivateMessagePlaintext;
+  let decoded: PrivateMessagePlaintext;
+  try {
+    decoded = JSON.parse(await openPrivateMessage(ciphertext, recipientPrivateKeyPem, recipientPublicKeyPem)) as PrivateMessagePlaintext;
+  } catch {
+    throw new Error("Private-message payload is invalid");
+  }
   if (decoded.version !== 1 || decoded.messageId !== envelope.messageId
     || decoded.senderDeviceId !== envelope.senderDeviceId
     || decoded.recipientDeviceId !== envelope.recipientDeviceId

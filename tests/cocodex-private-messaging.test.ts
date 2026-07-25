@@ -53,6 +53,12 @@ describe("CoCodex private-message encryption", () => {
     )).toBe(plaintext);
     await expect(openPrivateMessage(ciphertext, kai.messaging.privateKey, kai.messaging.publicKey))
       .rejects.toThrow("could not be decrypted");
+    await expect(openPrivateMessage(`${ciphertext}=`, stephen.messaging.privateKey, stephen.messaging.publicKey))
+      .rejects.toThrow("could not be decrypted");
+    await expect(openPrivateMessage("not-base64", stephen.messaging.privateKey, stephen.messaging.publicKey))
+      .rejects.toThrow("could not be decrypted");
+    await expect(sealPrivateMessage("x".repeat(64 * 1024 + 1), stephen.messaging.publicKey))
+      .rejects.toThrow("plaintext is outside the supported bounds");
   });
 
   test("binds a signed sender identity and outer delivery envelope inside ciphertext", async () => {

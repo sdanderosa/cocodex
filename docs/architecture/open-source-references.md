@@ -41,7 +41,8 @@ reviewed again before release.
   envelopes for the single-device private alpha. Keep the server
   ciphertext-only. Evaluate official Apache-2.0 Matrix crypto bindings before
   claiming forward secrecy, rotation, or full multi-device messaging; do not
-  invent a cipher or use AGPL libsignal in an MIT-only build.
+  invent a cipher or use AGPL libsignal in an MIT-only build. The exact
+  boundary and migration conditions are recorded in ADR 0014.
 - **Project content:** use a separate X25519 project-wrap keypair and random
   per-project keys. Owner-signed sealed key envelopes and XChaCha20-Poly1305
   content envelopes keep the server blind to the shipped Final Goal/context
