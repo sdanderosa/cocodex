@@ -60,6 +60,8 @@ export async function runJsonLineSession(
   const chatCursors = new Map<string, number>();
   const encryptedChatCursors = new Map<string, number>();
   const promptSubscriptions = new Set<string>();
+  const encryptedPromptCursors = new Map<string, number>();
+  const encryptedPromptSubscriptions = new Set<string>();
   const contextSubscriptions = new Set<string>();
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
@@ -104,6 +106,35 @@ export async function runJsonLineSession(
       eventId,
       envelope,
       clientCreatedAt,
+    };
+  };
+  const encryptedPromptFrame = async (
+    projectId: string,
+    updateId: string,
+    update: string,
+    requestId: string,
+  ) => {
+    if (update.length < 4 || update.length > 256_000) throw new Error("Prompt update must be 4-256000 characters");
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+    if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
+    const envelope = await sealProjectContent({
+      projectId,
+      keyEpoch: stored.keyEpoch,
+      recordType: "shared-prompt",
+      recordId: updateId,
+      plaintext: JSON.stringify({ update }),
+      projectKey: stored.projectKey,
+      senderDeviceId: connection.deviceId,
+      senderPrivateKeyPem: identity.privateKeyPem,
+      senderPublicKeyPem: identity.publicKeyPem,
+    });
+    return {
+      version: 1 as const,
+      type: "project.prompt.update" as const,
+      requestId,
+      projectId,
+      updateId,
+      envelope,
     };
   };
   const publishUsage = (changes: Partial<typeof usageReport> = {}) => {
@@ -293,6 +324,83 @@ export async function runJsonLineSession(
     }
   };
 
+  const openEncryptedPromptUpdate = async (rawUpdate: Record<string, any>): Promise<{ updateId: string; projectId: string; senderDeviceId: string; update: string; sequence: number }> => {
+    const projectId = String(rawUpdate.projectId);
+    const updateId = String(rawUpdate.updateId);
+    const parsedEnvelope = projectContentEnvelopeSchema.parse(rawUpdate.envelope);
+    const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
+    if (!key) throw new Error(`No project key is available for ${projectId} epoch ${parsedEnvelope.keyEpoch}`);
+    const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
+    const plaintext = await openProjectContent({
+      envelope: parsedEnvelope,
+      projectKey: key.projectKey,
+      expectedProjectId: projectId,
+      expectedKeyEpoch: key.keyEpoch,
+      expectedRecordType: "shared-prompt",
+      expectedRecordId: updateId,
+      expectedSenderDeviceId: parsedEnvelope.senderDeviceId,
+      expectedSenderPublicKeyPem: senderPublicKeyPem,
+    });
+    if (plaintext.byteLength > 256_000) throw new Error("Encrypted prompt update is too large");
+    let decoded: unknown;
+    try { decoded = JSON.parse(plaintext.toString("utf8")); }
+    catch { throw new Error("Encrypted prompt update is not valid JSON"); }
+    const update = decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      ? (decoded as Record<string, unknown>).update
+      : undefined;
+    if (typeof update !== "string" || update.length < 4 || update.length > 256_000) {
+      throw new Error("Encrypted prompt update is invalid");
+    }
+    return {
+      updateId,
+      projectId,
+      senderDeviceId: String(rawUpdate.senderDeviceId),
+      update,
+      sequence: Number(rawUpdate.sequence),
+    };
+  };
+
+  const openEncryptedPromptFrame = async (frame: Record<string, any>): Promise<void> => {
+    try {
+      const projectId = String(frame.projectId ?? frame.update?.projectId);
+      if (frame.type === "project.prompt.snapshot") {
+        const rawUpdates = Array.isArray(frame.updates) ? frame.updates : [];
+        const updates = [];
+        for (const rawUpdate of rawUpdates) updates.push(await openEncryptedPromptUpdate(rawUpdate));
+        const latest = updates.at(-1)?.sequence;
+        if (typeof latest === "number") {
+          encryptedPromptCursors.set(projectId, Math.max(encryptedPromptCursors.get(projectId) ?? 0, latest));
+        }
+        emit({ source: "server", frame: {
+          version: 1,
+          type: "prompt.snapshot",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          projectId,
+          updates,
+        } });
+        if (rawUpdates.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
+          send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: latest });
+        }
+        return;
+      }
+      if (frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
+        const update = await openEncryptedPromptUpdate(frame.update);
+        encryptedPromptCursors.set(projectId, Math.max(encryptedPromptCursors.get(projectId) ?? 0, update.sequence));
+        emit({ source: "server", frame: {
+          version: 1,
+          type: "prompt.update",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          projectId,
+          updateId: update.updateId,
+          senderDeviceId: update.senderDeviceId,
+          update: update.update,
+        } });
+      }
+    } catch (error) {
+      emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const openProjectKeyEnvelopeFromServer = (envelope: Record<string, any>): void => {
     if (envelope.recipientDeviceId !== connection.deviceId) return;
     if (!identity.projectWrapPrivateKeyPem || !identity.projectWrapPublicKeyPem) {
@@ -388,6 +496,10 @@ export async function runJsonLineSession(
         void openEncryptedChatFrame(frame);
         return;
       }
+      if (frame.type === "project.prompt.snapshot" || frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
+        void openEncryptedPromptFrame(frame);
+        return;
+      }
       if (frame.type === "chat.snapshot") {
         const events = Array.isArray(frame.events) ? frame.events : [];
         const latest = events.at(-1)?.sequence;
@@ -453,6 +565,15 @@ export async function runJsonLineSession(
     }
     for (const [projectId, afterSequence] of encryptedChatCursors) {
       send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+    }
+    for (const projectId of encryptedPromptSubscriptions) {
+      send({
+        version: 1,
+        type: "project.prompt.subscribe",
+        requestId: randomUUID(),
+        projectId,
+        afterSequence: encryptedPromptCursors.get(projectId) ?? 0,
+      });
     }
     for (const projectId of promptSubscriptions) {
       send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
@@ -663,13 +784,27 @@ export async function runJsonLineSession(
           });
         } else if (command.type === "prompt.subscribe") {
           const projectId = String(command.projectId);
-          promptSubscriptions.add(projectId);
-          send({
-            version: 1,
-            type: "prompt.subscribe",
-            requestId: controlRequestId(command.id),
-            projectId,
-          });
+          const stored = loadProjectKey(paths.projectKeys, projectId);
+          if (stored) {
+            const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(projectId) ?? 0);
+            encryptedPromptCursors.set(projectId, afterSequence);
+            encryptedPromptSubscriptions.add(projectId);
+            send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, afterSequence });
+          } else {
+            promptSubscriptions.add(projectId);
+            send({
+              version: 1,
+              type: "prompt.subscribe",
+              requestId: controlRequestId(command.id),
+              projectId,
+            });
+          }
+        } else if (command.type === "project.prompt.subscribe") {
+          const projectId = String(command.projectId);
+          const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(projectId) ?? 0);
+          encryptedPromptCursors.set(projectId, afterSequence);
+          encryptedPromptSubscriptions.add(projectId);
+          send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, afterSequence });
         } else if (command.type === "context.get") {
           const projectId = String(command.projectId);
           contextSubscriptions.add(projectId);
@@ -741,16 +876,37 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, projectId });
         } else if (command.type === "prompt.update") {
           const updateId = String(command.updateId ?? randomUUID());
-          enqueueDurableEvent(paths, {
-            version: 1,
-            type: "prompt.update",
-            requestId: controlRequestId(command.id),
-            projectId: String(command.projectId),
-            updateId,
-            update: String(command.update),
-          });
+          const projectId = String(command.projectId);
+          const requestId = controlRequestId(command.id);
+          const update = String(command.update);
+          const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          if (stored) {
+            const frame = await encryptedPromptFrame(projectId, updateId, update, requestId);
+            encryptedPromptCursors.set(projectId, encryptedPromptCursors.get(projectId) ?? 0);
+            encryptedPromptSubscriptions.add(projectId);
+            enqueueDurableEvent(paths, frame);
+          } else {
+            enqueueDurableEvent(paths, {
+              version: 1,
+              type: "prompt.update",
+              requestId,
+              projectId,
+              updateId,
+              update,
+            });
+          }
           const delivered = await flush();
-          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, updateId });
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, updateId, encrypted: Boolean(stored) });
+        } else if (command.type === "project.prompt.update") {
+          const updateId = String(command.updateId ?? randomUUID());
+          const projectId = String(command.projectId);
+          const requestId = controlRequestId(command.id);
+          const frame = await encryptedPromptFrame(projectId, updateId, String(command.update), requestId);
+          encryptedPromptCursors.set(projectId, encryptedPromptCursors.get(projectId) ?? 0);
+          encryptedPromptSubscriptions.add(projectId);
+          enqueueDurableEvent(paths, frame);
+          const delivered = await flush();
+          emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, updateId, encrypted: true });
         } else if (command.type === "project.chat.send") {
           const projectId = String(command.projectId);
           const eventId = String(command.eventId ?? randomUUID());

@@ -269,4 +269,18 @@ CREATE TABLE project_chat_events (
 CREATE INDEX project_chat_events_project_sequence
   ON project_chat_events(project_id, sequence);`,
   },
+  {
+    version: 14,
+    sql: `
+CREATE TABLE project_prompt_updates (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  update_id TEXT NOT NULL UNIQUE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  accepted_at TEXT NOT NULL
+);
+CREATE INDEX project_prompt_updates_project_sequence
+  ON project_prompt_updates(project_id, sequence);`,
+  },
 ];

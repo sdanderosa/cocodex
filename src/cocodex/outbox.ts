@@ -4,7 +4,7 @@ import { clientFrameSchema, type ClientFrame } from "@cocodex/protocol";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "prompt.update" | "artifact.publish" | "context.update" | "project.context.update" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "context.update" | "project.context.update" }>;
 
 interface OutboxFile {
   version: 1;
@@ -19,7 +19,7 @@ function parseOutbox(path: string): OutboxFile {
   const events = value.events.map(event => {
     const frame = clientFrameSchema.parse(event);
     if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request"
-      && frame.type !== "prompt.update" && frame.type !== "artifact.publish" && frame.type !== "context.update"
+      && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.context.update") {
       throw new Error("Unsupported durable CoCodex event");
     }
@@ -58,9 +58,9 @@ export function queuedEvents(paths: ClientPaths): DurableFrame[] {
 export function enqueueDurableEvent(paths: ClientPaths, value: unknown): DurableFrame {
   const frame = clientFrameSchema.parse(value);
   if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request"
-      && frame.type !== "prompt.update" && frame.type !== "artifact.publish" && frame.type !== "context.update"
+      && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.context.update") {
-    throw new Error("Only chat, encrypted chat, private-message, agent, prompt, artifact, and project-context updates can be queued durably");
+    throw new Error("Only chat, encrypted chat, private-message, agent, prompt, encrypted prompt, artifact, and project-context updates can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
   const duplicate = events.find(event => event.requestId === frame.requestId);
@@ -120,7 +120,7 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
         finish(new Error(message));
       }
       else if (response.type === "chat.accepted" || response.type === "project.chat.accepted" || response.type === "private.accepted"
-        || response.type === "agent.accepted" || response.type === "prompt.accepted"
+        || response.type === "agent.accepted" || response.type === "prompt.accepted" || response.type === "project.prompt.accepted"
         || response.type === "artifact.accepted" || response.type === "context.updated"
         || response.type === "project.context.updated") finish();
     };

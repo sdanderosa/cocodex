@@ -242,6 +242,53 @@ describe("CoCodex protocol", () => {
       .toMatchObject({ type: "project.chat.event", event });
     expect(() => clientFrameSchema.parse({ ...send, envelope: { ...envelope, extra: true } })).toThrow();
   });
+  test("accepts encrypted Yjs prompt-update frames", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const projectId = crypto.randomUUID();
+    const senderDeviceId = crypto.randomUUID();
+    const updateId = crypto.randomUUID();
+    const envelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "shared-prompt" as const,
+      recordId: updateId,
+      nonce: Buffer.alloc(24, 7).toString("base64url"),
+      ciphertext: Buffer.alloc(40, 8).toString("base64url"),
+      senderDeviceId,
+      senderPublicKeyPem: signing.publicKey,
+      signature: Buffer.alloc(64, 9).toString("base64url"),
+    };
+    const update = {
+      version: 1 as const,
+      type: "project.prompt.update" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      updateId,
+      envelope,
+    };
+    expect(clientFrameSchema.parse(update)).toEqual(update);
+    const routed = {
+      sequence: 1,
+      projectId,
+      updateId,
+      senderDeviceId,
+      envelope,
+      acceptedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.prompt.snapshot" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      updates: [routed],
+    })).toMatchObject({ type: "project.prompt.snapshot", updates: [routed] });
+    expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.prompt.changed" as const, update: routed }))
+      .toMatchObject({ type: "project.prompt.changed", update: routed });
+  });
   test("bounds presence cursor and caret frames", () => {
     const frame = {
       version: 1 as const,

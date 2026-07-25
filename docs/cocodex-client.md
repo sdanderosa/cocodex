@@ -48,9 +48,12 @@ identity.
 
 The client subscribes to project chat, prompt revisions, presence, and the
 shared Final Goal. Chat order and context revisions come from the server. Prompt
-text uses Yjs updates; the server authorizes project membership before applying
-them. Offline chat, private ciphertext, prompt updates, and context updates are
-kept in the protected local outbox and replayed after reconnect.
+text uses Yjs updates. When a project key is available, the client encrypts each
+Yjs update before sending it through `project.prompt.*`; the server orders and
+deduplicates the opaque update but never applies Yjs, and each client decrypts
+and applies it locally. Offline chat, private ciphertext, prompt updates, and
+context updates are kept in the protected local outbox and replayed after
+reconnect.
 
 To instruct a local or remote named agent through the JSON-line session:
 
@@ -89,9 +92,16 @@ requires envelopes for every approved member; `project.member.remove` revokes
 the removed client's local key ring. The owner should rotate immediately after
 removal so remaining members receive a fresh epoch.
 
-This is still not a claim that every project record is encrypted yet. Yjs
-prompt updates, task prompts, agent results, artifacts, and file references
-remain on the explicitly documented follow-up path.
+When a project key is available, `prompt.subscribe` and `prompt.update` likewise
+select the encrypted `project.prompt.*` transport. The server persists only the
+signed envelope and authoritative sequence in `project_prompt_updates`; it does
+not receive the prompt text or apply the Yjs update. The client verifies the
+sender and project epoch, decrypts locally, and passes the update to the normal
+Yjs document. Legacy `prompt.*` remains available for projects without a key.
+
+This is still not a claim that every project record is encrypted yet. Task
+prompts, agent results, artifacts, and file references remain on the explicitly
+documented follow-up path.
 
 ## Usage sharing
 

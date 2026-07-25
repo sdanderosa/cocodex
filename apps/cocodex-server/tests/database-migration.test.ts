@@ -47,10 +47,10 @@ describe("CoCodex database migrations", () => {
       const columns = migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>;
       expect(columns.map(column => column.name)).toContain("requester_signature");
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }]);
       expect(migrated.query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('project_key_envelopes', 'encrypted_project_context', 'project_key_epochs', 'project_chat_events') ORDER BY name",
-      ).all()).toEqual([{ name: "encrypted_project_context" }, { name: "project_chat_events" }, { name: "project_key_envelopes" }, { name: "project_key_epochs" }]);
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('project_key_envelopes', 'encrypted_project_context', 'project_key_epochs', 'project_chat_events', 'project_prompt_updates') ORDER BY name",
+      ).all()).toEqual([{ name: "encrypted_project_context" }, { name: "project_chat_events" }, { name: "project_key_envelopes" }, { name: "project_key_epochs" }, { name: "project_prompt_updates" }]);
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;

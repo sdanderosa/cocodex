@@ -12,6 +12,13 @@ import {
   encryptedChatSnapshotFrameSchema,
   encryptedChatSubscribeFrameSchema,
 } from "./project-chat";
+import {
+  encryptedPromptAcceptedFrameSchema,
+  encryptedPromptChangedFrameSchema,
+  encryptedPromptSnapshotFrameSchema,
+  encryptedPromptSubscribeFrameSchema,
+  encryptedPromptUpdateFrameSchema,
+} from "./project-prompt";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -165,6 +172,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   encryptedChatSubscribeFrameSchema,
   encryptedChatSendFrameSchema,
+  encryptedPromptSubscribeFrameSchema,
+  encryptedPromptUpdateFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("artifact.publish"),
@@ -333,6 +342,9 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
   encryptedChatEventFrameSchema,
+  encryptedPromptSnapshotFrameSchema,
+  encryptedPromptAcceptedFrameSchema,
+  encryptedPromptChangedFrameSchema,
   projectKeyResultFrameSchema,
   projectKeyAcceptedFrameSchema,
   projectKeyChangedFrameSchema,

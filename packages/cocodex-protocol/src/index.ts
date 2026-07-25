@@ -89,3 +89,17 @@ export {
   type EncryptedChatAcceptedFrame,
   type EncryptedChatEventFrame,
 } from "./project-chat";
+export {
+  encryptedPromptUpdateSchema,
+  encryptedPromptSubscribeFrameSchema,
+  encryptedPromptUpdateFrameSchema,
+  encryptedPromptSnapshotFrameSchema,
+  encryptedPromptAcceptedFrameSchema,
+  encryptedPromptChangedFrameSchema,
+  type EncryptedPromptUpdate,
+  type EncryptedPromptSubscribeFrame,
+  type EncryptedPromptUpdateFrame,
+  type EncryptedPromptSnapshotFrame,
+  type EncryptedPromptAcceptedFrame,
+  type EncryptedPromptChangedFrame,
+} from "./project-prompt";

@@ -20,6 +20,8 @@ const ALLOWED_COMMANDS = new Set([
   "project.chat.send",
   "prompt.subscribe",
   "prompt.update",
+  "project.prompt.subscribe",
+  "project.prompt.update",
   "context.get",
   "context.update",
   "project.context.get",

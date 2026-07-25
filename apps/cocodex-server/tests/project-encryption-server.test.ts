@@ -200,6 +200,24 @@ function chatEnvelope(projectId: string, sender: TestDevice, eventId: string, te
   };
 }
 
+function promptEnvelope(projectId: string, sender: TestDevice, updateId: string): ProjectContentEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch: 1,
+    recordType: "shared-prompt" as const,
+    recordId: updateId,
+    nonce: randomBytes(24).toString("base64url"),
+    ciphertext: randomBytes(32).toString("base64url"),
+    senderDeviceId: sender.id,
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectContentSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
 describe("encrypted project WSS routing", () => {
   test("routes opaque keys/context, enforces membership, and rejects stale/replayed writes", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-project-encryption-"));
@@ -462,6 +480,40 @@ describe("encrypted project WSS routing", () => {
       .get(eventId) as { envelopeJson: string };
     expect(stored.envelopeJson).toContain(envelope.ciphertext);
     expect(stored.envelopeJson).not.toContain("secret chat payload");
+
+    const ownerPromptSnapshot = nextFrame(ownerSocket, "project.prompt.snapshot");
+    const memberPromptSnapshot = nextFrame(memberSocket, "project.prompt.snapshot");
+    const subscribePrompt = (socket: WebSocket) => socket.send(JSON.stringify({
+      version: 1,
+      type: "project.prompt.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      afterSequence: 0,
+    }));
+    subscribePrompt(ownerSocket);
+    subscribePrompt(memberSocket);
+    expect((await ownerPromptSnapshot).updates).toEqual([]);
+    expect((await memberPromptSnapshot).updates).toEqual([]);
+    const updateId = randomUUID();
+    const prompt = promptEnvelope(project.id, owner, updateId);
+    const promptAccepted = nextFrame(ownerSocket, "project.prompt.accepted");
+    const promptOwnerChanged = nextFrame(ownerSocket, "project.prompt.changed");
+    const promptMemberChanged = nextFrame(memberSocket, "project.prompt.changed");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.prompt.update",
+      requestId: randomUUID(),
+      projectId: project.id,
+      updateId,
+      envelope: prompt,
+    }));
+    expect((await promptAccepted).update).toMatchObject({ updateId, envelope: prompt });
+    expect((await promptOwnerChanged).update).toMatchObject({ updateId, envelope: prompt });
+    expect((await promptMemberChanged).update).toMatchObject({ updateId, envelope: prompt });
+    const storedPrompt = db.query("SELECT envelope_json AS envelopeJson FROM project_prompt_updates WHERE update_id = ?")
+      .get(updateId) as { envelopeJson: string };
+    expect(storedPrompt.envelopeJson).toContain(prompt.ciphertext);
+    expect(storedPrompt.envelopeJson).not.toContain("prompt plaintext");
 
     const tampered = { ...envelope, signature: envelope.signature.slice(0, -1) + (envelope.signature.endsWith("A") ? "B" : "A") };
     const tamperedEventId = randomUUID();

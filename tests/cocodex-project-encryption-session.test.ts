@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import * as Y from "yjs";
 import { publicKeyFingerprint } from "@cocodex/protocol";
 import { createDefaultConfig } from "../apps/cocodex-server/src/config";
 import { openDatabase } from "../apps/cocodex-server/src/database";
@@ -189,6 +190,35 @@ describe("CoCodex encrypted project context session", () => {
       .get(project.id) as { envelopeJson: string };
     expect(encryptedChat.envelopeJson).not.toContain(plaintextChat);
     expect(encryptedChat.envelopeJson).toContain("ciphertext");
+
+    stephen.send({ id: crypto.randomUUID(), type: "prompt.subscribe", projectId: project.id });
+    kai.send({ id: crypto.randomUUID(), type: "prompt.subscribe", projectId: project.id });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "server" && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.snapshot"),
+      kai.waitFor(event => event.source === "server" && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.snapshot"),
+    ]);
+    const promptDocument = new Y.Doc();
+    const promptText = "Encrypted shared prompt text";
+    promptDocument.getText("prompt").insert(0, promptText);
+    const promptUpdate = Buffer.from(Y.encodeStateAsUpdate(promptDocument)).toString("base64");
+    stephen.send({ id: crypto.randomUUID(), type: "prompt.update", projectId: project.id, update: promptUpdate });
+    const [promptRecovered] = await Promise.all([
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.update"
+        && ((event.frame as Record<string, unknown>).update as string | undefined) === promptUpdate),
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "prompt.update"
+        && ((event.frame as Record<string, unknown>).update as string | undefined) === promptUpdate),
+    ]);
+    expect(promptRecovered.frame).toMatchObject({ type: "prompt.update", projectId: project.id, update: promptUpdate });
+    const recoveredPromptDocument = new Y.Doc();
+    Y.applyUpdate(recoveredPromptDocument, Buffer.from(promptUpdate, "base64"));
+    expect(recoveredPromptDocument.getText("prompt").toString()).toBe(promptText);
+    const encryptedPrompt = db.query("SELECT envelope_json AS envelopeJson FROM project_prompt_updates WHERE project_id = ?")
+      .get(project.id) as { envelopeJson: string };
+    expect(encryptedPrompt.envelopeJson).not.toContain(promptUpdate);
+    expect(encryptedPrompt.envelopeJson).not.toContain(promptText);
+    expect(encryptedPrompt.envelopeJson).toContain("ciphertext");
 
     const plaintextGoal = "This goal must never be stored by the collaboration server";
     stephen.send({

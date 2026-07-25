@@ -21,6 +21,7 @@ import {
 import { tlsCertificateFingerprint } from "./tls";
 import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
+import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 import { serverEpoch } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
@@ -49,6 +50,7 @@ interface SocketData {
   remoteAddress: string;
   subscribedProjects: Set<string>;
   subscribedEncryptedChats: Set<string>;
+  subscribedEncryptedPrompts: Set<string>;
   subscribedPrompts: Set<string>;
   subscribedContexts: Set<string>;
   subscribedEncryptedContexts: Set<string>;
@@ -185,6 +187,25 @@ export function startCoCodexServer(
         socket.send(encoded);
       } catch {
         socket.data.subscribedEncryptedChats.delete(projectId);
+      }
+    }
+  }
+
+  function sendToEncryptedPrompt(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedEncryptedPrompts.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedEncryptedPrompts.delete(projectId);
       }
     }
   }
@@ -373,6 +394,7 @@ export function startCoCodexServer(
           remoteAddress,
           subscribedProjects: new Set(),
           subscribedEncryptedChats: new Set(),
+          subscribedEncryptedPrompts: new Set(),
           subscribedPrompts: new Set(),
           subscribedContexts: new Set(),
           subscribedEncryptedContexts: new Set(),
@@ -507,6 +529,42 @@ export function startCoCodexServer(
                 version: 1,
                 type: "project.chat.event",
                 event: appended.event,
+              });
+            }
+            return;
+          }
+          if (message.type === "project.prompt.subscribe") {
+            const updates = encryptedPromptUpdatesAfter(db, message.projectId, deviceId, message.afterSequence);
+            socket.data.subscribedEncryptedPrompts.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.prompt.snapshot",
+              requestId,
+              projectId: message.projectId,
+              updates,
+            }));
+            return;
+          }
+          if (message.type === "project.prompt.update") {
+            const appended = appendEncryptedPromptUpdateResult(db, {
+              projectId: message.projectId,
+              updateId: message.updateId,
+              senderDeviceId: deviceId,
+              envelope: message.envelope,
+            });
+            socket.data.subscribedEncryptedPrompts.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.prompt.accepted",
+              requestId,
+              projectId: message.projectId,
+              update: appended.update,
+            }));
+            if (appended.created) {
+              sendToEncryptedPrompt(message.projectId, {
+                version: 1,
+                type: "project.prompt.changed",
+                update: appended.update,
               });
             }
             return;
