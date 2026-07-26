@@ -227,7 +227,12 @@ size, and media type with the project key. Other members decrypt that metadata
 locally; the server sees only routing UUIDs and ciphertext. The file bytes
 remain on the host client and are not uploaded or made remotely accessible by
 this feature. Publish retries use the protected outbox, and reference lists are
-restored after reconnect.
+restored after reconnect. The Artifact handoffs panel groups decrypted
+references beneath their artifact and labels whether the file is available on
+this device or a remote host. A host can attach a file by selecting one of its
+own artifacts and entering the local workspace root plus a contained path. The
+workspace root is used only by the local client and is never included in the
+sealed reference or exposed to other project members.
 
 ## Local access profiles and emergency stop
 

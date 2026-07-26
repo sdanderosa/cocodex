@@ -81,6 +81,10 @@
 .cocodex-artifact-card { cursor: pointer; }
 .cocodex-artifact-select { display: flex; align-items: center; gap: 8px; }
 .cocodex-artifact-form { display: grid; gap: 8px; margin: 10px 12px 0; }
+.cocodex-file-reference { display: grid; gap: 2px; margin-top: 4px; padding: 6px 7px; border: 1px solid color-mix(in srgb, #8b5cf6 28%, var(--border)); border-radius: var(--radius-xs); background: color-mix(in srgb, #8b5cf6 7%, var(--raised)); }
+.cocodex-file-reference code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--text-caption); }
+.cocodex-file-reference-form { padding-top: 10px; border-top: 1px solid var(--border); }
+.cocodex-file-reference-form > small { color: var(--muted); font-size: var(--text-caption); }
 .cocodex-agent-status { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .cocodex-agent-status.status-available { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .cocodex-agent-status.status-working { background: #8b5cf6; box-shadow: 0 0 0 3px color-mix(in srgb, #8b5cf6 18%, transparent); }

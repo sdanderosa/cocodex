@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as Y from "yjs";
+import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import { useT, type TFn, type TKey } from "../i18n";
 import { IconBot, IconKey, IconLock, IconRefresh, IconServer } from "../icons";
 import "../styles-cocodex.css";
@@ -124,6 +125,24 @@ interface Artifact {
   updatedAt: string;
 }
 
+export interface FileReference {
+  referenceId: string;
+  projectId: string;
+  artifactId: string;
+  hostDeviceId: string;
+  authorDeviceId: string;
+  relativePath: string;
+  workspaceMode: "shared" | "git-worktree";
+  workspaceRef: string;
+  branch: string | null;
+  commitSha: string | null;
+  sha256: string;
+  sizeBytes: number;
+  mediaType: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface SharedProjectContext {
   projectId: string;
   finalGoal: string;
@@ -207,6 +226,8 @@ interface SessionValue {
     tasks?: AgentTaskView[];
     artifacts?: Artifact[];
     artifact?: Artifact;
+    references?: FileReference[];
+    reference?: FileReference;
   };
 }
 
@@ -294,6 +315,26 @@ function usageTotalTokens(report: UsageReport): number {
   return report.inputTokens + report.outputTokens;
 }
 
+function fileSizeLabel(t: TFn, bytes: number): string {
+  if (bytes < 1024) return t("cocodex.fileReferences.bytes", { count: bytes });
+  if (bytes < 1024 * 1024) return t("cocodex.fileReferences.kilobytes", { count: (bytes / 1024).toFixed(1) });
+  return t("cocodex.fileReferences.megabytes", { count: (bytes / (1024 * 1024)).toFixed(1) });
+}
+
+export function FileReferenceMetadata({ reference, local }: { reference: FileReference; local: boolean }) {
+  const t = useT();
+  return (
+    <span className="cocodex-file-reference">
+      <code>{reference.relativePath}</code>
+      <small>{fileSizeLabel(t, reference.sizeBytes)}
+        {reference.mediaType ? ` · ${reference.mediaType}` : ""}
+        {local
+          ? ` · ${t("cocodex.fileReferences.thisDevice")}`
+          : ` · ${t("cocodex.fileReferences.remoteDevice")}`}</small>
+    </span>
+  );
+}
+
 export default function CoCodex({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [status, setStatus] = useState<Status>();
@@ -311,10 +352,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [agents, setAgents] = useState<AgentView[]>([]);
   const [tasks, setTasks] = useState<AgentTaskView[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([]);
   const [artifactTitle, setArtifactTitle] = useState("");
   const [artifactSummary, setArtifactSummary] = useState("");
   const [artifactContent, setArtifactContent] = useState("");
+  const [referenceArtifactId, dispatchReferenceArtifactSelection] = useReducer(referenceArtifactSelectionReducer, "");
+  const [referenceWorkspaceRoot, setReferenceWorkspaceRoot] = useState("");
+  const [referencePath, setReferencePath] = useState("");
+  const [referenceWorkspaceMode, setReferenceWorkspaceMode] = useState<"shared" | "git-worktree">("shared");
+  const [referenceWorkspaceRef, setReferenceWorkspaceRef] = useState("main");
+  const [referenceMediaType, setReferenceMediaType] = useState("");
   const [agentId, setAgentId] = useState("");
   const [agentName, setAgentName] = useState("");
   const [agentWorkspace, setAgentWorkspace] = useState("");
@@ -445,10 +493,26 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (frame?.projectId === projectId && frame.type === "artifact.list.result" && Array.isArray(frame.artifacts)) {
         setArtifacts(frame.artifacts);
         setSelectedArtifactIds(previous => previous.filter(id => frame.artifacts!.some(artifact => artifact.id === id)));
+        dispatchReferenceArtifactSelection({
+          type: "artifacts-replaced",
+          artifacts: frame.artifacts,
+          localDeviceId: status?.deviceId,
+        });
       } else if (frame?.projectId === projectId
         && (frame.type === "artifact.accepted" || frame.type === "artifact.published") && frame.artifact) {
         setArtifacts(previous => [...previous.filter(item => item.id !== frame.artifact!.id), frame.artifact!]
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      }
+      if (frame?.projectId === projectId && frame.type === "file-reference.list.result"
+        && Array.isArray(frame.references)) {
+        setFileReferences(frame.references);
+      } else if (frame?.projectId === projectId
+        && (frame.type === "file-reference.accepted" || frame.type === "file-reference.published")
+        && frame.reference) {
+        setFileReferences(previous => [
+          ...previous.filter(item => item.referenceId !== frame.reference!.referenceId),
+          frame.reference!,
+        ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
       }
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
@@ -484,7 +548,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           : [...previous, privateMessage]);
       }
     }
-  }, [ensurePromptDocument, loadStatus, projectId, t]);
+  }, [ensurePromptDocument, loadStatus, projectId, status?.deviceId, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -534,7 +598,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setAgents([]);
     setTasks([]);
     setArtifacts([]);
+    setFileReferences([]);
     setSelectedArtifactIds([]);
+    dispatchReferenceArtifactSelection({ type: "project-changed" });
     ensurePromptDocument(projectId);
     void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
     void command({ type: "prompt.subscribe", projectId });
@@ -543,6 +609,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     void command({ type: "agent.list", projectId });
     void command({ type: "agent.task.list", projectId });
     void command({ type: "artifact.list", projectId });
+    void command({ type: "project.file-reference.list", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
 
   useEffect(() => {
@@ -710,6 +777,28 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const publishFileReference = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId || !referenceArtifactId) return;
+    try {
+      await command({
+        type: "project.file-reference.publish",
+        projectId,
+        artifactId: referenceArtifactId,
+        workspaceRoot: referenceWorkspaceRoot.trim(),
+        path: referencePath.trim(),
+        workspaceMode: referenceWorkspaceMode,
+        workspaceRef: referenceWorkspaceRef.trim(),
+        mediaType: referenceMediaType.trim() || null,
+      });
+      setReferencePath("");
+      setReferenceMediaType("");
+      setNotice(t("cocodex.fileReferences.queued"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const sharePrivate = async (message: PrivateMessage) => {
     if (!projectId || !agentId.trim()) {
       setNotice("Select an agent in the shared-chat composer before sharing a private message.");
@@ -804,6 +893,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visibleAgents = status?.state === "connected" ? agents : [];
   const visibleTasks = status?.state === "connected" ? tasks : [];
   const visibleArtifacts = status?.state === "connected" ? artifacts : [];
+  const visibleFileReferences = status?.state === "connected" ? fileReferences : [];
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
@@ -1189,6 +1279,10 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                         <strong>{artifact.title}</strong>
                       </span>
                       <small>{artifact.summary}</small>
+                      {visibleFileReferences.filter(reference => reference.artifactId === artifact.id).map(reference => (
+                        <FileReferenceMetadata key={reference.referenceId} reference={reference}
+                          local={reference.hostDeviceId === status.deviceId} />
+                      ))}
                       <small>{artifact.type} · {artifact.status}</small>
                     </label>
                   );
@@ -1203,6 +1297,40 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <textarea className="input" value={artifactContent} onChange={event => setArtifactContent(event.target.value)}
                   placeholder={t("cocodex.artifacts.content")} required rows={3} />
                 <button className="btn btn-ghost" disabled={status.state !== "connected"}>{t("cocodex.artifacts.publish")}</button>
+              </form>
+              <form className="cocodex-artifact-form cocodex-file-reference-form" onSubmit={publishFileReference}>
+                <strong>{t("cocodex.fileReferences.title")}</strong>
+                <small>{t("cocodex.fileReferences.subtitle")}</small>
+                <select className="input" value={referenceArtifactId}
+                  onChange={event => dispatchReferenceArtifactSelection({
+                    type: "select",
+                    artifactId: event.target.value,
+                  })} required>
+                  <option value="">{t("cocodex.fileReferences.artifact")}</option>
+                  {visibleArtifacts.filter(artifact => artifact.authorDeviceId === status.deviceId).map(artifact => (
+                    <option key={artifact.id} value={artifact.id}>{artifact.title}</option>
+                  ))}
+                </select>
+                <input className="input" value={referenceWorkspaceRoot}
+                  onChange={event => setReferenceWorkspaceRoot(event.target.value)}
+                  placeholder={t("cocodex.fileReferences.workspaceRoot")} required maxLength={1024} />
+                <input className="input" value={referencePath} onChange={event => setReferencePath(event.target.value)}
+                  placeholder={t("cocodex.fileReferences.path")} required maxLength={1024} />
+                <select className="input" value={referenceWorkspaceMode}
+                  onChange={event => setReferenceWorkspaceMode(event.target.value as "shared" | "git-worktree")}>
+                  <option value="shared">{t("cocodex.fileReferences.shared")}</option>
+                  <option value="git-worktree">{t("cocodex.fileReferences.worktree")}</option>
+                </select>
+                <input className="input" value={referenceWorkspaceRef}
+                  onChange={event => setReferenceWorkspaceRef(event.target.value)}
+                  placeholder={t("cocodex.fileReferences.workspaceRef")} required maxLength={500} />
+                <input className="input" value={referenceMediaType}
+                  onChange={event => setReferenceMediaType(event.target.value)}
+                  placeholder={t("cocodex.fileReferences.mediaType")} maxLength={160} />
+                <button className="btn btn-ghost"
+                  disabled={status.state !== "connected" || !referenceArtifactId}>
+                  {t("cocodex.fileReferences.publish")}
+                </button>
               </form>
             </section>
             <div className="cocodex-section-head">

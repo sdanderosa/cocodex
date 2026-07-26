@@ -1674,8 +1674,12 @@ export async function runJsonLineSession(
           markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
           emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), currentEpoch: Number(frame.currentEpoch ?? 0) });
         }
+        return;
       } else if (frame.type === "project.key.changed") {
         openProjectKeyEnvelopeFromServer(frame.envelope);
+        return;
+      } else if (frame.type === "project.key.accepted") {
+        return;
       } else if (frame.type === "project.key.initialized") {
         const pending = pendingProjectKeyInitializations.get(String(frame.requestId));
         if (pending) {
@@ -1715,9 +1719,11 @@ export async function runJsonLineSession(
             });
           }
         }
+        return;
       } else if (frame.type === "project.key.rotated") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);
+        return;
       } else if (frame.type === "project.key.rotation-required") {
         markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
         emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), removedDeviceId: String(frame.removedDeviceId), currentEpoch: Number(frame.currentEpoch) });

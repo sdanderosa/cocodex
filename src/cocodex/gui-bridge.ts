@@ -88,11 +88,29 @@ export interface CoCodexGuiStatus {
   latestEventSequence: number;
 }
 
-function withoutPrivateCiphertext(value: unknown): unknown {
+function withoutSensitiveServerPayloads(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, any>;
   const frame = record.frame;
   if (!frame || typeof frame !== "object") return value;
+  if (frame.type === "project.key.result"
+    || frame.type === "project.key.changed"
+    || frame.type === "project.key.accepted"
+    || frame.type === "project.key.initialized"
+    || frame.type === "project.key.rotated") {
+    return {
+      ...record,
+      frame: {
+        type: frame.type,
+        ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+        ...(typeof frame.projectId === "string" ? { projectId: frame.projectId } : {}),
+        ...(typeof frame.keyEpoch === "number" ? { keyEpoch: frame.keyEpoch } : {}),
+        ...(typeof frame.currentEpoch === "number" ? { currentEpoch: frame.currentEpoch } : {}),
+        ...(typeof frame.rotationRequired === "boolean" ? { rotationRequired: frame.rotationRequired } : {}),
+        ...(typeof frame.created === "boolean" ? { created: frame.created } : {}),
+      },
+    };
+  }
   if (frame.type === "private.message" && frame.message) {
     return { ...record, frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
   }
@@ -290,7 +308,7 @@ export class CoCodexGuiBridge {
   }
 
   private append(channel: CoCodexGuiEvent["channel"], rawValue: unknown): void {
-    const value = withoutPrivateCiphertext(rawValue);
+    const value = withoutSensitiveServerPayloads(rawValue);
     const record = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
     if (record?.source === "session" && typeof record.state === "string") {
       if (record.state === "connected") this.state = "connected";

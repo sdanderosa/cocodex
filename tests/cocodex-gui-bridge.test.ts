@@ -30,6 +30,34 @@ describe("CoCodex GUI bridge", () => {
         source: "server",
         frame: { type: "private.message", message: { messageId: "message", ciphertext: "secret-box" } },
       })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          type: "project.key.result",
+          requestId: "key-request",
+          projectId: "project",
+          currentEpoch: 2,
+          envelopes: [{
+            sealedProjectKey: "SEALED_PROJECT_KEY_CANARY",
+            recipientEncryptionPublicKeyPem: "PUBLIC_KEY_CANARY",
+            senderSignature: "SIGNATURE_CANARY",
+          }],
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          type: "project.key.accepted",
+          requestId: "accepted-request",
+          projectId: "project",
+          keyEpoch: 2,
+          envelope: {
+            sealedProjectKey: "ACCEPTED_SEALED_KEY_CANARY",
+            recipientEncryptionPublicKeyPem: "ACCEPTED_PUBLIC_KEY_CANARY",
+            senderSignature: "ACCEPTED_SIGNATURE_CANARY",
+          },
+        },
+      })}\n`);
       for await (const chunk of input) {
         for (const line of String(chunk).trim().split("\n")) {
           const command = JSON.parse(line);
@@ -78,6 +106,22 @@ describe("CoCodex GUI bridge", () => {
       type: "agent.task.list",
       projectId: crypto.randomUUID(),
     }).accepted).toBe(true);
+    const referenceProjectId = crypto.randomUUID();
+    const referenceArtifactId = crypto.randomUUID();
+    expect(bridge.command({
+      type: "project.file-reference.list",
+      projectId: referenceProjectId,
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.file-reference.publish",
+      projectId: referenceProjectId,
+      artifactId: referenceArtifactId,
+      workspaceRoot: root,
+      path: "reports/result.txt",
+      workspaceMode: "shared",
+      workspaceRef: "main",
+      mediaType: "text/plain",
+    }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.approval", taskId: "task-1", approved: true }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.safety.status" }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.emergency.stop", reason: "GUI safety test" }).accepted).toBe(true);
@@ -91,6 +135,10 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.file-reference.list"
+      && value.projectId === referenceProjectId)).toBe(true);
+    expect(received.some((value: any) => value.type === "project.file-reference.publish"
+      && value.artifactId === referenceArtifactId && value.path === "reports/result.txt")).toBe(true);
     expect(received.some((value: any) => value.type === "context.get")).toBe(true);
     expect(received.some((value: any) => value.type === "context.update" && value.finalGoal === "Keep the shared goal authoritative")).toBe(true);
     expect(received.some((value: any) => value.type === "usage.get")).toBe(true);
@@ -101,5 +149,33 @@ describe("CoCodex GUI bridge", () => {
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");
+    const keyEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "project.key.result");
+    expect(keyEvent?.value).toEqual({
+      source: "server",
+      frame: {
+        type: "project.key.result",
+        requestId: "key-request",
+        projectId: "project",
+        currentEpoch: 2,
+      },
+    });
+    expect(JSON.stringify(keyEvent)).not.toContain("SEALED_PROJECT_KEY_CANARY");
+    expect(JSON.stringify(keyEvent)).not.toContain("PUBLIC_KEY_CANARY");
+    expect(JSON.stringify(keyEvent)).not.toContain("SIGNATURE_CANARY");
+    const acceptedKeyEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "project.key.accepted");
+    expect(acceptedKeyEvent?.value).toEqual({
+      source: "server",
+      frame: {
+        type: "project.key.accepted",
+        requestId: "accepted-request",
+        projectId: "project",
+        keyEpoch: 2,
+      },
+    });
+    expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SEALED_KEY_CANARY");
+    expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_PUBLIC_KEY_CANARY");
+    expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SIGNATURE_CANARY");
   });
 });

@@ -94,6 +94,10 @@ class JsonSessionHarness {
     });
   }
 
+  serializedEvents(): string {
+    return JSON.stringify(this.events);
+  }
+
   close(): void {
     this.send({ type: "shutdown" });
     this.input.end();
@@ -188,6 +192,10 @@ describe("CoCodex encrypted project context session", () => {
 
     kai.send({ id: crypto.randomUUID(), type: "project.key.get", projectId: project.id });
     await kai.waitFor(event => event.source === "project-encryption" && event.state === "key-available" && event.projectId === project.id);
+    expect(stephen.serializedEvents()).not.toContain("project.key.initialized");
+    expect(kai.serializedEvents()).not.toContain("project.key.result");
+    expect(stephen.serializedEvents()).not.toContain("sealedProjectKey");
+    expect(kai.serializedEvents()).not.toContain("sealedProjectKey");
 
     stephen.send({ id: crypto.randomUUID(), type: "chat.subscribe", projectId: project.id });
     kai.send({ id: crypto.randomUUID(), type: "chat.subscribe", projectId: project.id });
