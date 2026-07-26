@@ -14,7 +14,7 @@ import {
   listProjects,
 } from "../src/shared-state";
 import { listArtifacts, publishArtifact } from "../src/artifacts";
-import { appendPrivateMessage } from "../src/private-messages";
+import { appendPrivateMessage, appendPrivateReceipt, privateReceiptsAfter } from "../src/private-messages";
 import { getSharedProjectContext, updateSharedProjectContext } from "../src/shared-context";
 
 function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: Date): string {
@@ -204,6 +204,66 @@ describe("authoritative shared state", () => {
       const message = { messageId: "8661361f-ce2f-4bec-88fd-c4fb32f49704", senderDeviceId: stephen, recipientDeviceId: kai, ciphertext: "A".repeat(80), clientCreatedAt: now.toISOString() };
       expect(appendPrivateMessage(db, message, now).created).toBeTrue();
       expect(() => appendPrivateMessage(db, { ...message, messageId: "4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e" }, now)).toThrow("replay rejected");
+    } finally { db.close(); }
+  });
+
+  test("stores recipient-only delivery/read receipts with an independent cursor", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = approvedDevice(db, "Stephen", now);
+      const kai = approvedDevice(db, "Kai", now);
+      const first = {
+        messageId: "8661361f-94c3-4bec-88fd-c4fb32f49704",
+        senderDeviceId: stephen,
+        recipientDeviceId: kai,
+        ciphertext: "A".repeat(80),
+        clientCreatedAt: now.toISOString(),
+      };
+      const second = {
+        ...first,
+        messageId: "4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e",
+        ciphertext: "B".repeat(80),
+      };
+      appendPrivateMessage(db, first, now);
+      appendPrivateMessage(db, second, now);
+      expect(() => appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: kai,
+        receipt: "read",
+      }, new Date("2027-01-01T00:00:01.000Z"))).toThrow("requires a delivered");
+      const delivered = appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: kai,
+        receipt: "delivered",
+      }, new Date("2027-01-01T00:00:02.000Z"));
+      expect(delivered.created).toBeTrue();
+      expect(appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: kai,
+        receipt: "delivered",
+      }, new Date("2027-01-01T00:00:03.000Z"))).toEqual({
+        created: false,
+        envelope: delivered.envelope,
+      });
+      const read = appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: kai,
+        receipt: "read",
+      }, new Date("2027-01-01T00:00:04.000Z"));
+      expect(read.created).toBeTrue();
+      expect(() => appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: kai,
+        receipt: "delivered",
+      })).toThrow("cannot follow a read");
+      expect(() => appendPrivateReceipt(db, {
+        messageId: first.messageId,
+        recipientDeviceId: stephen,
+        receipt: "delivered",
+      })).toThrow("Only the private-message recipient");
+      expect(privateReceiptsAfter(db, stephen, 0)).toEqual([delivered.envelope, read.envelope]);
+      expect(privateReceiptsAfter(db, stephen, delivered.envelope.sequence)).toEqual([read.envelope]);
     } finally { db.close(); }
   });
 });

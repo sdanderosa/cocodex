@@ -33,6 +33,20 @@ describe("CoCodex GUI bridge", () => {
       output.write(`${JSON.stringify({
         source: "server",
         frame: {
+          type: "private.receipt",
+          receipt: {
+            sequence: 4,
+            messageId: "message",
+            senderDeviceId: "sender",
+            recipientDeviceId: "recipient",
+            receipt: "read",
+            acceptedAt: "2030-01-01T00:00:00.000Z",
+          },
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
           type: "project.key.result",
           requestId: "key-request",
           projectId: "project",
@@ -177,6 +191,7 @@ describe("CoCodex GUI bridge", () => {
     expect(bridge.command({ type: "agent.emergency.resume" }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.full-computer.enable", confirm: true }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.full-computer.disable" }).accepted).toBe(true);
+    expect(bridge.command({ type: "private.read", messageId: "message" }).accepted).toBe(true);
     bridge.stop();
     await Bun.sleep(5);
 
@@ -202,6 +217,22 @@ describe("CoCodex GUI bridge", () => {
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");
+    const privateReceiptEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "private.receipt");
+    expect(privateReceiptEvent?.value).toEqual({
+      source: "server",
+      frame: {
+        type: "private.receipt",
+        receipt: {
+          sequence: 4,
+          messageId: "message",
+          senderDeviceId: "sender",
+          recipientDeviceId: "recipient",
+          receipt: "read",
+          acceptedAt: "2030-01-01T00:00:00.000Z",
+        },
+      },
+    });
     const keyEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "project.key.result");
     expect(keyEvent?.value).toEqual({

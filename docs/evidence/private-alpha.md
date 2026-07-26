@@ -1196,3 +1196,64 @@ load-sensitive timeout. That test passes in isolation (`1 pass`, `0 fail`,
 same 30-file suite passed with `95 pass`, `0 fail`, and `890 expect()` calls in
 `46.65s`. The default package wrapper remains explicitly non-authoritative
 under this host’s process-load behavior; no test is skipped or disabled.
+
+## Private delivery/read receipt checkpoint (2026-07-26)
+
+This checkpoint adds the bounded single-device private delivery/read lifecycle
+needed by the private alpha. It is intentionally not a claim that the complete
+long-term messaging lifecycle exists: conversations, attachments, replies,
+reactions, edit/delete events, multi-device fan-out, independent ratchets,
+forward secrecy, and device-wide receipt transcripts remain deferred.
+
+The implementation uses the existing WSS-authenticated device session and the
+existing sealed-box private-message envelope. The server stores only receipt
+metadata (message ID, authenticated device IDs, status, sequence, and accepted
+time); it never receives private plaintext or ciphertext for a receipt. The
+client persists a separate receipt cursor and queues receipt frames durably
+while offline. Receipt invariants require recipient-only submission,
+delivered-before-read ordering, monotonic status, and idempotent retries.
+
+Focused protocol/server/client command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\shared-state.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts
+```
+
+Exit status: `0`; relevant output: `42 pass`, `0 fail`, `377 expect()` calls
+across seven files in `13.41s`. This covers migration 26, recipient-only and
+ordering rules, idempotency, ciphertext-only SQLite storage, real WSS receipt
+routing and recovery, independent mailbox cursors, sealed-box crypto, and
+renderer redaction/read controls.
+
+Real three-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `242 expect()` calls in
+`11.77s`. The harness used one real Server process and isolated Stephen/Kai
+Client processes, delivered and recovered the private message, acknowledged
+delivery, issued an explicit read receipt, restarted the Server, and recovered
+the sender-visible receipt in order.
+
+Static/security commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+```
+
+Both exited `0`; typecheck completed for protocol, Server, and root TypeScript,
+and the privacy scan reported `Privacy scan passed`. No CoCodex Server/client
+process or listener remained after the runs. The pending implementation delta
+is recorded in ADR 0034 and is to be published with the final Git commit for
+this checkpoint.

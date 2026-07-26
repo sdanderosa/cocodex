@@ -8,7 +8,7 @@ import {
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "private.receipt.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" }>;
 
 interface OutboxFile {
   version: 1;
@@ -22,7 +22,7 @@ function parseOutbox(path: string): OutboxFile {
   if (value.version !== 1 || !Array.isArray(value.events)) throw new Error("Invalid CoCodex outbox");
   const events = value.events.map(event => {
     const frame = clientFrameSchema.parse(event);
-    if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
+    if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "private.receipt.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
       && frame.type !== "project.member.remove-and-rotate") {
@@ -82,7 +82,7 @@ export function queuedEvents(paths: ClientPaths): DurableFrame[] {
 
 export function enqueueDurableEvent(paths: ClientPaths, value: unknown): DurableFrame {
   const frame = clientFrameSchema.parse(value);
-  if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
+  if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "private.receipt.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
       && frame.type !== "project.member.remove-and-rotate") {
@@ -188,7 +188,7 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
         }
         finish();
       }
-      else if (response.type === "chat.accepted" || response.type === "project.chat.accepted" || response.type === "private.accepted"
+      else if (response.type === "chat.accepted" || response.type === "project.chat.accepted" || response.type === "private.accepted" || response.type === "private.receipt.accepted"
         || response.type === "agent.accepted" || response.type === "project.agent.accepted" || response.type === "prompt.accepted" || response.type === "project.prompt.accepted"
         || response.type === "artifact.accepted" || response.type === "project.artifact.accepted" || response.type === "context.updated"
         || response.type === "project.context.updated" || response.type === "project.file-reference.accepted") finish();

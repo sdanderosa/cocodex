@@ -127,9 +127,11 @@ shared Final Goal. Chat order and context revisions come from the server. Prompt
 text uses Yjs updates. When a project key is available, the client encrypts each
 Yjs update before sending it through `project.prompt.*`; the server orders and
 deduplicates the opaque update but never applies Yjs, and each client decrypts
-and applies it locally. Offline chat, private ciphertext, prompt updates, and
-context updates are kept in the protected local outbox and replayed after
-reconnect.
+and applies it locally. Offline chat, private ciphertext, delivery/read receipt
+frames, prompt updates, and context updates are kept in the protected local
+outbox and replayed after reconnect. The private mailbox keeps a separate
+bounded receipt cursor so sender-visible status survives a Server restart
+without coupling it to the ciphertext message cursor.
 
 Presence is deliberately ephemeral. The client publishes a normalized mouse
 cursor plus a bounded prompt caret/selection and typing flag; local state keeps
@@ -162,6 +164,13 @@ opaque task/result envelopes, never the private text. A same-device task is
 accepted only with this explicit marker; ordinary same-device agent requests
 remain rejected. The GUI exposes the same action beside each private message
 when an agent is selected.
+
+After a private message is opened and its signed ciphertext is verified, the
+Client queues a `delivered` receipt. The private panel exposes an explicit
+**Mark read** action that queues `private.read`; the recipient never sends a
+receipt before local decryption. Receipt state is metadata only and does not
+change the single-device sealed-box limitations documented in ADRs 0014,
+0022, and 0034.
 
 The same session can request the project-scoped `agent.list` roster. The
 server supplies the approved host name, readiness-derived status, and task

@@ -127,7 +127,11 @@ The single TLS/WSS port carries authenticated, versioned protocol frames. The
 server validates device proof, membership, signatures, task dependencies, and
 replay rules, then routes a request to the host client. The host client
 revalidates and executes locally. Private-message rows contain ciphertext and
-routing metadata only; plaintext is not logged or passed into agent context.
+routing metadata only; private delivery/read receipts contain message IDs and
+authenticated device/status metadata but never plaintext or ciphertext. The
+server validates that only the original recipient can submit a receipt and
+stores receipt history with an independent sequence; clients persist the
+receipt recovery cursor. Plaintext is not logged or passed into agent context.
 
 The server cannot enable a host's full-computer profile. That profile and its
 durable emergency-stop state live only in the destination Client; even a
@@ -221,7 +225,9 @@ rotation; the removed client revokes local access live or during authoritative
 reconnect reconciliation. See ADRs 0016 and 0031 for the keyed agent and
 revocation boundaries.
 
-The private alpha deliberately defers relay/libp2p traversal, automatic
+The private alpha supports the connected single-device delivered/read receipt
+path, but deliberately defers conversations, attachments, replies, reactions,
+edit/delete events, multi-device fan-out, relay/libp2p traversal, automatic
 failover, full multi-device ratchets, and cross-platform service installers.
 Those are later requirements and must not be presented as available by the
 current setup instructions.

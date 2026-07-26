@@ -14,6 +14,8 @@ import {
   projectKeyRotationRequiredFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateReceiptAcceptedFrameSchema,
+  privateReceiptFrameSchema,
   privateSnapshotFrameSchema,
   presenceAcceptedFrameSchema,
   presenceLeaveFrameSchema,
@@ -42,7 +44,12 @@ import {
   requireProjectMembership,
 } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
-import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
+import {
+  appendPrivateMessage,
+  appendPrivateReceipt,
+  privateMessagesAfter,
+  privateReceiptsAfter,
+} from "./private-messages";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
@@ -74,6 +81,7 @@ const AUTHENTICATION_TIMEOUT_MS = 10_000;
 const AUTHORIZATION_SWEEP_INTERVAL_MS = 1_000;
 const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
+const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
 const MAX_PRESENCE_MEMBERS = 128;
 const PRESENCE_TTL_MS = 15_000;
 
@@ -172,6 +180,7 @@ export function startCoCodexServer(
   const presenceByProject = new Map<string, Map<string, PresenceState>>();
   const presenceUpdateTimes = new Map<string, number[]>();
   const presenceProjectUpdateTimes = new Map<string, number[]>();
+  const privateReceiptTimes = new Map<string, number[]>();
   const presencePruneIntervalMs = Math.min(5_000, Math.max(1_000, Math.floor(PRESENCE_TTL_MS / 3)));
   let unauthenticatedSocketCount = 0;
   const unauthenticatedByIp = new Map<string, number>();
@@ -221,6 +230,18 @@ export function startCoCodexServer(
         socket.data.subscribedProjects.delete(projectId);
       }
     }
+  }
+
+  function allowPrivateReceipt(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (privateReceiptTimes.get(deviceId) ?? []).filter(timestamp => now - timestamp < 1_000);
+    if (recent.length >= MAX_PRIVATE_RECEIPTS_PER_SECOND) {
+      privateReceiptTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    privateReceiptTimes.set(deviceId, recent);
+    return true;
   }
 
   function sendToProjectMembers(projectId: string, frame: unknown): void {
@@ -1124,6 +1145,7 @@ export function startCoCodexServer(
               type: "private.snapshot",
               requestId,
               messages: privateMessagesAfter(db, deviceId, message.afterSequence),
+              receipts: privateReceiptsAfter(db, deviceId, message.afterReceiptSequence),
             })));
             return;
           }
@@ -1146,6 +1168,28 @@ export function startCoCodexServer(
                 version: 1,
                 type: "private.message",
                 message: appended.envelope,
+              }));
+            }
+            return;
+          }
+          if (message.type === "private.receipt.send") {
+            if (!allowPrivateReceipt(deviceId)) throw new Error("Private receipt rate limit exceeded");
+            const appended = appendPrivateReceipt(db, {
+              messageId: message.messageId,
+              recipientDeviceId: deviceId,
+              receipt: message.receipt,
+            });
+            socket.send(JSON.stringify(privateReceiptAcceptedFrameSchema.parse({
+              version: 1,
+              type: "private.receipt.accepted",
+              requestId,
+              receipt: appended.envelope,
+            })));
+            if (appended.created) {
+              sendToDevice(appended.envelope.senderDeviceId, privateReceiptFrameSchema.parse({
+                version: 1,
+                type: "private.receipt",
+                receipt: appended.envelope,
               }));
             }
             return;

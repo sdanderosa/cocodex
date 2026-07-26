@@ -612,6 +612,41 @@ describe("authenticated WSS collaboration", () => {
     expect(storedPrivate.ciphertext).not.toContain(privatePlaintext);
     expect(db.query("SELECT 1 FROM chat_events WHERE content = ?").get(privatePlaintext)).toBeNull();
 
+    const deliveredReceiptAtStephen = nextFrame(stephenSocket, "private.receipt.accepted");
+    const deliveredReceiptAtKai = nextFrame(kaiSocket, "private.receipt", frame =>
+      (frame.receipt as Record<string, unknown>)?.messageId === privateMessageId,
+    );
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.receipt.send",
+      requestId: randomUUID(),
+      messageId: privateMessageId,
+      receipt: "delivered",
+    }));
+    const deliveredFrame = await deliveredReceiptAtStephen;
+    expect(deliveredFrame.receipt).toMatchObject({
+      messageId: privateMessageId,
+      senderDeviceId: kai.id,
+      recipientDeviceId: stephen.id,
+      receipt: "delivered",
+    });
+    expect((await deliveredReceiptAtKai).receipt).toMatchObject({ receipt: "delivered" });
+
+    const readReceiptAtKai = nextFrame(kaiSocket, "private.receipt", frame =>
+      (frame.receipt as Record<string, unknown>)?.messageId === privateMessageId
+        && (frame.receipt as Record<string, unknown>)?.receipt === "read",
+    );
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.receipt.send",
+      requestId: randomUUID(),
+      messageId: privateMessageId,
+      receipt: "read",
+    }));
+    expect((await readReceiptAtKai).receipt).toMatchObject({ receipt: "read" });
+    expect(db.query("SELECT COUNT(*) AS count FROM private_message_receipts").get()).toEqual({ count: 2 });
+    expect(db.query("SELECT ciphertext FROM private_messages WHERE message_id = ?").get(privateMessageId)).toEqual({ ciphertext: privateCiphertext });
+
     kaiSocket.close();
     const reconnectedKai = await connect(server.port, kai, fingerprint);
     const recoveredUsage = nextFrame(reconnectedKai, "usage.result");
@@ -634,6 +669,10 @@ describe("authenticated WSS collaboration", () => {
     }));
     expect((await recoveredPrivate).messages).toEqual([
       expect.objectContaining({ ciphertext: privateCiphertext }),
+    ]);
+    expect((await recoveredPrivate).receipts).toEqual([
+      expect.objectContaining({ messageId: privateMessageId, receipt: "delivered" }),
+      expect.objectContaining({ messageId: privateMessageId, receipt: "read" }),
     ]);
     const recovered = nextFrame(reconnectedKai, "chat.snapshot");
     reconnectedKai.send(JSON.stringify({

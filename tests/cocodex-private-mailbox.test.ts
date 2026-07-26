@@ -8,6 +8,7 @@ import {
   hasPrivateMailboxReceipt,
   loadPrivateMailbox,
   recordPrivateMailboxReceipt,
+  recordPrivateMailboxRemoteReceipt,
   savePrivateMailbox,
 } from "../src/cocodex/private-mailbox";
 
@@ -89,5 +90,27 @@ describe("CoCodex private mailbox cursor", () => {
     expect(state.deferred).toHaveLength(256);
     expect(state.deferred[0]?.sequence).toBe(45);
     expect(state.cursor).toBe(300);
+  });
+
+  test("recovers sender-visible delivery/read receipts with an independent cursor", () => {
+    const deviceId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    const recipientDeviceId = crypto.randomUUID();
+    let state = emptyPrivateMailbox(deviceId);
+    const delivered = {
+      sequence: 3,
+      messageId,
+      senderDeviceId: deviceId,
+      recipientDeviceId,
+      receipt: "delivered" as const,
+      acceptedAt: "2027-01-01T00:00:00.000Z",
+    };
+    const read = { ...delivered, sequence: 4, receipt: "read" as const };
+    state = recordPrivateMailboxRemoteReceipt(state, delivered);
+    state = recordPrivateMailboxRemoteReceipt(state, read);
+    expect(state.receiptCursor).toBe(4);
+    expect(state.remoteReceipts).toEqual([delivered, read]);
+    expect(recordPrivateMailboxRemoteReceipt(state, read)).toEqual(state);
+    expect(() => recordPrivateMailboxRemoteReceipt(state, { ...read, messageId: crypto.randomUUID() })).toThrow("sequence was reused");
   });
 });

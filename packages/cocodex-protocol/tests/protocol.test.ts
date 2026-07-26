@@ -21,6 +21,8 @@ import {
   projectServerFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateReceiptAcceptedFrameSchema,
+  privateReceiptFrameSchema,
   privateServerFrameSchema,
   privateSnapshotFrameSchema,
   presenceAcceptedFrameSchema,
@@ -665,6 +667,7 @@ describe("CoCodex protocol", () => {
       messages: [envelope],
     });
     expect(snapshot.messages).toEqual([envelope]);
+    expect(snapshot.receipts).toEqual([]);
     expect(privateAcceptedFrameSchema.parse({
       version: 1,
       type: "private.accepted",
@@ -676,6 +679,40 @@ describe("CoCodex protocol", () => {
       type: "private.message",
       message: envelope,
     })).toMatchObject({ type: "private.message", message: envelope });
+    const receipt = {
+      sequence: 1,
+      messageId,
+      senderDeviceId,
+      recipientDeviceId,
+      receipt: "delivered" as const,
+      acceptedAt,
+    };
+    const receiptSend = {
+      version: 1 as const,
+      type: "private.receipt.send" as const,
+      requestId: crypto.randomUUID(),
+      messageId,
+      receipt: "delivered" as const,
+    };
+    expect(clientFrameSchema.parse(receiptSend)).toEqual(receiptSend);
+    expect(privateReceiptAcceptedFrameSchema.parse({
+      version: 1,
+      type: "private.receipt.accepted",
+      requestId: receiptSend.requestId,
+      receipt,
+    })).toMatchObject({ type: "private.receipt.accepted", receipt });
+    expect(privateReceiptFrameSchema.parse({
+      version: 1,
+      type: "private.receipt",
+      receipt,
+    })).toMatchObject({ type: "private.receipt", receipt });
+    expect(privateServerFrameSchema.parse({
+      version: 1,
+      type: "private.snapshot",
+      requestId: crypto.randomUUID(),
+      messages: [],
+      receipts: [receipt],
+    })).toMatchObject({ receipts: [receipt] });
     expect(() => clientFrameSchema.parse({ ...send, ciphertext: "%%%" })).toThrow("canonical base64url");
     expect(() => privateSnapshotFrameSchema.parse({
       version: 1,
@@ -688,6 +725,7 @@ describe("CoCodex protocol", () => {
       type: "private.message",
       message: { ...envelope, sequence: 0 },
     })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...receiptSend, receipt: "seen" })).toThrow();
   });
   test("strictly validates the authoritative agent roster", () => {
     const projectId = crypto.randomUUID();

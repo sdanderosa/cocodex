@@ -59,6 +59,15 @@ interface PrivateMessage {
   acceptedAt?: string;
 }
 
+interface PrivateReceipt {
+  sequence: number;
+  messageId: string;
+  senderDeviceId: string;
+  recipientDeviceId: string;
+  receipt: "delivered" | "read";
+  acceptedAt: string;
+}
+
 interface AgentApproval {
   id: string;
   projectId: string;
@@ -208,6 +217,7 @@ interface SessionValue {
   task?: AgentApproval;
   error?: unknown;
   message?: PrivateMessage;
+  receipt?: PrivateReceipt;
   frame?: {
     type?: string;
     projectId?: string;
@@ -399,6 +409,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
+  const [privateReceipts, setPrivateReceipts] = useState<Record<string, "delivered" | "read">>({});
   const [presence, setPresence] = useState<PresenceMember[]>([]);
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
   const [draft, setDraft] = useState("");
@@ -632,9 +643,19 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       }
       const privateMessage = value?.message;
       if (value?.source === "private" && privateMessage?.text) {
+        setPrivateReceipts(previous => previous[privateMessage.messageId]
+          ? previous
+          : { ...previous, [privateMessage.messageId]: "delivered" });
         setPrivateMessages(previous => previous.some(item => item.messageId === privateMessage.messageId)
           ? previous
           : [...previous, privateMessage]);
+      }
+      if (value?.source === "private-receipt" && value.receipt?.messageId) {
+        setPrivateReceipts(previous => {
+          const current = previous[value.receipt!.messageId];
+          if (current === "read" || (current === "delivered" && value.receipt!.receipt === "delivered")) return previous;
+          return { ...previous, [value.receipt!.messageId]: value.receipt!.receipt };
+        });
       }
     }
   }, [command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, t]);
@@ -903,6 +924,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         messageId: message.messageId,
       });
       setNotice(t("cocodex.private.shared"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const markPrivateRead = async (message: PrivateMessage) => {
+    if (privateReceipts[message.messageId] === "read") return;
+    try {
+      await command({ type: "private.read", messageId: message.messageId });
+      setPrivateReceipts(previous => ({ ...previous, [message.messageId]: "read" }));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -1480,6 +1511,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <article key={message.messageId}>
                   <strong>{message.senderDeviceId === status.deviceId ? t("cocodex.you") : message.senderDeviceId.slice(0, 8)}</strong>
                   <p>{message.text}</p>
+                  {privateReceipts[message.messageId] && <small>
+                    {privateReceipts[message.messageId] === "read"
+                      ? t("cocodex.private.read")
+                      : t("cocodex.private.delivered")}
+                  </small>}
+                  {message.recipientDeviceId === status.deviceId && privateReceipts[message.messageId] !== "read" &&
+                    <button className="btn btn-ghost" type="button" disabled={status.state !== "connected"}
+                      onClick={() => void markPrivateRead(message)}>{t("cocodex.private.markRead")}</button>}
                   <button className="btn btn-ghost" type="button" disabled={status.state !== "connected" || !agentId.trim()}
                     onClick={() => void sharePrivate(message)}>{t("cocodex.private.share")}</button>
                 </article>

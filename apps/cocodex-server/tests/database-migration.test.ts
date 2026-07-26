@@ -58,7 +58,7 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }, { version: 26 }]);
       expect(migrated.query(`
         SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
           coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
@@ -84,6 +84,11 @@ describe("CoCodex database migrations", () => {
         .toContain("rotation_required");
       expect((migrated.query("PRAGMA table_info(project_chat_events)").all() as Array<{ name: string }>).map(column => column.name))
         .toEqual(expect.arrayContaining(["task_id", "final", "status"]));
+      expect(migrated.query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'private_message_receipts'",
+      ).get()).toEqual({ name: "private_message_receipts" });
+      expect((migrated.query("PRAGMA table_info(private_message_receipts)").all() as Array<{ name: string }>).map(column => column.name))
+        .toEqual(expect.arrayContaining(["sequence", "message_id", "sender_device_id", "recipient_device_id", "receipt", "accepted_at"]));
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;

@@ -19,12 +19,23 @@ const privateMailboxDeferredMessageSchema = z.object({
   acceptedAt: z.iso.datetime(),
 }).strict();
 
+const privateMailboxRemoteReceiptSchema = z.object({
+  sequence: z.number().int().positive(),
+  messageId: z.uuid(),
+  senderDeviceId: z.uuid(),
+  recipientDeviceId: z.uuid(),
+  receipt: z.enum(["delivered", "read"]),
+  acceptedAt: z.iso.datetime(),
+}).strict();
+
 const privateMailboxFileSchema = z.object({
   version: z.literal(1),
   deviceId: z.uuid(),
   cursor: z.number().int().nonnegative(),
   receipts: z.array(privateMailboxReceiptSchema).max(2_048),
   deferred: z.array(privateMailboxDeferredMessageSchema).max(256).default([]),
+  receiptCursor: z.number().int().nonnegative().default(0),
+  remoteReceipts: z.array(privateMailboxRemoteReceiptSchema).max(2_048).default([]),
 }).strict();
 
 export interface PrivateMailboxMessage {
@@ -42,16 +53,27 @@ export interface PrivateMailboxReceipt {
   sequence: number;
 }
 
+export interface PrivateMailboxRemoteReceipt {
+  sequence: number;
+  messageId: string;
+  senderDeviceId: string;
+  recipientDeviceId: string;
+  receipt: "delivered" | "read";
+  acceptedAt: string;
+}
+
 export interface PrivateMailboxState {
   version: 1;
   deviceId: string;
   cursor: number;
   receipts: PrivateMailboxReceipt[];
   deferred: PrivateMailboxMessage[];
+  receiptCursor: number;
+  remoteReceipts: PrivateMailboxRemoteReceipt[];
 }
 
 export function emptyPrivateMailbox(deviceId: string): PrivateMailboxState {
-  return { version: 1, deviceId, cursor: 0, receipts: [], deferred: [] };
+  return { version: 1, deviceId, cursor: 0, receipts: [], deferred: [], receiptCursor: 0, remoteReceipts: [] };
 }
 
 export function loadPrivateMailbox(path: string, deviceId: string): PrivateMailboxState {
@@ -114,5 +136,25 @@ export function deferPrivateMailboxMessage(
     ...state,
     cursor: Math.max(state.cursor, message.sequence),
     deferred: deferred.length > 256 ? deferred.slice(-256) : deferred,
+  };
+}
+
+/** Store sender-visible delivery/read state with an independent cursor. */
+export function recordPrivateMailboxRemoteReceipt(
+  state: PrivateMailboxState,
+  receipt: PrivateMailboxRemoteReceipt,
+): PrivateMailboxState {
+  const existing = state.remoteReceipts.find(item => item.sequence === receipt.sequence);
+  if (existing) {
+    if (JSON.stringify(existing) !== JSON.stringify(receipt)) {
+      throw new Error("Private receipt sequence was reused with different content");
+    }
+    return state.receiptCursor >= receipt.sequence ? state : { ...state, receiptCursor: Math.max(state.receiptCursor, receipt.sequence) };
+  }
+  const remoteReceipts = [...state.remoteReceipts, receipt];
+  return {
+    ...state,
+    receiptCursor: Math.max(state.receiptCursor, receipt.sequence),
+    remoteReceipts: remoteReceipts.length > 2_048 ? remoteReceipts.slice(-2_048) : remoteReceipts,
   };
 }

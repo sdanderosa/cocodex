@@ -93,6 +93,15 @@ const privateMessageEnvelopeSchema = z.object({
   clientCreatedAt: z.iso.datetime(),
   acceptedAt: z.iso.datetime(),
 }).strict();
+const privateReceiptType = z.enum(["delivered", "read"]);
+const privateReceiptEnvelopeSchema = z.object({
+  sequence: z.number().int().positive(),
+  messageId: privateMessageId,
+  senderDeviceId: deviceId,
+  recipientDeviceId: deviceId,
+  receipt: privateReceiptType,
+  acceptedAt: z.iso.datetime(),
+}).strict();
 export const PROJECT_CONTEXT_MAX_BYTES = 48 * 1024;
 const projectContext = z.record(z.string(), z.unknown()).superRefine((value, refinement) => {
   try {
@@ -302,6 +311,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("private.subscribe"),
     requestId,
     afterSequence: z.number().int().nonnegative(),
+    afterReceiptSequence: z.number().int().nonnegative().default(0),
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -311,6 +321,13 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     recipientDeviceId: deviceId,
     ciphertext: privateCiphertext,
     clientCreatedAt: z.iso.datetime(),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("private.receipt.send"),
+    requestId,
+    messageId: privateMessageId,
+    receipt: privateReceiptType,
   }).strict(),
   encryptedChatSubscribeFrameSchema,
   encryptedChatSendFrameSchema,
@@ -726,6 +743,7 @@ export const privateSnapshotFrameSchema = z.object({
   type: z.literal("private.snapshot"),
   requestId,
   messages: z.array(privateMessageEnvelopeSchema).max(500),
+  receipts: z.array(privateReceiptEnvelopeSchema).max(500).default([]),
 }).strict();
 
 export const privateAcceptedFrameSchema = z.object({
@@ -741,10 +759,25 @@ export const privateMessageFrameSchema = z.object({
   message: privateMessageEnvelopeSchema,
 }).strict();
 
+export const privateReceiptAcceptedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.receipt.accepted"),
+  requestId,
+  receipt: privateReceiptEnvelopeSchema,
+}).strict();
+
+export const privateReceiptFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.receipt"),
+  receipt: privateReceiptEnvelopeSchema,
+}).strict();
+
 export const privateServerFrameSchema = z.discriminatedUnion("type", [
   privateSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateReceiptAcceptedFrameSchema,
+  privateReceiptFrameSchema,
 ]);
 
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
@@ -752,6 +785,9 @@ export type PrivateMessageEnvelope = z.infer<typeof privateMessageEnvelopeSchema
 export type PrivateSnapshotFrame = z.infer<typeof privateSnapshotFrameSchema>;
 export type PrivateAcceptedFrame = z.infer<typeof privateAcceptedFrameSchema>;
 export type PrivateMessageFrame = z.infer<typeof privateMessageFrameSchema>;
+export type PrivateReceiptEnvelope = z.infer<typeof privateReceiptEnvelopeSchema>;
+export type PrivateReceiptAcceptedFrame = z.infer<typeof privateReceiptAcceptedFrameSchema>;
+export type PrivateReceiptFrame = z.infer<typeof privateReceiptFrameSchema>;
 export type ProjectKeyResultFrame = z.infer<typeof projectKeyResultFrameSchema>;
 export type ProjectKeyAcceptedFrame = z.infer<typeof projectKeyAcceptedFrameSchema>;
 export type ProjectKeyInitializedFrame = z.infer<typeof projectKeyInitializedFrameSchema>;

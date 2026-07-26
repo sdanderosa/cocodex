@@ -147,9 +147,15 @@ async function waitForAfter(
   throw new Error(`Timed out after checkpoint. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))}`);
 }
 
-async function waitForMailbox(path: string, expectedMinimumReceipts: number): Promise<{
+async function waitForMailbox(
+  path: string,
+  expectedMinimumReceipts: number,
+  expectedRemoteReceipt?: { messageId: string; receipt: "delivered" | "read" },
+): Promise<{
   cursor: number;
   receipts: Array<{ messageId: string; sequence: number }>;
+  receiptCursor?: number;
+  remoteReceipts?: Array<{ messageId: string; receipt: "delivered" | "read"; sequence: number }>;
 }> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -157,8 +163,12 @@ async function waitForMailbox(path: string, expectedMinimumReceipts: number): Pr
       const mailbox = JSON.parse(readFileSync(path, "utf8")) as {
         cursor: number;
         receipts: Array<{ messageId: string; sequence: number }>;
+        receiptCursor?: number;
+        remoteReceipts?: Array<{ messageId: string; receipt: "delivered" | "read"; sequence: number }>;
       };
-      if (mailbox.receipts.length >= expectedMinimumReceipts) return mailbox;
+      if (mailbox.receipts.length >= expectedMinimumReceipts
+        && (!expectedRemoteReceipt || mailbox.remoteReceipts?.some(receipt =>
+          receipt.messageId === expectedRemoteReceipt.messageId && receipt.receipt === expectedRemoteReceipt.receipt))) return mailbox;
     }
     await Bun.sleep(25);
   }
@@ -535,6 +545,14 @@ describe("three-process CoCodex private alpha", () => {
     });
     const privateDelivery = await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);
     const privateMessageId = String(privateDelivery.message.messageId);
+    await waitFor(kai, line => line.source === "private-receipt"
+      && line.receipt?.messageId === privateMessageId && line.receipt?.receipt === "delivered");
+    const privateReadRequest = randomUUID();
+    stephen.send({ id: privateReadRequest, type: "private.read", messageId: privateMessageId });
+    await waitFor(stephen, line => line.source === "control" && line.id === privateReadRequest
+      && line.ok === true && line.receipt === "read");
+    await waitFor(kai, line => line.source === "private-receipt"
+      && line.receipt?.messageId === privateMessageId && line.receipt?.receipt === "read");
     traceCheckpoint("private message decrypted");
 
     const keyInitialize = randomUUID();
@@ -899,11 +917,12 @@ describe("three-process CoCodex private alpha", () => {
     ]);
     const [stephenPrivateMailbox, kaiPrivateMailbox] = await Promise.all([
       waitForMailbox(join(stephenRoot, "private-mailbox.json"), 3),
-      waitForMailbox(join(kaiRoot, "private-mailbox.json"), 3),
+      waitForMailbox(join(kaiRoot, "private-mailbox.json"), 3, { messageId: privateMessageId, receipt: "read" }),
     ]);
     expect(stephenPrivateMailbox.cursor).toBe(kaiPrivateMailbox.cursor);
     expect(stephenPrivateMailbox.receipts.length).toBeGreaterThanOrEqual(3);
     expect(kaiPrivateMailbox.receipts.length).toBeGreaterThanOrEqual(3);
+    expect(kaiPrivateMailbox.remoteReceipts?.some(receipt => receipt.messageId === privateMessageId && receipt.receipt === "read")).toBeTrue();
     expect(stephen.process.pid).toBe(stephenPid);
     expect(kai.process.pid).toBe(kaiPid);
     traceCheckpoint("clients reconnected");

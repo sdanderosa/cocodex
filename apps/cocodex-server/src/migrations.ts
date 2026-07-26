@@ -459,4 +459,19 @@ CREATE TABLE project_member_removal_rotations (
 CREATE INDEX project_member_removal_rotations_project
   ON project_member_removal_rotations(project_id, key_epoch);`,
   },
+  {
+    version: 26,
+    sql: `
+CREATE TABLE private_message_receipts (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL REFERENCES private_messages(message_id) ON DELETE CASCADE,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  recipient_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  receipt TEXT NOT NULL CHECK (receipt IN ('delivered', 'read')),
+  accepted_at TEXT NOT NULL,
+  UNIQUE(message_id, recipient_device_id, receipt)
+);
+CREATE INDEX private_message_receipts_sender_sequence
+  ON private_message_receipts(sender_device_id, sequence);`,
+  },
 ];

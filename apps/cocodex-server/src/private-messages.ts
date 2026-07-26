@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import type { PrivateMessageEnvelope } from "../../../packages/cocodex-protocol/src/index.ts";
+import type { PrivateMessageEnvelope, PrivateReceiptEnvelope } from "../../../packages/cocodex-protocol/src/index.ts";
 
 interface DeviceStatusRow {
   status: "pending" | "approved" | "revoked";
@@ -98,4 +98,88 @@ export function privateMessagesAfter(
     WHERE sequence > ? AND (sender_device_id = ? OR recipient_device_id = ?)
     ORDER BY sequence ASC LIMIT ?
   `).all(afterSequence, deviceId, deviceId, Math.max(1, Math.min(500, Math.trunc(limit)))) as PrivateMessageEnvelope[];
+}
+
+export interface AppendPrivateReceiptInput {
+  messageId: string;
+  recipientDeviceId: string;
+  receipt: "delivered" | "read";
+}
+
+/**
+ * Persist a recipient acknowledgement without ever opening or inspecting the
+ * message ciphertext.  The recipient is taken from the authenticated socket
+ * by the caller and must match the original private-message envelope.
+ */
+export function appendPrivateReceipt(
+  db: Database,
+  input: AppendPrivateReceiptInput,
+  now = new Date(),
+): { envelope: PrivateReceiptEnvelope; created: boolean } {
+  const transaction = db.transaction(() => {
+    requireApprovedDevice(db, input.recipientDeviceId);
+    const message = db.query(`
+      SELECT sender_device_id AS senderDeviceId, recipient_device_id AS recipientDeviceId
+      FROM private_messages WHERE message_id = ?
+    `).get(input.messageId) as { senderDeviceId: string; recipientDeviceId: string } | null;
+    if (!message) throw new Error("Private message was not found");
+    if (message.recipientDeviceId !== input.recipientDeviceId) {
+      throw new Error("Only the private-message recipient may acknowledge it");
+    }
+    const delivered = db.query(`
+      SELECT sequence FROM private_message_receipts
+      WHERE message_id = ? AND recipient_device_id = ? AND receipt = 'delivered'
+    `).get(input.messageId, input.recipientDeviceId) as { sequence: number } | null;
+    const read = db.query(`
+      SELECT sequence FROM private_message_receipts
+      WHERE message_id = ? AND recipient_device_id = ? AND receipt = 'read'
+    `).get(input.messageId, input.recipientDeviceId) as { sequence: number } | null;
+    if (input.receipt === "read" && !delivered) {
+      throw new Error("A read receipt requires a delivered receipt");
+    }
+    if (input.receipt === "delivered" && read) {
+      throw new Error("A delivered receipt cannot follow a read receipt");
+    }
+    const existing = db.query(`
+      SELECT sequence, message_id AS messageId, sender_device_id AS senderDeviceId,
+        recipient_device_id AS recipientDeviceId, receipt, accepted_at AS acceptedAt
+      FROM private_message_receipts
+      WHERE message_id = ? AND recipient_device_id = ? AND receipt = ?
+    `).get(input.messageId, input.recipientDeviceId, input.receipt) as PrivateReceiptEnvelope | null;
+    if (existing) return { envelope: existing, created: false };
+    const result = db.query(`
+      INSERT INTO private_message_receipts (
+        message_id, sender_device_id, recipient_device_id, receipt, accepted_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.messageId,
+      message.senderDeviceId,
+      input.recipientDeviceId,
+      input.receipt,
+      now.toISOString(),
+    );
+    const envelope = db.query(`
+      SELECT sequence, message_id AS messageId, sender_device_id AS senderDeviceId,
+        recipient_device_id AS recipientDeviceId, receipt, accepted_at AS acceptedAt
+      FROM private_message_receipts WHERE sequence = ?
+    `).get(Number(result.lastInsertRowid)) as PrivateReceiptEnvelope;
+    return { envelope, created: true };
+  });
+  return transaction.immediate();
+}
+
+export function privateReceiptsAfter(
+  db: Database,
+  deviceId: string,
+  afterSequence: number,
+  limit = 500,
+): PrivateReceiptEnvelope[] {
+  requireApprovedDevice(db, deviceId);
+  return db.query(`
+    SELECT sequence, message_id AS messageId, sender_device_id AS senderDeviceId,
+      recipient_device_id AS recipientDeviceId, receipt, accepted_at AS acceptedAt
+    FROM private_message_receipts
+    WHERE sequence > ? AND sender_device_id = ?
+    ORDER BY sequence ASC LIMIT ?
+  `).all(afterSequence, deviceId, Math.max(1, Math.min(500, Math.trunc(limit)))) as PrivateReceiptEnvelope[];
 }

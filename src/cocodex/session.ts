@@ -54,9 +54,11 @@ import {
   deferPrivateMailboxMessage,
   hasPrivateMailboxReceipt,
   loadPrivateMailbox,
+  recordPrivateMailboxRemoteReceipt,
   recordPrivateMailboxReceipt,
   savePrivateMailbox,
   type PrivateMailboxMessage,
+  type PrivateMailboxRemoteReceipt,
   type PrivateMailboxState,
 } from "./private-mailbox";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
@@ -217,7 +219,12 @@ export async function runJsonLineSession(
   const legacyContextSnapshots = new Map<string, { revision: number; finalGoal: string; context: Record<string, unknown> }>();
   let privateMailbox: PrivateMailboxState = loadPrivateMailbox(paths.privateMailbox, connection.deviceId);
   let privateCursor = privateMailbox.cursor;
+  let privateReceiptCursor = privateMailbox.receiptCursor;
   let privateProcessing = Promise.resolve();
+  const privateRemoteReceipts = new Map<string, PrivateMailboxRemoteReceipt>(
+    privateMailbox.remoteReceipts.map(receipt => [`${receipt.messageId}:${receipt.receipt}`, receipt]),
+  );
+  const queuedPrivateReadReceipts = new Set<string>();
   // Decrypted private text is retained only in this resident process. It is
   // never written to the mailbox or sent anywhere until the host explicitly
   // issues `private.share` for one message and one project agent.
@@ -676,6 +683,30 @@ export async function runJsonLineSession(
     flushChain = flushChain.catch(() => 0).then(() => flushDurableOutbox(socket!, paths));
     return flushChain;
   };
+  const queuePrivateReceipt = (messageId: string, receipt: "delivered" | "read"): boolean => {
+    try {
+      enqueueDurableEvent(paths, {
+        version: 1,
+        type: "private.receipt.send",
+        requestId: randomUUID(),
+        messageId,
+        receipt,
+      });
+      void flush().catch(error => {
+        emitError({
+          source: "private",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return true;
+    } catch (error) {
+      emitError({
+        source: "private",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
   const authorizeAgentTask = (task: AgentTask, signal?: AbortSignal): Promise<boolean> => new Promise(resolve => {
     if (pendingAgentApprovals.has(task.id) || signal?.aborted) return resolve(false);
     const finish = (approved: boolean) => {
@@ -738,6 +769,9 @@ export async function runJsonLineSession(
         message,
         trusted,
       );
+      if (!queuePrivateReceipt(message.messageId, "delivered")) {
+        throw new Error("Private delivery receipt could not be persisted");
+      }
       privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
         messageId: message.messageId,
         sequence: message.sequence,
@@ -766,6 +800,18 @@ export async function runJsonLineSession(
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const rememberPrivateReceipt = (receipt: PrivateMailboxRemoteReceipt): void => {
+    if (receipt.senderDeviceId !== connection.deviceId) {
+      emitError({ source: "private", error: "Private receipt was addressed to a different sender device" });
+      return;
+    }
+    privateMailbox = recordPrivateMailboxRemoteReceipt(privateMailbox, receipt);
+    privateReceiptCursor = privateMailbox.receiptCursor;
+    privateRemoteReceipts.set(`${receipt.messageId}:${receipt.receipt}`, receipt);
+    savePrivateMailbox(paths.privateMailbox, privateMailbox);
+    emit({ source: "private-receipt", receipt });
   };
 
   const queuePrivateEnvelope = (message: PrivateMailboxMessage): void => {
@@ -1595,7 +1641,8 @@ export async function runJsonLineSession(
           return;
         }
       }
-      if (frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message") {
+      if (frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message"
+        || frame.type === "private.receipt.accepted" || frame.type === "private.receipt") {
         try { frame = privateServerFrameSchema.parse(frame) as Record<string, any>; }
         catch (error) {
           emitError({ source: "protocol", error: error instanceof Error ? error.message : String(error) });
@@ -1782,14 +1829,17 @@ export async function runJsonLineSession(
         }
       } else if (frame.type === "private.snapshot") {
         const messages = frame.messages;
+        const receipts = frame.receipts;
         privateProcessing = privateProcessing.then(async () => {
+          for (const receipt of receipts) rememberPrivateReceipt(receipt);
           for (const message of messages) await openPrivateEnvelope(message);
-          if (messages.length === SNAPSHOT_PAGE_SIZE) {
+          if (messages.length === SNAPSHOT_PAGE_SIZE || receipts.length === SNAPSHOT_PAGE_SIZE) {
             send({
               version: 1,
               type: "private.subscribe",
               requestId: randomUUID(),
               afterSequence: privateCursor,
+              afterReceiptSequence: privateReceiptCursor,
             });
           }
         }).catch(error => {
@@ -1800,6 +1850,8 @@ export async function runJsonLineSession(
         });
       } else if (frame.type === "private.accepted" || frame.type === "private.message") {
         queuePrivateEnvelope(frame.message);
+      } else if (frame.type === "private.receipt") {
+        rememberPrivateReceipt(frame.receipt);
       } else if (frame.type === "project.key.result") {
         const envelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
         for (const envelope of envelopes) openProjectKeyEnvelopeFromServer(envelope);
@@ -2076,7 +2128,13 @@ export async function runJsonLineSession(
         });
       })
       .then(() => undefined);
-    send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
+    send({
+      version: 1,
+      type: "private.subscribe",
+      requestId: randomUUID(),
+      afterSequence: privateCursor,
+      afterReceiptSequence: privateReceiptCursor,
+    });
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
     return async () => {
       connected.removeEventListener("message", listener);
@@ -2861,6 +2919,18 @@ export async function runJsonLineSession(
             })
             .then(() => undefined);
           emit({ source: "control", id: command.id, ok: true, deviceId });
+        } else if (command.type === "private.read") {
+          const messageId = String(command.messageId);
+          const shared = decryptedPrivateMessages.get(messageId);
+          if (!shared) throw new Error("Private message is not available in this resident session");
+          if (queuedPrivateReadReceipts.has(messageId)) {
+            emit({ source: "control", id: command.id, ok: true, messageId, receipt: "read", queued: false });
+            continue;
+          }
+          queuedPrivateReadReceipts.add(messageId);
+          const queuedReceipt = queuePrivateReceipt(messageId, "read");
+          if (!queuedReceipt) queuedPrivateReadReceipts.delete(messageId);
+          emit({ source: "control", id: command.id, ok: queuedReceipt, messageId, receipt: "read", queued: !socket || socket.readyState !== WebSocket.OPEN });
         } else if (command.type === "private.send") {
           const messageId = String(command.messageId ?? randomUUID());
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());

@@ -45,12 +45,15 @@ reviewed again before release.
   ciphertext-only. The current implementation adds strict canonical ciphertext
   bounds, transactional replay-index insertion, a durable client cursor and
   bounded receipt/deferred-ciphertext sets, retry after trust/key recovery,
-  self-sent delivery accounting, and an active authorization-revocation sweep. The
+  self-sent delivery accounting, sender-visible delivered/read receipts with
+  an independent recovery cursor, and an active authorization-revocation sweep. The
   evaluated official Apache-2.0 Matrix bindings are not silently substituted
   until a supported Bun/package persistence path exists. Do not claim forward
   secrecy, rotation, or full multi-device messaging; do not invent a cipher or
   use AGPL libsignal in an MIT-only build. The exact boundary and migration
-  conditions are recorded in ADR 0014 and ADR 0022. Decrypted private text
+  conditions are recorded in ADR 0014, ADR 0022, and ADR 0034. Receipt metadata
+  uses the authenticated WSS session and server-side recipient binding; it is
+  not a second cryptographic protocol. Decrypted private text
   remains resident-only and enters an agent context only through the explicit
   signed/encrypted `private.share` path.
 - **Project content:** use a separate X25519 project-wrap keypair and random

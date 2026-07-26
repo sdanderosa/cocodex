@@ -35,6 +35,8 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "chat.snapshot",
   "chat.event",
   "agent.result",
+  "private.receipt",
+  "private.receipt.accepted",
 ]);
 const SENSITIVE_RENDERER_KEYS = new Set([
   "ciphertext",
@@ -52,7 +54,7 @@ const RENDERER_FRAME_FIELDS = new Set([
   "context", "reports", "report", "agents", "tasks", "artifacts", "artifact",
   "references", "reference",
   "id", "name", "role", "deviceId", "displayName", "fingerprint", "trusted",
-  "sequence", "eventId", "senderDeviceId", "content", "acceptedAt",
+  "sequence", "eventId", "messageId", "senderDeviceId", "recipientDeviceId", "receipt", "content", "acceptedAt",
   "updateId", "finalGoal", "revision", "updatedByDeviceId", "updatedAt",
   "requests", "inputTokens", "cachedInputTokens", "outputTokens",
   "reasoningOutputTokens", "activeAgents", "accountLabel",
@@ -107,6 +109,7 @@ const ALLOWED_COMMANDS = new Set([
   "agent.full-computer.enable",
   "agent.full-computer.disable",
   "private.send",
+  "private.read",
   "artifact.publish",
   "artifact.list",
   "project.artifact.publish",
@@ -189,6 +192,24 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           ...message,
           ciphertext: undefined,
         })),
+      },
+    };
+  }
+  if ((frame.type === "private.receipt" || frame.type === "private.receipt.accepted") && frame.receipt) {
+    const receipt = frame.receipt as Record<string, unknown>;
+    return {
+      source: "server",
+      frame: {
+        type: frame.type,
+        ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+        receipt: {
+          sequence: receipt.sequence,
+          messageId: receipt.messageId,
+          senderDeviceId: receipt.senderDeviceId,
+          recipientDeviceId: receipt.recipientDeviceId,
+          receipt: receipt.receipt,
+          acceptedAt: receipt.acceptedAt,
+        },
       },
     };
   }
