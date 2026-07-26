@@ -341,4 +341,36 @@ ALTER TABLE agent_tasks ADD COLUMN merge_target TEXT;
 ALTER TABLE agent_tasks ADD COLUMN execution_started_at TEXT;
 ALTER TABLE agent_tasks ADD COLUMN execution_signature TEXT;`,
   },
+  {
+    version: 22,
+    sql: `
+ALTER TABLE agents ADD COLUMN primary_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol';
+ALTER TABLE agents ADD COLUMN primary_effort TEXT NOT NULL DEFAULT 'medium'
+  CHECK (primary_effort IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max'));
+ALTER TABLE agents ADD COLUMN coagent_model TEXT;
+ALTER TABLE agents ADD COLUMN coagent_effort TEXT
+  CHECK (coagent_effort IS NULL OR coagent_effort IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max'));
+ALTER TABLE agents ADD COLUMN max_concurrent_coagents INTEGER NOT NULL DEFAULT 0
+  CHECK (max_concurrent_coagents BETWEEN 0 AND 8);
+CREATE TRIGGER agents_runtime_definition_insert
+BEFORE INSERT ON agents
+WHEN NOT (
+  (NEW.max_concurrent_coagents = 0 AND NEW.coagent_model IS NULL AND NEW.coagent_effort IS NULL)
+  OR
+  (NEW.max_concurrent_coagents > 0 AND NEW.coagent_model IS NOT NULL AND NEW.coagent_effort IS NOT NULL)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inconsistent agent runtime definition');
+END;
+CREATE TRIGGER agents_runtime_definition_update
+BEFORE UPDATE OF coagent_model, coagent_effort, max_concurrent_coagents ON agents
+WHEN NOT (
+  (NEW.max_concurrent_coagents = 0 AND NEW.coagent_model IS NULL AND NEW.coagent_effort IS NULL)
+  OR
+  (NEW.max_concurrent_coagents > 0 AND NEW.coagent_model IS NOT NULL AND NEW.coagent_effort IS NOT NULL)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inconsistent agent runtime definition');
+END;`,
+  },
 ];

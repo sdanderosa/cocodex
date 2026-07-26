@@ -20,7 +20,7 @@ import {
   presenceUpdateFrameSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
-import { appendAgentResult, cancelAgentTask, createAgentForHost, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks } from "./agent-routing";
+import { appendAgentResult, cancelAgentTask, createAgentForHost, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks, requireAgentReadyRuntime } from "./agent-routing";
 import { acceptAgentExecutionReport } from "./agent-execution";
 import {
   appendEncryptedAgentResult,
@@ -633,17 +633,18 @@ export function startCoCodexServer(
               SELECT id FROM agents
               WHERE host_device_id = ? AND enabled = 1
               ORDER BY id ASC
-            `).all(deviceId) as Array<{ id: string }>).map(row => row.id);
+            `).all(deviceId) as Array<{ id: string }>);
             if (registeredAgents.length === 0) {
               throw new Error("No enabled local agent is registered for this device");
             }
-            if (message.agentId && !registeredAgents.includes(message.agentId)) {
+            if (message.agentId && !registeredAgents.some(agent => agent.id === message.agentId)) {
               throw new Error("Agent ready announcement does not match an enabled local agent");
             }
             if (!message.agentId && registeredAgents.length > 1) {
               throw new Error("Agent ID is required when a device hosts multiple agents");
             }
-            const readyAgentId = message.agentId ?? registeredAgents[0];
+            const readyAgentId = message.agentId ?? registeredAgents[0].id;
+            requireAgentReadyRuntime(db, deviceId, readyAgentId, message);
             for (const candidate of sockets) {
               if (candidate !== socket
                 && candidate.data.authenticatedDeviceId === deviceId
@@ -697,6 +698,11 @@ export function startCoCodexServer(
               projectId: message.projectId,
               hostDeviceId: deviceId,
               name: message.name,
+              primaryModel: message.primaryModel,
+              primaryEffort: message.primaryEffort,
+              coAgentModel: message.coAgentModel,
+              coAgentEffort: message.coAgentEffort,
+              maxConcurrentCoAgents: message.maxConcurrentCoAgents,
               signature: message.signature,
             });
             socket.send(JSON.stringify(agentCreatedFrameSchema.parse({
@@ -1380,8 +1386,16 @@ export function startCoCodexServer(
                 event: result.event,
               });
               if (message.final) {
-                for (const ready of pendingAgentTasks(db, result.task.targetDeviceId, new Date(), result.task.agentId)) {
-                  sendToDevice(ready.targetDeviceId, { version: 1, type: "agent.task", task: ready }, true, ready.agentId);
+                const projectAgents = db.query(`
+                  SELECT id, host_device_id AS hostDeviceId
+                  FROM agents WHERE project_id = ? AND enabled = 1
+                `).all(result.task.projectId) as Array<{ id: string; hostDeviceId: string }>;
+                for (const agent of projectAgents) {
+                  for (const ready of pendingAgentTasks(db, agent.hostDeviceId, new Date(), agent.id)) {
+                    if (ready.dependencies.includes(result.task.id)) {
+                      sendToDevice(ready.targetDeviceId, { version: 1, type: "agent.task", task: ready }, true, ready.agentId);
+                    }
+                  }
                 }
               }
             }
@@ -1418,8 +1432,16 @@ export function startCoCodexServer(
                 event: result.event,
               });
               if (message.final) {
-                for (const ready of pendingEncryptedAgentTasks(db, result.task.targetDeviceId, new Date(), result.task.agentId)) {
-                  sendToDevice(ready.targetDeviceId, { version: 1, type: "project.agent.task", task: ready }, true, ready.agentId);
+                const projectAgents = db.query(`
+                  SELECT id, host_device_id AS hostDeviceId
+                  FROM agents WHERE project_id = ? AND enabled = 1
+                `).all(result.task.projectId) as Array<{ id: string; hostDeviceId: string }>;
+                for (const agent of projectAgents) {
+                  for (const ready of pendingEncryptedAgentTasks(db, agent.hostDeviceId, new Date(), agent.id)) {
+                    if (ready.dependencies.includes(result.task.id)) {
+                      sendToDevice(ready.targetDeviceId, { version: 1, type: "project.agent.task", task: ready }, true, ready.agentId);
+                    }
+                  }
                 }
               }
             }

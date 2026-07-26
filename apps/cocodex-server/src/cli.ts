@@ -93,7 +93,7 @@ Usage:
   cocodex-server revoke --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
   cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
-  cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--state-root PATH]`);
+  cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--model ID] [--effort LEVEL] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--state-root PATH]`);
 }
 
 async function run(): Promise<void> {
@@ -346,6 +346,11 @@ async function run(): Promise<void> {
         projectId: requiredOption("--project"),
         hostDeviceId: requiredOption("--host-device"),
         name: requiredOption("--name"),
+        primaryModel: option("--model"),
+        primaryEffort: option("--effort") as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined,
+        coAgentModel: option("--co-agent-model") ?? null,
+        coAgentEffort: (option("--co-agent-effort") ?? null) as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null,
+        maxConcurrentCoAgents: Number(option("--max-co-agents") ?? 0),
       });
       db.close();
       console.log(JSON.stringify(agent));

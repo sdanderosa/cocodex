@@ -37,6 +37,35 @@ const requestId = z.uuid();
 const projectId = z.uuid();
 const deviceId = z.uuid();
 const privateMessageId = z.uuid();
+const agentModelId = z.string().trim().regex(
+  /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/,
+  "Agent model IDs may contain only letters, numbers, dot, underscore, colon, slash, and hyphen",
+);
+const agentReasoningEffort = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+const agentRuntimeDefinitionFields = {
+  primaryModel: agentModelId,
+  primaryEffort: agentReasoningEffort,
+  coAgentModel: agentModelId.nullable(),
+  coAgentEffort: agentReasoningEffort.nullable(),
+  maxConcurrentCoAgents: z.number().int().min(0).max(8),
+} as const;
+function validateAgentRuntimeDefinition(
+  value: {
+    coAgentModel: string | null;
+    coAgentEffort: z.infer<typeof agentReasoningEffort> | null;
+    maxConcurrentCoAgents: number;
+  },
+  context: z.RefinementCtx,
+): void {
+  const configured = value.coAgentModel !== null && value.coAgentEffort !== null;
+  if ((value.maxConcurrentCoAgents > 0) !== configured) {
+    context.addIssue({
+      code: "custom",
+      path: ["maxConcurrentCoAgents"],
+      message: "Positive co-agent limits require a model and effort; zero requires neither",
+    });
+  }
+}
 const PRIVATE_MESSAGE_CIPHERTEXT_MAX_BYTES = 72 * 1024;
 const privateCiphertext = z.string().min(64).max(96_000).superRefine((value, refinement) => {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) {
@@ -128,8 +157,9 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     projectId,
     agentId: z.uuid(),
     name: z.string().trim().min(1).max(120),
+    ...agentRuntimeDefinitionFields,
     signature: z.string().min(64).max(256),
-  }).strict(),
+  }).strict().superRefine(validateAgentRuntimeDefinition),
   z.object({
     version: z.literal(1),
     type: z.literal("agent.task.list"),
@@ -188,7 +218,26 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("agent.ready"),
     requestId,
     agentId: z.string().trim().min(1).max(120).optional(),
-  }).strict(),
+    primaryModel: agentModelId.optional(),
+    primaryEffort: agentReasoningEffort.optional(),
+    coAgentModel: agentModelId.nullable().optional(),
+    coAgentEffort: agentReasoningEffort.nullable().optional(),
+    maxConcurrentCoAgents: z.number().int().min(0).max(8).optional(),
+  }).strict().superRefine((value, context) => {
+    const runtime = [
+      value.primaryModel,
+      value.primaryEffort,
+      value.coAgentModel,
+      value.coAgentEffort,
+      value.maxConcurrentCoAgents,
+    ];
+    const supplied = runtime.filter(item => item !== undefined).length;
+    if (supplied !== 0 && supplied !== runtime.length) {
+      context.addIssue({ code: "custom", message: "Agent ready runtime definition must be complete" });
+      return;
+    }
+    if (supplied === runtime.length) validateAgentRuntimeDefinition(value as Required<typeof value>, context);
+  }),
   z.object({
     version: z.literal(1),
     type: z.literal("agent.cancel"),
@@ -416,11 +465,13 @@ export const projectMemberRemovedFrameSchema = z.object({
 
 export const agentStatusSchema = z.enum(["offline", "available", "queued", "working", "completed", "failed"]);
 export const agentTaskStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
+export const agentReasoningEffortSchema = agentReasoningEffort;
 
 export const agentViewSchema = z.object({
   id: z.string().trim().min(1).max(120),
   projectId,
   name: z.string().trim().min(1).max(120),
+  ...agentRuntimeDefinitionFields,
   hostDeviceId: z.uuid(),
   hostDisplayName: z.string().trim().min(1).max(80),
   enabled: z.boolean(),
@@ -428,7 +479,7 @@ export const agentViewSchema = z.object({
   activeTasks: z.number().int().nonnegative().max(64),
   queuedTasks: z.number().int().nonnegative().max(64),
   lastTaskAt: z.iso.datetime().nullable(),
-}).strict();
+}).strict().superRefine(validateAgentRuntimeDefinition);
 
 export const agentListFrameSchema = z.object({
   version: z.literal(1),
@@ -447,9 +498,10 @@ export const agentCreatedFrameSchema = z.object({
     id: z.uuid(),
     projectId,
     name: z.string().trim().min(1).max(120),
+    ...agentRuntimeDefinitionFields,
     hostDeviceId: z.uuid(),
     enabled: z.boolean(),
-  }).strict(),
+  }).strict().superRefine(validateAgentRuntimeDefinition),
   created: z.boolean(),
 }).strict();
 
@@ -747,6 +799,11 @@ export interface AgentDefinition {
   id: string;
   projectId: string;
   name: string;
+  primaryModel: string;
+  primaryEffort: z.infer<typeof agentReasoningEffortSchema>;
+  coAgentModel: string | null;
+  coAgentEffort: z.infer<typeof agentReasoningEffortSchema> | null;
+  maxConcurrentCoAgents: number;
   hostDeviceId: string;
   enabled: boolean;
 }

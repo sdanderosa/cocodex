@@ -25,6 +25,7 @@ export {
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
   agentStatusSchema,
+  agentReasoningEffortSchema,
   agentTaskStatusSchema,
   agentViewSchema,
   agentListFrameSchema,

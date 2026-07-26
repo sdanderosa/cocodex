@@ -27,6 +27,11 @@ export interface LocalAgentAdapter {
 export interface AgentBridgeSecurity {
   localDeviceId: string;
   agentId?: string;
+  primaryModel?: string;
+  primaryEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  coAgentModel?: string | null;
+  coAgentEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  maxConcurrentCoAgents?: number;
   serverPublicKeyPem: string;
   trustedRequesterFingerprints: ReadonlyMap<string, string>;
   journalPath?: string;
@@ -378,6 +383,13 @@ export function attachLocalAgentBridge(
     type: "agent.ready",
     requestId: randomUUID(),
     ...(security.agentId ? { agentId: security.agentId } : {}),
+    ...(security.primaryModel ? {
+      primaryModel: security.primaryModel,
+      primaryEffort: security.primaryEffort,
+      coAgentModel: security.coAgentModel ?? null,
+      coAgentEffort: security.coAgentEffort ?? null,
+      maxConcurrentCoAgents: security.maxConcurrentCoAgents ?? 0,
+    } : {}),
   }));
   const emergencyStop = (_reason?: string) => {
     emergencyStopped = true;

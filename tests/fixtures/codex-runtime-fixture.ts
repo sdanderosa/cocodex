@@ -9,18 +9,36 @@ if (Bun.argv.includes("--version")) {
 
 const account = process.env.COCODEX_ACCOUNT_FIXTURE?.trim();
 if (!account) throw new Error("COCODEX_ACCOUNT_FIXTURE is required");
+const runtimeMarker = (() => {
+  try {
+    return JSON.parse(process.env.CODEX_RUNTIME_MARKER ?? "{}") as {
+      allowFullComputer?: boolean;
+      barrierDirectory?: string;
+    };
+  } catch {
+    throw new Error("CODEX_RUNTIME_MARKER must be valid fixture JSON");
+  }
+})();
 if (!Bun.argv.includes("exec") || !Bun.argv.includes("--json") || !Bun.argv.includes("--ephemeral")) {
   throw new Error("Expected official Codex exec JSONL arguments");
 }
-if (Bun.argv.includes("danger-full-access") || Bun.argv.includes("--yolo")) {
+const dangerFullAccess = Bun.argv.includes("danger-full-access");
+if ((dangerFullAccess && runtimeMarker.allowFullComputer !== true)
+  || Bun.argv.includes("--yolo")) {
   throw new Error("Unsafe Codex fixture invocation");
 }
 
 const prompt = await Bun.stdin.text();
 if (!prompt.trim()) throw new Error("Prompt stdin is required");
 const marker = join(process.cwd(), `${account}-execution.json`);
-writeFileSync(marker, `${JSON.stringify({ account, prompt, cwd: process.cwd() }, null, 2)}\n`, "utf8");
-const barrierDirectory = process.env.COCODEX_FIXTURE_BARRIER_DIR?.trim();
+writeFileSync(marker, `${JSON.stringify({
+  account,
+  prompt,
+  cwd: process.cwd(),
+  args: Bun.argv.slice(2),
+  sandbox: dangerFullAccess ? "danger-full-access" : "restricted",
+}, null, 2)}\n`, "utf8");
+const barrierDirectory = runtimeMarker.barrierDirectory?.trim();
 if (barrierDirectory) {
   const release = join(barrierDirectory, "release");
   while (!existsSync(release)) await Bun.sleep(25);

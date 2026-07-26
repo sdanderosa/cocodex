@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentDefinitionSigningTranscript, agentExecutionSigningTranscript, agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
-import { createAgentForHost, createAgentTask, listAgentTasks, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
+import { createAgentForHost, createAgentTask, listAgentTasks, listAgents, pendingAgentTasks, registerAgent, appendAgentResult, requireAgentReadyRuntime } from "../src/agent-routing";
 import { acceptAgentExecutionReport } from "../src/agent-execution";
 import { appendEncryptedAgentResult, cancelEncryptedAgentTask, createEncryptedAgentTask, pendingEncryptedAgentTasks } from "../src/encrypted-agent-routing";
 import { openDatabase } from "../src/database";
@@ -15,6 +15,15 @@ import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { shareProjectKeyEnvelope } from "../src/project-encryption-storage";
 import { publishEncryptedArtifact } from "../src/encrypted-artifacts";
+import { publishArtifact } from "../src/artifacts";
+
+const DEFAULT_AGENT_RUNTIME = {
+  primaryModel: "gpt-5.6-sol",
+  primaryEffort: "medium",
+  coAgentModel: null,
+  coAgentEffort: null,
+  maxConcurrentCoAgents: 0,
+} as const;
 
 function device(db: ReturnType<typeof openDatabase>, name: string, now: Date) {
   const pair = generateKeyPairSync("ed25519", { publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });
@@ -70,18 +79,32 @@ describe("authoritative agent dependencies", () => {
         agentId: id,
         name: "Lucas",
         hostDeviceId: stephen.id,
+        ...DEFAULT_AGENT_RUNTIME,
       };
       const signature = sign(
         null,
         agentDefinitionSigningTranscript(definition),
         stephen.privateKey,
       ).toString("base64url");
-      const input = { id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas", signature };
+      const input = {
+        id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas",
+        ...DEFAULT_AGENT_RUNTIME,
+        signature,
+      };
       expect(createAgentForHost(db, input, now)).toEqual({
-        agent: { id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas", enabled: true },
+        agent: {
+          id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas",
+          ...DEFAULT_AGENT_RUNTIME,
+          enabled: true,
+        },
         created: true,
       });
       expect(createAgentForHost(db, input, now).created).toBeFalse();
+      expect(() => requireAgentReadyRuntime(db, stephen.id, id, DEFAULT_AGENT_RUNTIME)).not.toThrow();
+      expect(() => requireAgentReadyRuntime(db, stephen.id, id, {
+        ...DEFAULT_AGENT_RUNTIME,
+        primaryEffort: "xhigh",
+      })).toThrow("runtime definition");
       expect(db.query("SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'agent.created'").get())
         .toEqual({ count: 1 });
       expect(() => createAgentForHost(db, {
@@ -93,17 +116,32 @@ describe("authoritative agent dependencies", () => {
         }), stephen.privateKey).toString("base64url"),
       }, now))
         .toThrow("different definition");
+      const reconfigured = {
+        ...definition,
+        primaryEffort: "xhigh" as const,
+      };
+      expect(() => createAgentForHost(db, {
+        ...input,
+        primaryEffort: reconfigured.primaryEffort,
+        signature: sign(
+          null,
+          agentDefinitionSigningTranscript(reconfigured),
+          stephen.privateKey,
+        ).toString("base64url"),
+      }, now)).toThrow("different definition");
       const secondId = randomUUID();
       expect(createAgentForHost(db, {
         id: secondId,
         projectId: project.id,
         hostDeviceId: stephen.id,
         name: "Angela",
+        ...DEFAULT_AGENT_RUNTIME,
         signature: sign(null, agentDefinitionSigningTranscript({
           projectId: project.id,
           agentId: secondId,
           name: "Angela",
           hostDeviceId: stephen.id,
+          ...DEFAULT_AGENT_RUNTIME,
         }), stephen.privateKey).toString("base64url"),
       }, now).created).toBeTrue();
       for (let index = 3; index <= 8; index += 1) {
@@ -113,12 +151,14 @@ describe("authoritative agent dependencies", () => {
           agentId: candidateId,
           name: `Agent ${index}`,
           hostDeviceId: stephen.id,
+          ...DEFAULT_AGENT_RUNTIME,
         };
         expect(createAgentForHost(db, {
           id: candidateId,
           projectId: project.id,
           hostDeviceId: stephen.id,
           name: candidate.name,
+          ...DEFAULT_AGENT_RUNTIME,
           signature: sign(null, agentDefinitionSigningTranscript(candidate), stephen.privateKey).toString("base64url"),
         }, now).created).toBeTrue();
       }
@@ -128,11 +168,13 @@ describe("authoritative agent dependencies", () => {
         projectId: project.id,
         hostDeviceId: stephen.id,
         name: "Agent 9",
+        ...DEFAULT_AGENT_RUNTIME,
         signature: sign(null, agentDefinitionSigningTranscript({
           projectId: project.id,
           agentId: ninthId,
           name: "Agent 9",
           hostDeviceId: stephen.id,
+          ...DEFAULT_AGENT_RUNTIME,
         }), stephen.privateKey).toString("base64url"),
       }, now)).toThrow("eight-agent");
       expect(() => createAgentForHost(db, {
@@ -407,6 +449,37 @@ describe("authoritative agent dependencies", () => {
       expect(created.task.inputArtifactIds).toEqual([artifactId]);
       expect(created.task.inputArtifacts).toEqual([artifact]);
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([created.task]);
+      const encryptedEvidenceId = randomUUID();
+      expect(() => publishEncryptedArtifact(db, {
+        artifactId: encryptedEvidenceId,
+        projectId: project.id,
+        taskId,
+        authorDeviceId: stephen.id,
+        envelope: contentEnvelope(project.id, stephen, "artifact", encryptedEvidenceId),
+      }, now)).toThrow("task target device");
+      expect(publishEncryptedArtifact(db, {
+        artifactId: encryptedEvidenceId,
+        projectId: project.id,
+        taskId,
+        authorDeviceId: kai.id,
+        envelope: contentEnvelope(project.id, kai, "artifact", encryptedEvidenceId),
+      }, now).created).toBeTrue();
+      const plaintextEvidence = {
+        id: randomUUID(),
+        projectId: project.id,
+        taskId,
+        authorDeviceId: stephen.id,
+        type: "test-result" as const,
+        title: "Claimed evidence",
+        summary: "Must come from the executing device.",
+        content: "untrusted",
+        status: "ready" as const,
+      };
+      expect(() => publishArtifact(db, plaintextEvidence, now)).toThrow("task target device");
+      expect(publishArtifact(db, {
+        ...plaintextEvidence,
+        authorDeviceId: kai.id,
+      }, now).created).toBeTrue();
       db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([]);
       db.query("UPDATE agents SET enabled = 1, host_device_id = ? WHERE id = ?").run(stephen.id, "kai-agent");

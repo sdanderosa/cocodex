@@ -4,6 +4,13 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 
+const reasoningEffortSchema = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]);
+export const MAX_LOCAL_AGENT_THREADS = 16;
+const agentModelIdSchema = z.string().trim().regex(
+  /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/,
+  "Model IDs may contain only letters, numbers, dot, underscore, colon, slash, and hyphen",
+);
+
 const policySchema = z.object({
   version: z.literal(1),
   projectId: z.uuid(),
@@ -11,6 +18,11 @@ const policySchema = z.object({
   workspaceRoot: z.string().min(1),
   workspaceMode: z.enum(["shared", "git-worktree"]).default("shared"),
   sandbox: z.enum(["read-only", "workspace-write"]),
+  primaryModel: agentModelIdSchema.default("gpt-5.6-sol"),
+  primaryEffort: reasoningEffortSchema.default("medium"),
+  coAgentModel: agentModelIdSchema.nullable().default(null),
+  coAgentEffort: reasoningEffortSchema.nullable().default(null),
+  maxConcurrentCoAgents: z.number().int().min(0).max(8).default(0),
   /**
    * `project-only` is the safe default. `full-computer` is an explicit local
    * opt-in that maps to Codex's supported `danger-full-access` sandbox.
@@ -25,6 +37,14 @@ const policySchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["fullComputerOptIn"],
       message: "Full-computer access requires an explicit local opt-in",
+    });
+  }
+  const coAgentsConfigured = value.coAgentModel !== null && value.coAgentEffort !== null;
+  if ((value.maxConcurrentCoAgents > 0) !== coAgentsConfigured) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["maxConcurrentCoAgents"],
+      message: "Positive co-agent limits require a model and effort; zero requires neither",
     });
   }
 });
@@ -43,6 +63,17 @@ const policyStoreSchema = z.object({
       });
     }
     ids.add(policy.agentId);
+  }
+  const totalThreads = value.agents.reduce(
+    (sum, policy) => sum + 1 + policy.maxConcurrentCoAgents,
+    0,
+  );
+  if (totalThreads > MAX_LOCAL_AGENT_THREADS) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["agents"],
+      message: `Local agent definitions exceed the ${MAX_LOCAL_AGENT_THREADS}-thread device budget`,
+    });
   }
 });
 

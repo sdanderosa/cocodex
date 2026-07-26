@@ -97,4 +97,35 @@ describe("CoCodex local agent safety controls", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("rejects aggregate local agent definitions above the device thread budget", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-thread-budget-"));
+    const policyPath = join(root, "policy.json");
+    try {
+      const first = saveLocalAgentPolicy(policyPath, {
+        version: 1,
+        projectId,
+        agentId: randomUUID(),
+        workspaceRoot: root,
+        sandbox: "workspace-write",
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "medium",
+        coAgentModel: "gpt-5.6-luna",
+        coAgentEffort: "medium",
+        maxConcurrentCoAgents: 8,
+        accessProfile: "project-only",
+        fullComputerOptIn: false,
+        approvalMode: "trusted-device",
+        trustedRequesterFingerprints: { [deviceId]: "A".repeat(32) },
+      });
+      expect(() => upsertLocalAgentPolicy(policyPath, {
+        ...first,
+        agentId: randomUUID(),
+        workspaceRoot: join(root, "second"),
+        maxConcurrentCoAgents: 7,
+      })).toThrow("thread device budget");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

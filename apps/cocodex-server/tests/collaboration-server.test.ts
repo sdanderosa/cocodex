@@ -32,6 +32,13 @@ const roots: string[] = [];
 const servers: Array<{ stop(force?: boolean): Promise<void> }> = [];
 const databases: Database[] = [];
 const sockets: WebSocket[] = [];
+const DEFAULT_AGENT_RUNTIME = {
+  primaryModel: "gpt-5.6-sol",
+  primaryEffort: "medium",
+  coAgentModel: null,
+  coAgentEffort: null,
+  maxConcurrentCoAgents: 0,
+} as const;
 
 afterEach(async () => {
   await Promise.all(sockets.splice(0).map(async socket => {
@@ -226,7 +233,13 @@ describe("authenticated WSS collaboration", () => {
     const agentId = randomUUID();
     const name = "Lucas";
     const requestId = randomUUID();
-    const definition = { projectId: project.id, agentId, name, hostDeviceId: stephen.id };
+    const definition = {
+      projectId: project.id,
+      agentId,
+      name,
+      hostDeviceId: stephen.id,
+      ...DEFAULT_AGENT_RUNTIME,
+    };
     const created = nextFrame(stephenSocket, "agent.created");
     stephenSocket.send(JSON.stringify({
       version: 1,
@@ -235,6 +248,7 @@ describe("authenticated WSS collaboration", () => {
       projectId: project.id,
       agentId,
       name,
+      ...DEFAULT_AGENT_RUNTIME,
       signature: sign(null, agentDefinitionSigningTranscript(definition), stephen.privateKey).toString("base64url"),
     }));
     expect(await created).toMatchObject({
@@ -251,6 +265,7 @@ describe("authenticated WSS collaboration", () => {
       projectId: project.id,
       agentId,
       name,
+      ...DEFAULT_AGENT_RUNTIME,
       signature: sign(null, agentDefinitionSigningTranscript(definition), stephen.privateKey).toString("base64url"),
     }));
     expect((await replay).created).toBeFalse();
@@ -263,11 +278,13 @@ describe("authenticated WSS collaboration", () => {
       projectId: project.id,
       agentId: outsiderAgentId,
       name: "Imposter",
+      ...DEFAULT_AGENT_RUNTIME,
       signature: sign(null, agentDefinitionSigningTranscript({
         projectId: project.id,
         agentId: outsiderAgentId,
         name: "Imposter",
         hostDeviceId: outsider.id,
+        ...DEFAULT_AGENT_RUNTIME,
       }), outsider.privateKey).toString("base64url"),
     }));
     await expect(outsiderError).rejects.toThrow("approved project member");
@@ -275,11 +292,13 @@ describe("authenticated WSS collaboration", () => {
       .toEqual({ hostDeviceId: stephen.id });
 
     const angelaId = randomUUID();
+    const angelaRuntime = { ...DEFAULT_AGENT_RUNTIME, primaryEffort: "xhigh" as const };
     const angelaDefinition = {
       projectId: project.id,
       agentId: angelaId,
       name: "Angela",
       hostDeviceId: stephen.id,
+      ...angelaRuntime,
     };
     const angelaCreated = nextFrame(stephenSocket, "agent.created");
     stephenSocket.send(JSON.stringify({
@@ -289,9 +308,12 @@ describe("authenticated WSS collaboration", () => {
       projectId: project.id,
       agentId: angelaId,
       name: angelaDefinition.name,
+      ...angelaRuntime,
       signature: sign(null, agentDefinitionSigningTranscript(angelaDefinition), stephen.privateKey).toString("base64url"),
     }));
     expect((await angelaCreated).created).toBeTrue();
+    expect(db.query("SELECT primary_effort AS primaryEffort FROM agents WHERE id = ?").get(angelaId))
+      .toEqual({ primaryEffort: "xhigh" });
 
     const lucasWorker = await connect(server.port, stephen, fingerprint, false);
     const angelaWorker = await connect(server.port, stephen, fingerprint, false);
@@ -309,6 +331,7 @@ describe("authenticated WSS collaboration", () => {
       type: "agent.ready",
       requestId: randomUUID(),
       agentId: angelaId,
+      ...angelaRuntime,
     }));
     expect(await angelaReady).toMatchObject({ agentId: angelaId });
 

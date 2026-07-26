@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { openDatabase } from "../src/database";
 import { migrations } from "../src/migrations";
 
@@ -57,7 +58,21 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }]);
+      expect(migrated.query(`
+        SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
+          coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
+          max_concurrent_coagents AS maxConcurrentCoAgents
+        FROM agents LIMIT 1
+      `).get()).toBeNull();
+      expect((migrated.query("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map(column => column.name))
+        .toEqual(expect.arrayContaining([
+          "primary_model",
+          "primary_effort",
+          "coagent_model",
+          "coagent_effort",
+          "max_concurrent_coagents",
+        ]));
       expect(migrated.query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('project_key_envelopes', 'encrypted_project_context', 'project_key_epochs', 'project_chat_events', 'project_prompt_updates', 'project_artifacts') ORDER BY name",
       ).all()).toEqual([{ name: "encrypted_project_context" }, { name: "project_artifacts" }, { name: "project_chat_events" }, { name: "project_key_envelopes" }, { name: "project_key_epochs" }, { name: "project_prompt_updates" }]);
@@ -75,6 +90,83 @@ describe("CoCodex database migrations", () => {
     } finally {
       migrated?.close();
       migrated = undefined;
+      Bun.gc(true);
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        try {
+          rmSync(root, { recursive: true, force: true });
+          break;
+        } catch (error) {
+          if (attempt === 59) throw error;
+          await Bun.sleep(50);
+        }
+      }
+    }
+  });
+
+  test("migrates legacy agent rows to explicit runtime defaults and enforces consistency", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-runtime-migration-"));
+    const path = join(root, "server.sqlite3");
+    let migrated: Database | undefined;
+    try {
+      const legacy = new Database(path, { create: true });
+      legacy.exec("PRAGMA foreign_keys = ON");
+      legacy.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      const appliedAt = new Date().toISOString();
+      for (const migration of migrations.filter(item => item.version <= 21)) {
+        legacy.exec(migration.sql);
+        legacy.query("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+          .run(migration.version, appliedAt);
+      }
+      const invitationId = randomUUID();
+      const deviceId = randomUUID();
+      const projectId = randomUUID();
+      const agentId = randomUUID();
+      legacy.query(`
+        INSERT INTO invitations (id, token_hash, expires_at, consumed_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(invitationId, "legacy-token-hash", appliedAt, appliedAt, appliedAt);
+      legacy.query(`
+        INSERT INTO devices (
+          id, public_key_pem, fingerprint, display_name, status, invitation_id,
+          enrolled_at, approved_at, messaging_public_key_pem, project_wrap_public_key_pem
+        ) VALUES (?, ?, ?, 'Legacy Host', 'approved', ?, ?, ?, ?, ?)
+      `).run(deviceId, "legacy-signing-key", "legacy-fingerprint", invitationId,
+        appliedAt, appliedAt, "legacy-messaging-key", "legacy-wrap-key");
+      legacy.query("INSERT INTO projects (id, name, created_by_device_id, created_at) VALUES (?, 'Legacy', ?, ?)")
+        .run(projectId, deviceId, appliedAt);
+      legacy.query(`
+        INSERT INTO project_members (project_id, device_id, role, joined_at)
+        VALUES (?, ?, 'owner', ?)
+      `).run(projectId, deviceId, appliedAt);
+      legacy.query(`
+        INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
+        VALUES (?, ?, ?, 'Legacy Agent', 1, ?)
+      `).run(agentId, projectId, deviceId, appliedAt);
+      legacy.close();
+
+      migrated = openDatabase(path);
+      expect(migrated.query(`
+        SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
+          coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
+          max_concurrent_coagents AS maxConcurrentCoAgents
+        FROM agents WHERE id = ?
+      `).get(agentId)).toEqual({
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "medium",
+        coAgentModel: null,
+        coAgentEffort: null,
+        maxConcurrentCoAgents: 0,
+      });
+      expect(() => migrated!.query(`
+        UPDATE agents SET coagent_model = 'gpt-5.6-luna',
+          coagent_effort = 'medium', max_concurrent_coagents = 0
+        WHERE id = ?
+      `).run(agentId)).toThrow("inconsistent agent runtime definition");
+      migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
+      migrated.close();
+      migrated = undefined;
+    } finally {
+      migrated?.close();
       Bun.gc(true);
       for (let attempt = 0; attempt < 60; attempt += 1) {
         try {

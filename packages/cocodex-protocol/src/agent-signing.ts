@@ -59,6 +59,11 @@ export interface AgentDefinitionTranscriptInput {
   agentId: string;
   name: string;
   hostDeviceId: string;
+  primaryModel: string;
+  primaryEffort: string;
+  coAgentModel: string | null;
+  coAgentEffort: string | null;
+  maxConcurrentCoAgents: number;
 }
 
 function lengthPrefix(value: string): Buffer {
@@ -165,5 +170,10 @@ export function agentDefinitionSigningTranscript(input: AgentDefinitionTranscrip
     input.agentId.trim(),
     input.name.trim(),
     input.hostDeviceId,
+    input.primaryModel.trim(),
+    input.primaryEffort,
+    input.coAgentModel?.trim() ?? "",
+    input.coAgentEffort ?? "",
+    String(input.maxConcurrentCoAgents),
   ]);
 }

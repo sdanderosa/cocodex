@@ -119,6 +119,11 @@ describe("official Codex local agent adapter", () => {
         projectId: task.projectId,
         agentId: task.agentId,
         workspaceRoot: workspace,
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "medium",
+        coAgentModel: "gpt-5.6-luna",
+        coAgentEffort: "medium",
+        maxConcurrentCoAgents: 3,
         onUsage: value => usage = value,
         authorizeTask: () => true,
         resolveRuntime: () => ({
@@ -139,7 +144,10 @@ describe("official Codex local agent adapter", () => {
       const output: string[] = [];
       for await (const chunk of adapter.execute(task)) output.push(chunk);
       expect(output).toEqual(["Inspection complete."]);
-      expect(stdin).toBe(task.prompt);
+      expect(stdin).toContain(task.prompt);
+      expect(stdin).toContain("at most 3 co-agents concurrently");
+      expect(stdin).toContain('model "gpt-5.6-luna"');
+      expect(stdin).toContain('reasoning_effort "medium"');
       expect(invoked?.options).toMatchObject({
         cwd: workspace,
         shell: false,
@@ -151,6 +159,16 @@ describe("official Codex local agent adapter", () => {
       expect(invoked?.options.env?.COCODEX_ENV_CANARY).toBeUndefined();
       expect(invoked?.args).toContain("--json");
       expect(invoked?.args).toContain("--ephemeral");
+      expect(invoked?.args).toEqual(expect.arrayContaining([
+        "--model",
+        "gpt-5.6-sol",
+        "-c",
+        'model_reasoning_effort="medium"',
+        "-c",
+        "features.multi_agent_v2.enabled=true",
+        "-c",
+        "features.multi_agent_v2.max_concurrent_threads_per_session=4",
+      ]));
       expect(invoked?.args).toContain("workspace-write");
       expect(invoked?.args).not.toContain("danger-full-access");
       expect(invoked?.args).not.toContain("--yolo");
@@ -250,6 +268,13 @@ describe("official Codex local agent adapter", () => {
         trustedRequesterFingerprints: { [task.requesterDeviceId]: "A".repeat(32) },
       }));
       expect(loadLocalAgentPolicy(policyPath).approvalMode).toBe("trusted-device");
+      expect(loadLocalAgentPolicy(policyPath)).toMatchObject({
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "medium",
+        coAgentModel: null,
+        coAgentEffort: null,
+        maxConcurrentCoAgents: 0,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

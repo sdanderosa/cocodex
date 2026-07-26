@@ -5,6 +5,7 @@ import { codexExecInvocation } from "../codex/exec-invocation";
 import { resolveCodexRuntime } from "../codex/runtime";
 import type { LocalAgentAdapter } from "./agent-bridge";
 import type { TaskWorkspace } from "./task-worktree";
+import { modelMultiAgentVersion } from "./model-multi-agent-version";
 
 const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
@@ -36,6 +37,11 @@ export interface CodexAgentAdapterOptions {
   projectId: string;
   agentId: string;
   workspaceRoot: string;
+  primaryModel?: string;
+  primaryEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  coAgentModel?: string | null;
+  coAgentEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  maxConcurrentCoAgents?: number;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   accessProfile?: "project-only" | "full-computer";
   fullComputerOptIn?: boolean;
@@ -61,6 +67,17 @@ function usageFrom(value: unknown): CodexUsage {
     outputTokens: number("output_tokens"),
     reasoningOutputTokens: number("reasoning_output_tokens"),
   };
+}
+
+function runtimePolicyPrompt(taskPrompt: string, options: CodexAgentAdapterOptions): string {
+  const max = options.maxConcurrentCoAgents ?? 0;
+  const coAgentRule = max === 0
+    ? "Do not spawn co-agents for this task."
+    : `You may run at most ${max} co-agent${max === 1 ? "" : "s"} concurrently. `
+      + `When spawning one, use model "${options.coAgentModel}" and reasoning_effort "${options.coAgentEffort}".`;
+  return `<cocodex_agent_policy>\nAgent ID: ${JSON.stringify(options.agentId)}\n${coAgentRule}\n`
+    + "Keep this agent's runtime context independent. Use only the task and explicitly supplied artifacts below.\n"
+    + `</cocodex_agent_policy>\n\n${taskPrompt}`;
 }
 
 export class CodexAgentAdapter implements LocalAgentAdapter {
@@ -99,12 +116,50 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
     }
     await this.options.onWorkspacePrepared?.(task, workspace);
     if (signal?.aborted) throw new Error("Local agent execution was cancelled");
+    const primaryModel = (this.options.primaryModel ?? "gpt-5.6-sol").trim();
+    const primaryEffort = this.options.primaryEffort ?? "medium";
+    const maxConcurrentCoAgents = this.options.maxConcurrentCoAgents ?? 0;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(primaryModel)) {
+      throw new Error("Local agent model is invalid");
+    }
+    if (this.options.coAgentModel
+      && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(this.options.coAgentModel)) {
+      throw new Error("Local co-agent model is invalid");
+    }
+    if (!Number.isInteger(maxConcurrentCoAgents) || maxConcurrentCoAgents < 0 || maxConcurrentCoAgents > 8) {
+      throw new Error("Local co-agent limit is invalid");
+    }
+    if ((maxConcurrentCoAgents > 0)
+      !== (Boolean(this.options.coAgentModel) && Boolean(this.options.coAgentEffort))) {
+      throw new Error("Local co-agent model, effort, and limit are inconsistent");
+    }
     const runtime = (this.options.resolveRuntime ?? resolveCodexRuntime)({
       discoverAlternatives: false,
     }).runtime;
+    const threadLimit = maxConcurrentCoAgents + 1;
+    const multiAgentVersion = modelMultiAgentVersion(primaryModel);
+    if (maxConcurrentCoAgents > 0 && multiAgentVersion === null) {
+      throw new Error("Co-agent limits require a primary model with known Codex multi-agent metadata");
+    }
+    const concurrencyArgs = multiAgentVersion === "v2"
+      ? [
+          "-c", "features.multi_agent_v2.enabled=true",
+          "-c", `features.multi_agent_v2.max_concurrent_threads_per_session=${threadLimit}`,
+        ]
+      : multiAgentVersion === "v1"
+        ? [
+            "-c", "features.multi_agent_v2.enabled=false",
+            "-c", `agents.max_threads=${threadLimit}`,
+          ]
+        : [];
     const invocation = codexExecInvocation(runtime.command, [
       "-C",
       workspace.workingDirectory,
+      "--model",
+      primaryModel,
+      "-c",
+      `model_reasoning_effort="${primaryEffort}"`,
+      ...concurrencyArgs,
       "exec",
       "--json",
       "--ephemeral",
@@ -138,7 +193,7 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       stderrBytes += chunk.byteLength;
       if (stderrBytes > MAX_STDERR_BYTES) child.kill();
     });
-    child.stdin.end(task.prompt, "utf8");
+    child.stdin.end(runtimePolicyPrompt(task.prompt, this.options), "utf8");
 
     let buffer = "";
     let stdoutBytes = 0;

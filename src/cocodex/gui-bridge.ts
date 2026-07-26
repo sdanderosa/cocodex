@@ -73,6 +73,11 @@ export interface CoCodexGuiStatus {
   localAgents: Array<{
     agentId: string;
     projectId: string;
+    primaryModel: string;
+    primaryEffort: string;
+    coAgentModel: string | null;
+    coAgentEffort: string | null;
+    maxConcurrentCoAgents: number;
     accessProfile: "project-only" | "full-computer";
     workspaceMode: "shared" | "git-worktree";
     executionEnabled: boolean;
@@ -152,6 +157,11 @@ export class CoCodexGuiBridge {
           localAgents.push({
             agentId: policy.agentId,
             projectId: policy.projectId,
+            primaryModel: policy.primaryModel,
+            primaryEffort: policy.primaryEffort,
+            coAgentModel: policy.coAgentModel,
+            coAgentEffort: policy.coAgentEffort,
+            maxConcurrentCoAgents: policy.maxConcurrentCoAgents,
             accessProfile: policy.accessProfile,
             workspaceMode: policy.workspaceMode,
             executionEnabled: safety.executionEnabled,

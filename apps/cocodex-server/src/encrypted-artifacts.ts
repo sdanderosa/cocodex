@@ -86,9 +86,12 @@ export function publishEncryptedArtifact(
 ): AppendEncryptedArtifactResult {
   requireProjectMembership(db, input.projectId, input.authorDeviceId);
   if (input.taskId) {
-    const task = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?")
-      .get(input.taskId) as { projectId: string } | null;
+    const task = db.query("SELECT project_id AS projectId, target_device_id AS targetDeviceId FROM agent_tasks WHERE id = ?")
+      .get(input.taskId) as { projectId: string; targetDeviceId: string } | null;
     if (!task || task.projectId !== input.projectId) throw new Error("Artifact task is not in this project");
+    if (task.targetDeviceId !== input.authorDeviceId) {
+      throw new Error("Task-linked artifact must be published by the task target device");
+    }
   }
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted artifact belongs to another project");

@@ -254,52 +254,88 @@ describe("three-process CoCodex private alpha", () => {
       "project-add-member", "--project", project.id, "--owner-device", stephenDevice.id,
       "--member-device", kaiDevice.id, "--state-root", serverRoot,
     ]);
-    await run(serverExe, [
-      "agent-add", "--id", lucasAgentId, "--project", project.id,
-      "--host-device", stephenDevice.id, "--name", "Lucas", "--state-root", serverRoot,
-    ]);
-    await run(serverExe, [
-      "agent-add", "--id", angelaAgentId, "--project", project.id,
-      "--host-device", stephenDevice.id, "--name", "Angela", "--state-root", serverRoot,
-    ]);
-    await run(serverExe, [
-      "agent-add", "--id", sueAgentId, "--project", project.id,
-      "--host-device", kaiDevice.id, "--name", "Sue", "--state-root", serverRoot,
-    ]);
-    await run(clientExe, [
-      "configure-agent", "--project", project.id, "--agent", lucasAgentId,
-      "--workspace", stephenWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", kaiDevice.id,
-      "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
-    ]);
-    await run(clientExe, [
-      "configure-agent", "--project", project.id, "--agent", angelaAgentId,
-      "--workspace", angelaWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", kaiDevice.id,
-      "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
-    ]);
-    await run(clientExe, [
-      "configure-agent", "--project", project.id, "--agent", sueAgentId,
-      "--workspace", kaiWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", stephenDevice.id,
-      "--trust-fingerprint", stephenDevice.fingerprint, "--state-root", kaiRoot,
-    ]);
-
     const stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "stephen-account",
-      COCODEX_FIXTURE_BARRIER_DIR: executionBarrier,
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
     });
     const kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "kai-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ allowFullComputer: true }),
     });
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "connected"),
       waitFor(kai, line => line.source === "session" && line.state === "connected"),
     ]);
-    await Promise.all([
-      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === lucasAgentId),
-      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === angelaAgentId),
-      waitFor(kai, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === sueAgentId),
-    ]);
+    const configureResidentAgent = async (
+      resident: Resident,
+      command: Record<string, unknown>,
+    ) => {
+      const id = randomUUID();
+      resident.send({ id, type: "agent.configure", ...command });
+      const configured = await waitFor(resident, line => line.source === "agent-configuration"
+        && line.id === id && line.configured === true && line.created === true);
+      await waitFor(resident, line => line.frame?.type === "agent.ready.accepted"
+        && line.frame.agentId === command.agentId);
+      return configured;
+    };
+    await configureResidentAgent(stephen, {
+      projectId: project.id,
+      agentId: lucasAgentId,
+      name: "Lucas",
+      workspaceRoot: stephenWorkspace,
+      workspaceMode: "shared",
+      primaryModel: "gpt-5.6-sol",
+      primaryEffort: "medium",
+      coAgentModel: "gpt-5.6-luna",
+      coAgentEffort: "medium",
+      maxConcurrentCoAgents: 3,
+      approvalMode: "always",
+      trustedRequesterDeviceId: kaiDevice.id,
+      trustedRequesterFingerprint: kaiDevice.fingerprint,
+    });
+    await configureResidentAgent(stephen, {
+      projectId: project.id,
+      agentId: angelaAgentId,
+      name: "Angela",
+      workspaceRoot: angelaWorkspace,
+      workspaceMode: "shared",
+      primaryModel: "gpt-5.6-sol",
+      primaryEffort: "xhigh",
+      coAgentModel: null,
+      coAgentEffort: null,
+      maxConcurrentCoAgents: 0,
+      approvalMode: "always",
+      trustedRequesterDeviceId: kaiDevice.id,
+      trustedRequesterFingerprint: kaiDevice.fingerprint,
+    });
+    await configureResidentAgent(kai, {
+      projectId: project.id,
+      agentId: sueAgentId,
+      name: "Sue",
+      workspaceRoot: kaiWorkspace,
+      workspaceMode: "shared",
+      primaryModel: "gpt-5.6-sol",
+      primaryEffort: "high",
+      coAgentModel: null,
+      coAgentEffort: null,
+      maxConcurrentCoAgents: 0,
+      accessProfile: "full-computer",
+      fullComputerOptIn: true,
+      approvalMode: "always",
+      trustedRequesterDeviceId: stephenDevice.id,
+      trustedRequesterFingerprint: stephenDevice.fingerprint,
+    });
+    const enableSueFullComputer = randomUUID();
+    kai.send({
+      id: enableSueFullComputer,
+      type: "agent.full-computer.enable",
+      agentId: sueAgentId,
+      confirm: true,
+    });
+    await waitFor(kai, line => line.source === "control" && line.id === enableSueFullComputer
+      && line.ok === true && line.agentId === sueAgentId && line.fullComputerEnabled === true);
     traceCheckpoint("clients connected");
     const stephenPid = stephen.process.pid;
     const kaiPid = kai.process.pid;
@@ -314,6 +350,36 @@ describe("three-process CoCodex private alpha", () => {
     ]);
     expect(stephenProjects.frame.projects.map((item: any) => item.id)).toEqual([project.id]);
     expect(kaiProjects.frame.projects.map((item: any) => item.id)).toEqual([project.id]);
+    const rosterRequest = randomUUID();
+    stephen.send({ id: rosterRequest, type: "agent.list", projectId: project.id });
+    const roster = await waitFor(stephen, line => line.frame?.type === "agent.list.result"
+      && line.frame.requestId === rosterRequest);
+    expect(roster.frame.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: lucasAgentId,
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "medium",
+        coAgentModel: "gpt-5.6-luna",
+        coAgentEffort: "medium",
+        maxConcurrentCoAgents: 3,
+      }),
+      expect.objectContaining({
+        id: angelaAgentId,
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "xhigh",
+        coAgentModel: null,
+        coAgentEffort: null,
+        maxConcurrentCoAgents: 0,
+      }),
+      expect.objectContaining({
+        id: sueAgentId,
+        primaryModel: "gpt-5.6-sol",
+        primaryEffort: "high",
+        coAgentModel: null,
+        coAgentEffort: null,
+        maxConcurrentCoAgents: 0,
+      }),
+    ]));
     const subS = randomUUID();
     const subK = randomUUID();
     stephen.send({ id: subS, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
@@ -404,6 +470,23 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("Lucas and Angela completed concurrently");
     expect(existsSync(lucasMarker)).toBeTrue();
     expect(existsSync(angelaMarker)).toBeTrue();
+    const lucasRuntime = JSON.parse(readFileSync(lucasMarker, "utf8")) as { prompt: string; args: string[] };
+    const angelaRuntime = JSON.parse(readFileSync(angelaMarker, "utf8")) as { prompt: string; args: string[] };
+    expect(lucasRuntime.args).toEqual(expect.arrayContaining([
+      "--model", "gpt-5.6-sol",
+      "model_reasoning_effort=\"medium\"",
+      "features.multi_agent_v2.enabled=true",
+      "features.multi_agent_v2.max_concurrent_threads_per_session=4",
+    ]));
+    expect(lucasRuntime.prompt).toContain("at most 3 co-agents concurrently");
+    expect(lucasRuntime.prompt).toContain("gpt-5.6-luna");
+    expect(angelaRuntime.args).toEqual(expect.arrayContaining([
+      "--model", "gpt-5.6-sol",
+      "model_reasoning_effort=\"xhigh\"",
+      "features.multi_agent_v2.enabled=true",
+      "features.multi_agent_v2.max_concurrent_threads_per_session=1",
+    ]));
+    expect(angelaRuntime.prompt).toContain("Do not spawn co-agents");
     expect(existsSync(join(kaiWorkspace, "stephen-account-execution.json"))).toBeFalse();
 
     stephen.send({
@@ -429,6 +512,18 @@ describe("three-process CoCodex private alpha", () => {
       && line.frame.event?.content?.includes("kai-account"));
     traceCheckpoint("Kai agent completed");
     expect(existsSync(join(kaiWorkspace, "kai-account-execution.json"))).toBeTrue();
+    const initialSueRuntime = JSON.parse(readFileSync(
+      join(kaiWorkspace, "kai-account-execution.json"),
+      "utf8",
+    )) as { args: string[]; sandbox: string };
+    expect(initialSueRuntime.args).toEqual(expect.arrayContaining([
+      "--model", "gpt-5.6-sol",
+      "model_reasoning_effort=\"high\"",
+      "features.multi_agent_v2.enabled=true",
+      "features.multi_agent_v2.max_concurrent_threads_per_session=1",
+      "danger-full-access",
+    ]));
+    expect(initialSueRuntime.sandbox).toBe("danger-full-access");
 
     const privateCanary = "PRIVATE-CANARY-7cLw9";
     kai.send({
@@ -550,6 +645,146 @@ describe("three-process CoCodex private alpha", () => {
     expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).toContain(encryptedKaiPrompt);
     traceCheckpoint("encrypted agents completed");
 
+    // Exercise the complete authoritative handoff chain with real resident
+    // workers: Lucas findings -> Angela review -> Sue integration.
+    rmSync(join(executionBarrier, "release"), { force: true });
+    rmSync(lucasMarker, { force: true });
+    const lucasChainPrompt = "Lucas: investigate the authentication failure and report a focused finding.";
+    const lucasChainRequest = randomUUID();
+    kai.send({
+      id: lucasChainRequest,
+      type: "agent.request",
+      projectId: project.id,
+      agentId: lucasAgentId,
+      prompt: lucasChainPrompt,
+    });
+    const lucasChainControl = await waitFor(kai, line => line.source === "control"
+      && line.id === lucasChainRequest && line.ok === true && line.encrypted === true);
+    const lucasChainApproval = await waitFor(stephen, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === lucasChainControl.taskId);
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: lucasChainControl.taskId, approved: true });
+    await waitForPath(lucasMarker);
+
+    const lucasFinding = "LUCAS-FINDING-refresh-token-persistence";
+    const lucasArtifactId = randomUUID();
+    const lucasArtifactPublish = randomUUID();
+    stephen.send({
+      id: lucasArtifactPublish,
+      type: "artifact.publish",
+      artifactId: lucasArtifactId,
+      projectId: project.id,
+      taskId: lucasChainControl.taskId,
+      artifactType: "finding",
+      title: "Lucas authentication finding",
+      summary: "Focused finding for Angela",
+      content: lucasFinding,
+      status: "ready",
+    });
+    await waitFor(stephen, line => line.frame?.type === "artifact.accepted"
+      && line.frame.requestId === lucasArtifactPublish && line.frame.artifact?.id === lucasArtifactId);
+    await waitFor(kai, line => line.frame?.type === "artifact.published"
+      && line.frame.artifact?.id === lucasArtifactId);
+
+    const angelaChainPrompt = "Angela: verify Lucas's finding and prepare a tested handoff for Sue.";
+    const angelaChainRequest = randomUUID();
+    kai.send({
+      id: angelaChainRequest,
+      type: "agent.request",
+      projectId: project.id,
+      agentId: angelaAgentId,
+      prompt: angelaChainPrompt,
+      dependencies: [lucasChainControl.taskId],
+      inputArtifactIds: [lucasArtifactId],
+    });
+    const angelaChainControl = await waitFor(kai, line => line.source === "control"
+      && line.id === angelaChainRequest && line.ok === true && line.encrypted === true);
+    expect(stephen.lines.some(line => line.source === "agent-approval"
+      && line.task?.id === angelaChainControl.taskId)).toBeFalse();
+    writeFileSync(join(executionBarrier, "release"), "release\n", "utf8");
+    await waitFor(kai, line => line.frame?.type === "agent.result"
+      && line.frame.taskId === lucasChainControl.taskId && line.frame.final === true);
+    const angelaChainApproval = await waitFor(stephen, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === angelaChainControl.taskId);
+    rmSync(join(executionBarrier, "release"), { force: true });
+    rmSync(angelaMarker, { force: true });
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: angelaChainControl.taskId, approved: true });
+    await waitForPath(angelaMarker);
+    expect(readFileSync(angelaMarker, "utf8")).toContain(lucasFinding);
+
+    const angelaHandoff = "ANGELA-HANDOFF-refresh-token-tests-passed";
+    const angelaArtifactId = randomUUID();
+    const angelaArtifactPublish = randomUUID();
+    stephen.send({
+      id: angelaArtifactPublish,
+      type: "artifact.publish",
+      artifactId: angelaArtifactId,
+      projectId: project.id,
+      taskId: angelaChainControl.taskId,
+      artifactType: "test-result",
+      title: "Angela verified handoff",
+      summary: "Verified implementation evidence for Sue",
+      content: angelaHandoff,
+      status: "accepted",
+    });
+    await waitFor(stephen, line => line.frame?.type === "artifact.accepted"
+      && line.frame.requestId === angelaArtifactPublish && line.frame.artifact?.id === angelaArtifactId);
+
+    const sueChainPrompt = "Sue: integrate the verified Lucas and Angela handoffs using the locally enabled full-computer profile.";
+    const sueChainRequest = randomUUID();
+    stephen.send({
+      id: sueChainRequest,
+      type: "agent.request",
+      projectId: project.id,
+      agentId: sueAgentId,
+      prompt: sueChainPrompt,
+      dependencies: [lucasChainControl.taskId, angelaChainControl.taskId],
+      inputArtifactIds: [lucasArtifactId, angelaArtifactId],
+    });
+    const sueChainControl = await waitFor(stephen, line => line.source === "control"
+      && line.id === sueChainRequest && line.ok === true && line.encrypted === true);
+    expect(kai.lines.some(line => line.source === "agent-approval"
+      && line.task?.id === sueChainControl.taskId)).toBeFalse();
+    writeFileSync(join(executionBarrier, "release"), "release\n", "utf8");
+    await waitFor(kai, line => line.frame?.type === "agent.result"
+      && line.frame.taskId === angelaChainControl.taskId && line.frame.final === true
+      && line.frame.event?.content?.includes(lucasFinding));
+    const sueChainApproval = await waitFor(kai, line => line.source === "agent-approval"
+      && line.approvalState === "pending" && line.task?.id === sueChainControl.taskId);
+    kai.send({ id: randomUUID(), type: "agent.approval", taskId: sueChainControl.taskId, approved: true });
+    await waitFor(stephen, line => line.frame?.type === "agent.result"
+      && line.frame.taskId === sueChainControl.taskId && line.frame.final === true
+      && line.frame.event?.content?.includes(angelaHandoff));
+    const sueExecution = JSON.parse(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")) as {
+      prompt: string;
+      args: string[];
+      sandbox: string;
+    };
+    expect(sueExecution.prompt).toContain(lucasFinding);
+    expect(sueExecution.prompt).toContain(angelaHandoff);
+    expect(sueExecution.args).toEqual(expect.arrayContaining([
+      "--model", "gpt-5.6-sol", "danger-full-access",
+    ]));
+    expect(sueExecution.sandbox).toBe("danger-full-access");
+
+    const sueArtifactId = randomUUID();
+    const sueArtifactPublish = randomUUID();
+    const sueIntegrated = "SUE-INTEGRATED-private-alpha-chain";
+    kai.send({
+      id: sueArtifactPublish,
+      type: "artifact.publish",
+      artifactId: sueArtifactId,
+      projectId: project.id,
+      taskId: sueChainControl.taskId,
+      artifactType: "code-change",
+      title: "Sue integrated result",
+      summary: "Lucas and Angela handoffs integrated by Sue",
+      content: sueIntegrated,
+      status: "integrated",
+    });
+    await waitFor(kai, line => line.frame?.type === "artifact.accepted"
+      && line.frame.requestId === sueArtifactPublish && line.frame.artifact?.id === sueArtifactId);
+    traceCheckpoint("Lucas to Angela to Sue artifact chain completed");
+
     const taskEvidenceRequest = randomUUID();
     stephen.send({ id: taskEvidenceRequest, type: "agent.task.list", projectId: project.id });
     const taskEvidence = await waitFor(stephen, line => line.frame?.type === "agent.task.list.result"
@@ -570,6 +805,18 @@ describe("three-process CoCodex private alpha", () => {
         workspaceRef: "configured-workspace",
         startedAt: expect.any(String),
       }),
+      expect.objectContaining({
+        id: angelaChainControl.taskId,
+        dependencies: [lucasChainControl.taskId],
+        inputArtifactIds: [lucasArtifactId],
+        status: "completed",
+      }),
+      expect.objectContaining({
+        id: sueChainControl.taskId,
+        dependencies: [lucasChainControl.taskId, angelaChainControl.taskId],
+        inputArtifactIds: [lucasArtifactId, angelaArtifactId],
+        status: "completed",
+      }),
     ]));
 
     const usageGetS = randomUUID();
@@ -583,8 +830,8 @@ describe("three-process CoCodex private alpha", () => {
     const usageReportsS = usageS.frame.reports as any[];
     const usageReportsK = usageK.frame.reports as any[];
     expect(usageReportsS).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 4 }) }),
-      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 6 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 3 }) }),
     ]));
     expect(usageReportsK).toEqual(expect.arrayContaining([
       expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ inputTokens: expect.any(Number) }) }),
@@ -699,8 +946,8 @@ describe("three-process CoCodex private alpha", () => {
       line => line.frame?.type === "usage.result" && line.frame.requestId === recoveredUsageRequest,
     );
     expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 4 }) }),
-      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 6 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 3 }) }),
     ]));
 
     traceCheckpoint("recovered snapshots received");
@@ -718,16 +965,30 @@ describe("three-process CoCodex private alpha", () => {
     const ciphertext = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };
     const encryptedTasks = db.query(`
       SELECT id, prompt, prompt_envelope_json AS promptEnvelopeJson
-      FROM agent_tasks WHERE id IN (?, ?, ?)
+      FROM agent_tasks WHERE id IN (?, ?, ?, ?, ?, ?)
       ORDER BY id
-    `).all(sharedPrivateControl.taskId, encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+    `).all(
+      sharedPrivateControl.taskId,
+      encryptedStephenControl.taskId,
+      encryptedKaiControl.taskId,
+      lucasChainControl.taskId,
+      angelaChainControl.taskId,
+      sueChainControl.taskId,
+    ) as Array<{
       id: string; prompt: string; promptEnvelopeJson: string;
     }>;
     const encryptedResults = db.query(`
       SELECT task_id AS taskId, envelope_json AS envelopeJson
-      FROM project_chat_events WHERE task_id IN (?, ?, ?)
+      FROM project_chat_events WHERE task_id IN (?, ?, ?, ?, ?, ?)
       ORDER BY task_id, sequence
-    `).all(sharedPrivateControl.taskId, encryptedStephenControl.taskId, encryptedKaiControl.taskId) as Array<{
+    `).all(
+      sharedPrivateControl.taskId,
+      encryptedStephenControl.taskId,
+      encryptedKaiControl.taskId,
+      lucasChainControl.taskId,
+      angelaChainControl.taskId,
+      sueChainControl.taskId,
+    ) as Array<{
       taskId: string; envelopeJson: string;
     }>;
     const duplicateCounts = db.query(`
@@ -735,22 +996,39 @@ describe("three-process CoCodex private alpha", () => {
     `).get() as { total: number; uniqueIds: number };
     db.close();
     expect(ciphertext.ciphertext).not.toContain(privateCanary);
-    expect(readFileSync(join(serverRoot, "server.sqlite3")).includes(Buffer.from(privateCanary))).toBeFalse();
+    const serverDatabaseBytes = readFileSync(join(serverRoot, "server.sqlite3"));
+    for (const secret of [
+      privateCanary,
+      encryptedStephenPrompt,
+      encryptedKaiPrompt,
+      lucasChainPrompt,
+      lucasFinding,
+      angelaChainPrompt,
+      angelaHandoff,
+      sueChainPrompt,
+      sueIntegrated,
+    ]) {
+      expect(serverDatabaseBytes.includes(Buffer.from(secret))).toBeFalse();
+    }
     expect(duplicateCounts.total).toBe(duplicateCounts.uniqueIds);
     expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).not.toContain(privateCanary);
-    expect(encryptedTasks).toHaveLength(3);
+    expect(encryptedTasks).toHaveLength(6);
     for (const task of encryptedTasks) {
       expect(task.prompt).toBe("[encrypted]");
-      expect(task.promptEnvelopeJson).not.toContain(encryptedStephenPrompt);
-      expect(task.promptEnvelopeJson).not.toContain(encryptedKaiPrompt);
-      expect(task.promptEnvelopeJson).not.toContain(privateCanary);
+      for (const secret of [
+        encryptedStephenPrompt, encryptedKaiPrompt, privateCanary,
+        lucasChainPrompt, lucasFinding, angelaChainPrompt, angelaHandoff,
+        sueChainPrompt, sueIntegrated,
+      ]) expect(task.promptEnvelopeJson).not.toContain(secret);
       expect(task.promptEnvelopeJson).toContain("ciphertext");
     }
-    expect(encryptedResults.length).toBeGreaterThanOrEqual(3);
+    expect(encryptedResults.length).toBeGreaterThanOrEqual(6);
     for (const result of encryptedResults) {
-      expect(result.envelopeJson).not.toContain(encryptedStephenPrompt);
-      expect(result.envelopeJson).not.toContain(encryptedKaiPrompt);
-      expect(result.envelopeJson).not.toContain(privateCanary);
+      for (const secret of [
+        encryptedStephenPrompt, encryptedKaiPrompt, privateCanary,
+        lucasChainPrompt, lucasFinding, angelaChainPrompt, angelaHandoff,
+        sueChainPrompt, sueIntegrated,
+      ]) expect(result.envelopeJson).not.toContain(secret);
       expect(result.envelopeJson).toContain("ciphertext");
     }
   }, 120_000);

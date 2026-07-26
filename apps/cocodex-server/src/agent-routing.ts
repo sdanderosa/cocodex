@@ -22,21 +22,96 @@ export interface RegisterAgentInput {
   projectId: string;
   hostDeviceId: string;
   name: string;
+  primaryModel?: string;
+  primaryEffort?: AgentDefinition["primaryEffort"];
+  coAgentModel?: string | null;
+  coAgentEffort?: AgentDefinition["coAgentEffort"];
+  maxConcurrentCoAgents?: number;
 }
 
-export function registerAgent(db: Database, input: RegisterAgentInput, now = new Date()): AgentDefinition {
-  requireProjectMembership(db, input.projectId, input.hostDeviceId);
-  const agent: AgentDefinition = {
+export type AgentReadyRuntimeInput = Pick<
+  RegisterAgentInput,
+  "primaryModel" | "primaryEffort" | "coAgentModel" | "coAgentEffort" | "maxConcurrentCoAgents"
+>;
+
+export function requireAgentReadyRuntime(
+  db: Database,
+  hostDeviceId: string,
+  agentId: string,
+  input: AgentReadyRuntimeInput,
+): void {
+  const registered = db.query(`
+    SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
+      coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
+      max_concurrent_coagents AS maxConcurrentCoAgents
+    FROM agents WHERE id = ? AND host_device_id = ? AND enabled = 1
+  `).get(agentId, hostDeviceId) as AgentReadyRuntimeInput | null;
+  if (!registered) throw new Error("Agent ready announcement does not match an enabled local agent");
+  const announced = agentDefinition({
+    id: agentId,
+    projectId: "ready-runtime-validation",
+    hostDeviceId,
+    name: "ready-runtime-validation",
+    ...input,
+  });
+  if (registered.primaryModel !== announced.primaryModel
+    || registered.primaryEffort !== announced.primaryEffort
+    || registered.coAgentModel !== announced.coAgentModel
+    || registered.coAgentEffort !== announced.coAgentEffort
+    || registered.maxConcurrentCoAgents !== announced.maxConcurrentCoAgents) {
+    throw new Error("Agent ready runtime definition does not match the authoritative registration");
+  }
+}
+
+function agentDefinition(input: RegisterAgentInput): AgentDefinition {
+  const primaryModel = (input.primaryModel ?? "gpt-5.6-sol").trim();
+  const primaryEffort = input.primaryEffort ?? "medium";
+  const coAgentModel = input.coAgentModel?.trim() || null;
+  const coAgentEffort = input.coAgentEffort ?? null;
+  const maxConcurrentCoAgents = input.maxConcurrentCoAgents ?? 0;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(primaryModel)) {
+    throw new Error("Primary model must be a printable 1-160 character identifier");
+  }
+  if (!["minimal", "low", "medium", "high", "xhigh", "max"].includes(primaryEffort)) {
+    throw new Error("Unsupported primary reasoning effort");
+  }
+  if (coAgentModel && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(coAgentModel)) {
+    throw new Error("Co-agent model must be a printable 1-160 character identifier");
+  }
+  if (coAgentEffort !== null && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(coAgentEffort)) {
+    throw new Error("Unsupported co-agent reasoning effort");
+  }
+  if (!Number.isInteger(maxConcurrentCoAgents) || maxConcurrentCoAgents < 0 || maxConcurrentCoAgents > 8) {
+    throw new Error("Maximum concurrent co-agents must be between 0 and 8");
+  }
+  if ((maxConcurrentCoAgents > 0) !== (coAgentModel !== null && coAgentEffort !== null)) {
+    throw new Error("Positive co-agent limits require a model and effort; zero requires neither");
+  }
+  return {
     id: input.id,
     projectId: input.projectId,
     name: input.name.trim(),
     hostDeviceId: input.hostDeviceId,
+    primaryModel,
+    primaryEffort,
+    coAgentModel,
+    coAgentEffort,
+    maxConcurrentCoAgents,
     enabled: true,
   };
+}
+
+export function registerAgent(db: Database, input: RegisterAgentInput, now = new Date()): AgentDefinition {
+  requireProjectMembership(db, input.projectId, input.hostDeviceId);
+  const agent = agentDefinition(input);
   if (!agent.name) throw new Error("Agent name is required");
-  db.query(`INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
-    VALUES (?, ?, ?, ?, 1, ?)`)
-    .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
+  db.query(`INSERT INTO agents (
+      id, project_id, host_device_id, name, enabled, created_at,
+      primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+    .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString(),
+      agent.primaryModel, agent.primaryEffort, agent.coAgentModel, agent.coAgentEffort,
+      agent.maxConcurrentCoAgents);
   return agent;
 }
 
@@ -46,13 +121,7 @@ export function createAgentForHost(
   now = new Date(),
 ): { agent: AgentDefinition; created: boolean } {
   requireProjectMembership(db, input.projectId, input.hostDeviceId);
-  const agent: AgentDefinition = {
-    id: input.id.trim(),
-    projectId: input.projectId,
-    name: input.name.trim(),
-    hostDeviceId: input.hostDeviceId,
-    enabled: true,
-  };
+  const agent = agentDefinition({ ...input, id: input.id.trim() });
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(agent.id)) {
     throw new Error("Agent ID must be a UUID");
   }
@@ -68,6 +137,11 @@ export function createAgentForHost(
       agentId: agent.id,
       name: agent.name,
       hostDeviceId: agent.hostDeviceId,
+      primaryModel: agent.primaryModel,
+      primaryEffort: agent.primaryEffort,
+      coAgentModel: agent.coAgentModel,
+      coAgentEffort: agent.coAgentEffort,
+      maxConcurrentCoAgents: agent.maxConcurrentCoAgents,
     }),
     createPublicKey(host.publicKeyPem),
     Buffer.from(input.signature, "base64url"),
@@ -75,12 +149,18 @@ export function createAgentForHost(
   if (!valid) throw new Error("Invalid agent definition signature");
   return db.transaction(() => {
     const existing = db.query(`
-      SELECT id, project_id AS projectId, name, host_device_id AS hostDeviceId, enabled
+      SELECT id, project_id AS projectId, name, host_device_id AS hostDeviceId, enabled,
+        primary_model AS primaryModel, primary_effort AS primaryEffort,
+        coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
+        max_concurrent_coagents AS maxConcurrentCoAgents
       FROM agents WHERE id = ?
     `).get(agent.id) as (Omit<AgentDefinition, "enabled"> & { enabled: number }) | null;
     if (existing) {
       if (existing.projectId !== agent.projectId || existing.hostDeviceId !== agent.hostDeviceId
-        || existing.name !== agent.name || existing.enabled !== 1) {
+        || existing.name !== agent.name || existing.enabled !== 1
+        || existing.primaryModel !== agent.primaryModel || existing.primaryEffort !== agent.primaryEffort
+        || existing.coAgentModel !== agent.coAgentModel || existing.coAgentEffort !== agent.coAgentEffort
+        || existing.maxConcurrentCoAgents !== agent.maxConcurrentCoAgents) {
         throw new Error("Agent ID was already used for a different definition");
       }
       return { agent, created: false };
@@ -96,9 +176,13 @@ export function createAgentForHost(
       SELECT COUNT(*) AS count FROM agents WHERE project_id = ?
     `).get(agent.projectId) as { count: number };
     if (Number(projectCount.count) >= 128) throw new Error("Project agent limit reached");
-    db.query(`INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
-      VALUES (?, ?, ?, ?, 1, ?)`)
-      .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
+    db.query(`INSERT INTO agents (
+        id, project_id, host_device_id, name, enabled, created_at,
+        primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+      .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString(),
+        agent.primaryModel, agent.primaryEffort, agent.coAgentModel, agent.coAgentEffort,
+        agent.maxConcurrentCoAgents);
     db.query(`
       INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
       VALUES ('agent.created', ?, ?, ?, ?)
@@ -106,6 +190,11 @@ export function createAgentForHost(
       projectId: agent.projectId,
       name: agent.name,
       hostDeviceId: agent.hostDeviceId,
+      primaryModel: agent.primaryModel,
+      primaryEffort: agent.primaryEffort,
+      coAgentModel: agent.coAgentModel,
+      coAgentEffort: agent.coAgentEffort,
+      maxConcurrentCoAgents: agent.maxConcurrentCoAgents,
     }));
     return { agent, created: true };
   }).immediate();
@@ -120,6 +209,9 @@ export function listAgents(
   requireProjectMembership(db, projectId, requesterDeviceId);
   const rows = db.query(`
     SELECT a.id, a.project_id AS projectId, a.name, a.host_device_id AS hostDeviceId,
+      a.primary_model AS primaryModel, a.primary_effort AS primaryEffort,
+      a.coagent_model AS coAgentModel, a.coagent_effort AS coAgentEffort,
+      a.max_concurrent_coagents AS maxConcurrentCoAgents,
       a.enabled, d.display_name AS hostDisplayName, d.status AS hostStatus,
       pm.device_id AS hostMemberDeviceId
     FROM agents a
@@ -131,6 +223,11 @@ export function listAgents(
     id: string;
     projectId: string;
     name: string;
+    primaryModel: string;
+    primaryEffort: AgentView["primaryEffort"];
+    coAgentModel: string | null;
+    coAgentEffort: AgentView["coAgentEffort"];
+    maxConcurrentCoAgents: number;
     hostDeviceId: string;
     enabled: number;
     hostDisplayName: string;
@@ -168,6 +265,11 @@ export function listAgents(
       id: row.id,
       projectId: row.projectId,
       name: row.name,
+      primaryModel: row.primaryModel,
+      primaryEffort: row.primaryEffort,
+      coAgentModel: row.coAgentModel,
+      coAgentEffort: row.coAgentEffort,
+      maxConcurrentCoAgents: row.maxConcurrentCoAgents,
       hostDeviceId: row.hostDeviceId,
       hostDisplayName: row.hostDisplayName,
       enabled: row.enabled === 1,

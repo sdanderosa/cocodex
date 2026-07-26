@@ -16,6 +16,8 @@ import {
   loadLocalAgentPolicyStore,
   saveLocalAgentPolicy,
   upsertLocalAgentPolicy,
+  validateLocalAgentPolicy,
+  type LocalAgentPolicy,
 } from "./agent-policy";
 import { agentRuntimePaths, stageLegacyAgentRuntimeState } from "./agent-runtime-paths";
 import {
@@ -108,6 +110,10 @@ async function run(): Promise<void> {
       if (accessProfile === "full-computer" && !fullComputerOptIn) {
         throw new Error("Full-computer access requires --confirm-full-computer");
       }
+      const primaryEffort = option("--effort") ?? "medium";
+      const coAgentModel = option("--co-agent-model") ?? null;
+      const coAgentEffort = option("--co-agent-effort") ?? null;
+      const maxConcurrentCoAgents = Number(option("--max-co-agents") ?? 0);
       const policy = {
         version: 1,
         projectId: required("--project"),
@@ -115,28 +121,44 @@ async function run(): Promise<void> {
         workspaceRoot: required("--workspace"),
         workspaceMode,
         sandbox: option("--sandbox") === "read-only" ? "read-only" : "workspace-write",
+        primaryModel: option("--model") ?? "gpt-5.6-sol",
+        primaryEffort,
+        coAgentModel,
+        coAgentEffort,
+        maxConcurrentCoAgents,
         accessProfile,
         fullComputerOptIn,
         approvalMode,
         trustedRequesterFingerprints: {
           [trustedDeviceId]: required("--trust-fingerprint"),
         },
-      } as const;
+      };
+      const validatedPolicy = validateLocalAgentPolicy(policy as LocalAgentPolicy);
       const currentStore = existsSync(paths.agentPolicy) ? loadLocalAgentPolicyStore(paths.agentPolicy) : undefined;
-      const existing = currentStore?.agents.find(candidate => candidate.agentId === policy.agentId);
+      const existing = currentStore?.agents.find(candidate => candidate.agentId === validatedPolicy.agentId);
       if (currentStore?.version === 1 && !existing) {
         stageLegacyAgentRuntimeState(paths, currentStore.agents[0].agentId);
       }
       const legacyRuntime = !currentStore || (currentStore.version === 1 && Boolean(existing));
-      const runtime = agentRuntimePaths(paths, policy.agentId, legacyRuntime);
-      if (!existing) configureAgentSafety(runtime.safety, policy);
+      const runtime = agentRuntimePaths(paths, validatedPolicy.agentId, legacyRuntime);
+      if (!existing) configureAgentSafety(runtime.safety, validatedPolicy);
       trustDevice(paths.trustedDevices, trustedDeviceId, required("--trust-fingerprint"));
       if (!currentStore || (currentStore.version === 1 && existing)) {
-        saveLocalAgentPolicy(paths.agentPolicy, policy);
+        saveLocalAgentPolicy(paths.agentPolicy, validatedPolicy);
       } else {
-        upsertLocalAgentPolicy(paths.agentPolicy, policy);
+        upsertLocalAgentPolicy(paths.agentPolicy, validatedPolicy);
       }
-      console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId, accessProfile: policy.accessProfile }));
+      console.log(JSON.stringify({
+        configured: true,
+        projectId: validatedPolicy.projectId,
+        agentId: validatedPolicy.agentId,
+        accessProfile: validatedPolicy.accessProfile,
+        primaryModel: validatedPolicy.primaryModel,
+        primaryEffort: validatedPolicy.primaryEffort,
+        coAgentModel: validatedPolicy.coAgentModel,
+        coAgentEffort: validatedPolicy.coAgentEffort,
+        maxConcurrentCoAgents: validatedPolicy.maxConcurrentCoAgents,
+      }));
       return;
     }
     case "agent-safety-status": {
@@ -329,6 +351,11 @@ async function run(): Promise<void> {
           projectId: policy.projectId,
           agentId: policy.agentId,
           workspaceRoot: policy.workspaceRoot,
+          primaryModel: policy.primaryModel,
+          primaryEffort: policy.primaryEffort,
+          coAgentModel: policy.coAgentModel,
+          coAgentEffort: policy.coAgentEffort,
+          maxConcurrentCoAgents: policy.maxConcurrentCoAgents,
           sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
           accessProfile: policy.accessProfile,
           fullComputerOptIn: policy.fullComputerOptIn,
@@ -343,6 +370,11 @@ async function run(): Promise<void> {
         detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
           localDeviceId: connection.deviceId,
           agentId: policy.agentId,
+          primaryModel: policy.primaryModel,
+          primaryEffort: policy.primaryEffort,
+          coAgentModel: policy.coAgentModel,
+          coAgentEffort: policy.coAgentEffort,
+          maxConcurrentCoAgents: policy.maxConcurrentCoAgents,
           serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
           trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
           journalPath: runtime.journal,
@@ -379,7 +411,7 @@ Usage:
   cocodex-client accept-transfer --code CODE [--state-root PATH]
   cocodex-client accept-transfer --code-file FILE [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
-  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
+  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--model ID] [--effort minimal|low|medium|high|xhigh|max] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
   cocodex-client agent-safety-status [--agent ID] [--state-root PATH]
   cocodex-client emergency-stop [--agent ID] [--reason TEXT] [--state-root PATH]
   cocodex-client emergency-resume [--agent ID] [--state-root PATH]

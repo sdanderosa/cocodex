@@ -21,6 +21,11 @@ interface Status {
   localAgents: Array<{
     agentId: string;
     projectId: string;
+    primaryModel: string;
+    primaryEffort: string;
+    coAgentModel: string | null;
+    coAgentEffort: string | null;
+    maxConcurrentCoAgents: number;
     accessProfile: "project-only" | "full-computer";
     workspaceMode: "shared" | "git-worktree";
     executionEnabled: boolean;
@@ -66,6 +71,11 @@ interface AgentView {
   id: string;
   projectId: string;
   name: string;
+  primaryModel: string;
+  primaryEffort: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  coAgentModel: string | null;
+  coAgentEffort: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  maxConcurrentCoAgents: number;
   hostDeviceId: string;
   hostDisplayName: string;
   enabled: boolean;
@@ -309,6 +319,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [agentName, setAgentName] = useState("");
   const [agentWorkspace, setAgentWorkspace] = useState("");
   const [agentWorkspaceMode, setAgentWorkspaceMode] = useState<"shared" | "git-worktree">("git-worktree");
+  const [agentPrimaryModel, setAgentPrimaryModel] = useState("gpt-5.6-sol");
+  const [agentPrimaryEffort, setAgentPrimaryEffort] = useState<AgentView["primaryEffort"]>("medium");
+  const [agentCoAgentModel, setAgentCoAgentModel] = useState("");
+  const [agentCoAgentEffort, setAgentCoAgentEffort] = useState<NonNullable<AgentView["coAgentEffort"]>>("medium");
+  const [agentMaxCoAgents, setAgentMaxCoAgents] = useState(0);
   const [trustedRequesterDeviceId, setTrustedRequesterDeviceId] = useState("");
   const [trustedRequesterFingerprint, setTrustedRequesterFingerprint] = useState("");
   const [invite, setInvite] = useState("");
@@ -653,6 +668,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         name: agentName.trim(),
         workspaceRoot: agentWorkspace.trim(),
         workspaceMode: agentWorkspaceMode,
+        primaryModel: agentPrimaryModel.trim(),
+        primaryEffort: agentPrimaryEffort,
+        coAgentModel: agentMaxCoAgents > 0 ? agentCoAgentModel.trim() : null,
+        coAgentEffort: agentMaxCoAgents > 0 ? agentCoAgentEffort : null,
+        maxConcurrentCoAgents: agentMaxCoAgents,
         sandbox: "workspace-write",
         accessProfile: "project-only",
         approvalMode: "trusted-device",
@@ -889,6 +909,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <small>{t(localAgent.workspaceMode === "git-worktree"
                   ? "cocodex.agent.workspace.worktree"
                   : "cocodex.agent.workspace.shared")}</small>
+                <small>{localAgent.primaryModel} · {localAgent.primaryEffort}</small>
+                <small>{localAgent.maxConcurrentCoAgents > 0
+                  ? t("cocodex.agent.coagents.summary", {
+                    count: localAgent.maxConcurrentCoAgents,
+                    model: localAgent.coAgentModel ?? "",
+                    effort: localAgent.coAgentEffort ?? "",
+                  })
+                  : t("cocodex.agent.coagents.none")}</small>
                 <small>{t(localAgent.executionEnabled ? "cocodex.agent.execution.enabled" : "cocodex.agent.execution.stopped")}
                   {localAgent.accessProfile === "full-computer" && !localAgent.fullComputerEnabled
                     ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
@@ -923,6 +951,27 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                   <option value="git-worktree">{t("cocodex.agent.setup.worktree")}</option>
                   <option value="shared">{t("cocodex.agent.setup.shared")}</option>
                 </select>
+                <input className="input" value={agentPrimaryModel}
+                  onChange={event => setAgentPrimaryModel(event.target.value)}
+                  placeholder={t("cocodex.agent.setup.primaryModel")} required maxLength={160} />
+                <select className="input" value={agentPrimaryEffort}
+                  onChange={event => setAgentPrimaryEffort(event.target.value as AgentView["primaryEffort"])}>
+                  {(["minimal", "low", "medium", "high", "xhigh", "max"] as const)
+                    .map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                </select>
+                <input className="input" type="number" min={0} max={8} value={agentMaxCoAgents}
+                  onChange={event => setAgentMaxCoAgents(Math.max(0, Math.min(8, Number(event.target.value))))}
+                  aria-label={t("cocodex.agent.setup.maxCoAgents")} />
+                {agentMaxCoAgents > 0 && <>
+                  <input className="input" value={agentCoAgentModel}
+                    onChange={event => setAgentCoAgentModel(event.target.value)}
+                    placeholder={t("cocodex.agent.setup.coAgentModel")} required maxLength={160} />
+                  <select className="input" value={agentCoAgentEffort}
+                    onChange={event => setAgentCoAgentEffort(event.target.value as NonNullable<AgentView["coAgentEffort"]>)}>
+                    {(["minimal", "low", "medium", "high", "xhigh", "max"] as const)
+                      .map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                  </select>
+                </>}
                 <input className="input cocodex-key-input" value={trustedRequesterDeviceId}
                   onChange={event => setTrustedRequesterDeviceId(event.target.value)}
                   placeholder={t("cocodex.agent.setup.device")} required />
