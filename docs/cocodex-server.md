@@ -131,6 +131,14 @@ prompts/results in the roster. The route is advisory discovery only, so every
 `agent.request` still passes the normal signed authorization and local-policy
 checks. See ADR 0018.
 
+`agent.create` is the authenticated self-hosting path. The Server derives the
+host device from the WSS session, verifies the device-signed definition and
+project membership, applies the current one-agent-per-host/project and
+128-agent/project limits, and audits the exact idempotent creation. It accepts
+no workspace, sandbox, access-profile, or full-computer fields. The host Client
+commits those local-only controls only after `agent.created`, then reconnects
+and announces `agent.ready`. See ADR 0025.
+
 `agent.task.list` is the companion activity projection. It returns only
 bounded task identity, dependency, status, timestamp, event-count, and
 encryption metadata for the requesting project member. It joins both legacy

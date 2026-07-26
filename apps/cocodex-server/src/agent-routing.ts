@@ -1,6 +1,7 @@
 import { createPublicKey, randomUUID, sign, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  agentDefinitionSigningTranscript,
   agentDispatchSigningTranscript,
   agentRequestSigningTranscript,
   type AgentDefinition,
@@ -37,6 +38,77 @@ export function registerAgent(db: Database, input: RegisterAgentInput, now = new
     VALUES (?, ?, ?, ?, 1, ?)`)
     .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
   return agent;
+}
+
+export function createAgentForHost(
+  db: Database,
+  input: RegisterAgentInput & { signature: string },
+  now = new Date(),
+): { agent: AgentDefinition; created: boolean } {
+  requireProjectMembership(db, input.projectId, input.hostDeviceId);
+  const agent: AgentDefinition = {
+    id: input.id.trim(),
+    projectId: input.projectId,
+    name: input.name.trim(),
+    hostDeviceId: input.hostDeviceId,
+    enabled: true,
+  };
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(agent.id)) {
+    throw new Error("Agent ID must be a UUID");
+  }
+  if (!agent.name || agent.name.length > 120) throw new Error("Agent name must be 1-120 characters");
+  const host = db.query(`
+    SELECT public_key_pem AS publicKeyPem, status FROM devices WHERE id = ?
+  `).get(agent.hostDeviceId) as DeviceKeyRow | null;
+  if (!host || host.status !== "approved") throw new Error("Agent host device is not approved");
+  const valid = verify(
+    null,
+    agentDefinitionSigningTranscript({
+      projectId: agent.projectId,
+      agentId: agent.id,
+      name: agent.name,
+      hostDeviceId: agent.hostDeviceId,
+    }),
+    createPublicKey(host.publicKeyPem),
+    Buffer.from(input.signature, "base64url"),
+  );
+  if (!valid) throw new Error("Invalid agent definition signature");
+  return db.transaction(() => {
+    const existing = db.query(`
+      SELECT id, project_id AS projectId, name, host_device_id AS hostDeviceId, enabled
+      FROM agents WHERE id = ?
+    `).get(agent.id) as (Omit<AgentDefinition, "enabled"> & { enabled: number }) | null;
+    if (existing) {
+      if (existing.projectId !== agent.projectId || existing.hostDeviceId !== agent.hostDeviceId
+        || existing.name !== agent.name || existing.enabled !== 1) {
+        throw new Error("Agent ID was already used for a different definition");
+      }
+      return { agent, created: false };
+    }
+    const hostCount = db.query(`
+      SELECT COUNT(*) AS count FROM agents
+      WHERE project_id = ? AND host_device_id = ? AND enabled = 1
+    `).get(agent.projectId, agent.hostDeviceId) as { count: number };
+    if (Number(hostCount.count) >= 1) {
+      throw new Error("This client currently supports one enabled agent per project");
+    }
+    const projectCount = db.query(`
+      SELECT COUNT(*) AS count FROM agents WHERE project_id = ?
+    `).get(agent.projectId) as { count: number };
+    if (Number(projectCount.count) >= 128) throw new Error("Project agent limit reached");
+    db.query(`INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
+      VALUES (?, ?, ?, ?, 1, ?)`)
+      .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString());
+    db.query(`
+      INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
+      VALUES ('agent.created', ?, ?, ?, ?)
+    `).run(agent.hostDeviceId, agent.id, now.toISOString(), JSON.stringify({
+      projectId: agent.projectId,
+      name: agent.name,
+      hostDeviceId: agent.hostDeviceId,
+    }));
+    return { agent, created: true };
+  }).immediate();
 }
 
 export function listAgents(

@@ -590,6 +590,39 @@ describe("CoCodex protocol", () => {
       version: 1, type: "agent.list", requestId: crypto.randomUUID(), projectId,
     })).toMatchObject({ type: "agent.list", projectId });
     expect(() => agentListFrameSchema.parse({ ...frame, agents: [{ ...agent, extra: true }] })).toThrow();
+    const createdAgentId = crypto.randomUUID();
+    const create = {
+      version: 1 as const,
+      type: "agent.create" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      agentId: createdAgentId,
+      name: "Angela",
+      signature: "s".repeat(64),
+    };
+    expect(clientFrameSchema.parse(create)).toEqual(create);
+    expect(() => clientFrameSchema.parse({
+      ...create,
+      hostDeviceId: crypto.randomUUID(),
+    })).toThrow();
+    expect(() => clientFrameSchema.parse({
+      ...create,
+      workspaceRoot: "C:\\secret",
+    })).toThrow();
+    expect(projectServerFrameSchema.parse({
+      version: 1,
+      type: "agent.created",
+      requestId: create.requestId,
+      projectId,
+      agent: {
+        id: createdAgentId,
+        projectId,
+        name: "Angela",
+        hostDeviceId: agent.hostDeviceId,
+        enabled: true,
+      },
+      created: true,
+    })).toMatchObject({ type: "agent.created", created: true });
   });
   test("strictly validates task activity without carrying prompt content", () => {
     const projectId = crypto.randomUUID();

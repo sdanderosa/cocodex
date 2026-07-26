@@ -123,6 +123,15 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("agent.create"),
+    requestId,
+    projectId,
+    agentId: z.uuid(),
+    name: z.string().trim().min(1).max(120),
+    signature: z.string().min(64).max(256),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("agent.task.list"),
     requestId,
     projectId,
@@ -429,6 +438,21 @@ export const agentListFrameSchema = z.object({
   agents: z.array(agentViewSchema).max(128),
 }).strict();
 
+export const agentCreatedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("agent.created"),
+  requestId,
+  projectId,
+  agent: z.object({
+    id: z.uuid(),
+    projectId,
+    name: z.string().trim().min(1).max(120),
+    hostDeviceId: z.uuid(),
+    enabled: z.boolean(),
+  }).strict(),
+  created: z.boolean(),
+}).strict();
+
 export const agentTaskViewSchema = z.object({
   id: z.uuid(),
   projectId,
@@ -563,6 +587,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
   agentListFrameSchema,
+  agentCreatedFrameSchema,
   agentTaskListFrameSchema,
   agentExecutionAcceptedFrameSchema,
   projectContextResultFrameSchema,
@@ -615,6 +640,7 @@ export type ProjectMemberRemovedFrame = z.infer<typeof projectMemberRemovedFrame
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export type AgentView = z.infer<typeof agentViewSchema>;
 export type AgentListFrame = z.infer<typeof agentListFrameSchema>;
+export type AgentCreatedFrame = z.infer<typeof agentCreatedFrameSchema>;
 export type AgentTaskStatus = z.infer<typeof agentTaskStatusSchema>;
 export type AgentTaskView = z.infer<typeof agentTaskViewSchema>;
 export type AgentTaskListFrame = z.infer<typeof agentTaskListFrameSchema>;

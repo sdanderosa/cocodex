@@ -19,6 +19,7 @@ import { enrollClient } from "../src/cocodex/client";
 import { loadOrCreateClientIdentity } from "../src/cocodex/identity";
 import { clientPaths } from "../src/cocodex/paths";
 import { runJsonLineSession } from "../src/cocodex/session";
+import { loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
 import { trustDevice } from "../src/cocodex/trusted-devices";
 
 const roots: string[] = [];
@@ -55,23 +56,25 @@ class JsonSessionHarness {
   }> = [];
 
   constructor() {
-    this.output.setEncoding("utf8");
-    this.output.on("data", chunk => {
-      for (const line of String(chunk).split("\n")) {
-        if (!line.trim()) continue;
-        let value: Record<string, unknown>;
-        try { value = JSON.parse(line) as Record<string, unknown>; }
-        catch { continue; }
-        this.events.push(value);
-        for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
-          const waiter = this.waiters[index];
-          if (!waiter.predicate(value)) continue;
-          clearTimeout(waiter.timer);
-          this.waiters.splice(index, 1);
-          waiter.resolve(value);
+    for (const stream of [this.output, this.errors]) {
+      stream.setEncoding("utf8");
+      stream.on("data", chunk => {
+        for (const line of String(chunk).split("\n")) {
+          if (!line.trim()) continue;
+          let value: Record<string, unknown>;
+          try { value = JSON.parse(line) as Record<string, unknown>; }
+          catch { continue; }
+          this.events.push(value);
+          for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
+            const waiter = this.waiters[index];
+            if (!waiter.predicate(value)) continue;
+            clearTimeout(waiter.timer);
+            this.waiters.splice(index, 1);
+            waiter.resolve(value);
+          }
         }
-      }
-    });
+      });
+    }
   }
 
   send(command: Record<string, unknown>): void {
@@ -85,7 +88,7 @@ class JsonSessionHarness {
       const timer = setTimeout(() => {
         const index = this.waiters.findIndex(waiter => waiter.timer === timer);
         if (index >= 0) this.waiters.splice(index, 1);
-        reject(new Error("Timed out waiting for CoCodex session event"));
+        reject(new Error(`Timed out waiting for CoCodex session event; recent=${JSON.stringify(this.events.slice(-8))}`));
       }, timeoutMs);
       this.waiters.push({ predicate, resolve, reject, timer });
     });
@@ -400,4 +403,102 @@ describe("CoCodex encrypted project context session", () => {
     kai.close();
     await Promise.all([stephenRun, kaiRun]);
   }, 30_000);
+
+  test("configures a signed self-hosted agent and reconnects it as ready", async () => {
+    const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-server-"));
+    const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-client-"));
+    const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-trusted-"));
+    const repository = join(stephenRoot, "repository");
+    roots.push(serverRoot, stephenRoot, kaiRoot);
+    expect(Bun.spawnSync(["git", "init", "-b", "main", repository], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exitCode).toBe(0);
+
+    const paths = serverPaths(serverRoot);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths, "127.0.0.1");
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const stephenPaths = clientPaths(stephenRoot);
+    const stephenConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Stephen", stephenPaths);
+    const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(stephenConnection.deviceId) as { fingerprint: string };
+    expect(approveDevice(db, stephenRow.fingerprint)).toBeTrue();
+
+    const kaiPaths = clientPaths(kaiRoot);
+    const kaiConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Kai", kaiPaths);
+    const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(kaiConnection.deviceId) as { fingerprint: string };
+    expect(approveDevice(db, kaiRow.fingerprint)).toBeTrue();
+    const project = createProject(db, "Agent setup project", stephenConnection.deviceId);
+    addProjectMember(db, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
+    const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+
+    const stephen = new JsonSessionHarness();
+    const stephenRun = runJsonLineSession(stephenPaths, {
+      input: stephen.input,
+      output: stephen.output,
+      errorOutput: stephen.errors,
+    });
+    await stephen.waitFor(event => event.source === "session" && event.state === "connected", 25_000);
+    const configureId = crypto.randomUUID();
+    stephen.send({
+      id: configureId,
+      type: "agent.configure",
+      projectId: project.id,
+      name: "Lucas",
+      workspaceRoot: repository,
+      workspaceMode: "git-worktree",
+      trustedRequesterDeviceId: kaiConnection.deviceId,
+      trustedRequesterFingerprint: publicKeyFingerprint(kaiIdentity.publicKeyPem),
+    });
+    const configured = await stephen.waitFor(event =>
+      event.source === "agent-configuration" && event.id === configureId && event.configured === true, 25_000);
+    expect(configured).toMatchObject({ projectId: project.id, created: true });
+    const policy = loadLocalAgentPolicy(stephenPaths.agentPolicy);
+    expect(policy).toMatchObject({
+      projectId: project.id,
+      agentId: configured.agentId,
+      workspaceRoot: repository,
+      workspaceMode: "git-worktree",
+      accessProfile: "project-only",
+    });
+    await stephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "agent.ready.accepted", 25_000);
+    const rosterRequest = crypto.randomUUID();
+    stephen.send({ id: rosterRequest, type: "agent.list", projectId: project.id });
+    const roster = await stephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "agent.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === rosterRequest);
+    const rosterAgents = (roster.frame as Record<string, unknown>).agents as unknown[];
+    expect(rosterAgents).toEqual([
+      expect.objectContaining({
+        id: configured.agentId,
+        name: "Lucas",
+        hostDeviceId: stephenConnection.deviceId,
+        status: "available",
+      }),
+    ]);
+    expect(db.query("SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'agent.created'").get())
+      .toEqual({ count: 1 });
+
+    stephen.close();
+    await stephenRun;
+  }, 45_000);
 });

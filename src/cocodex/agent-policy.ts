@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
@@ -30,14 +31,22 @@ const policySchema = z.object({
 
 export type LocalAgentPolicy = z.infer<typeof policySchema>;
 
+export function validateLocalAgentPolicy(policy: LocalAgentPolicy): LocalAgentPolicy {
+  return policySchema.parse({ ...policy, workspaceRoot: resolve(policy.workspaceRoot) });
+}
+
 export function saveLocalAgentPolicy(path: string, policy: LocalAgentPolicy): LocalAgentPolicy {
-  const parsed = policySchema.parse({ ...policy, workspaceRoot: resolve(policy.workspaceRoot) });
+  const parsed = validateLocalAgentPolicy(policy);
   mkdirSync(dirname(path), { recursive: true });
   hardenSecretDir(dirname(path), { required: true });
-  writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(parsed, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
+    flag: "wx",
   });
+  hardenSecretPath(temporary, { required: true });
+  renameSync(temporary, path);
   hardenSecretPath(path, { required: true });
   return parsed;
 }

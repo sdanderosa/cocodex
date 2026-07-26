@@ -54,6 +54,13 @@ export interface AgentExecutionTranscriptInput {
   startedAt: string;
 }
 
+export interface AgentDefinitionTranscriptInput {
+  projectId: string;
+  agentId: string;
+  name: string;
+  hostDeviceId: string;
+}
+
 function lengthPrefix(value: string): Buffer {
   const data = Buffer.from(value, "utf8");
   const length = Buffer.allocUnsafe(4);
@@ -147,5 +154,16 @@ export function agentExecutionSigningTranscript(input: AgentExecutionTranscriptI
     input.baseCommit ?? "",
     input.mergeTarget ?? "",
     input.startedAt,
+  ]);
+}
+
+/** Host-device proof for creating its own server-authoritative named agent. */
+export function agentDefinitionSigningTranscript(input: AgentDefinitionTranscriptInput): Buffer {
+  return transcript("COCODEX-AGENT-DEFINITION", [
+    "1",
+    input.projectId,
+    input.agentId.trim(),
+    input.name.trim(),
+    input.hostDeviceId,
   ]);
 }

@@ -31,6 +31,7 @@ const ALLOWED_COMMANDS = new Set([
   "usage.get",
   "presence.update",
   "agent.request",
+  "agent.configure",
   "private.share",
   "agent.list",
   "agent.task.list",

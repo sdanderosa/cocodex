@@ -56,7 +56,7 @@ describe("CoCodex task Git worktrees", () => {
     try {
       git(root, "init", "-b", "main", repository);
       git(repository, "config", "user.name", "CoCodex Test");
-      git(repository, "config", "user.email", "cocodex@example.invalid");
+      git(repository, "config", "user.email", "cocodex@example.test");
       writeFileSync(join(repository, "README.md"), "base\n");
       git(repository, "add", "README.md");
       git(repository, "commit", "-m", "base");
@@ -127,7 +127,7 @@ describe("CoCodex task Git worktrees", () => {
     try {
       git(root, "init", "-b", "main", repository);
       git(repository, "config", "user.name", "CoCodex Test");
-      git(repository, "config", "user.email", "cocodex@example.invalid");
+      git(repository, "config", "user.email", "cocodex@example.test");
       writeFileSync(join(repository, "README.md"), "base\n");
       git(repository, "add", "README.md");
       git(repository, "commit", "-m", "base");

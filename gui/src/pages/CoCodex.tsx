@@ -164,6 +164,7 @@ interface SessionValue {
   fullComputerEnabled?: boolean;
   accessProfile?: "project-only" | "full-computer";
   workspaceMode?: "shared" | "git-worktree";
+  configured?: boolean;
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
@@ -297,6 +298,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [artifactSummary, setArtifactSummary] = useState("");
   const [artifactContent, setArtifactContent] = useState("");
   const [agentId, setAgentId] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentWorkspace, setAgentWorkspace] = useState("");
+  const [agentWorkspaceMode, setAgentWorkspaceMode] = useState<"shared" | "git-worktree">("git-worktree");
+  const [trustedRequesterDeviceId, setTrustedRequesterDeviceId] = useState("");
+  const [trustedRequesterFingerprint, setTrustedRequesterFingerprint] = useState("");
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [recipientDeviceId, setRecipientDeviceId] = useState("");
@@ -370,6 +376,10 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             ? { agentAccessProfile: value.accessProfile }
             : {}),
         } : previous);
+      }
+      if (value?.source === "agent-configuration" && value.configured) {
+        setNotice(t("cocodex.agent.setup.saved"));
+        void loadStatus();
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
@@ -449,7 +459,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           : [...previous, privateMessage]);
       }
     }
-  }, [ensurePromptDocument, projectId, t]);
+  }, [ensurePromptDocument, loadStatus, projectId, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -618,6 +628,32 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const configureAgent = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!projectId) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "agent.configure",
+        projectId,
+        name: agentName.trim(),
+        workspaceRoot: agentWorkspace.trim(),
+        workspaceMode: agentWorkspaceMode,
+        sandbox: "workspace-write",
+        accessProfile: "project-only",
+        approvalMode: "trusted-device",
+        trustedRequesterDeviceId: trustedRequesterDeviceId.trim(),
+        trustedRequesterFingerprint: trustedRequesterFingerprint.trim(),
+      });
+      setNotice(t("cocodex.agent.setup.pending"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -853,6 +889,28 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                     }}>{t(status.agentFullComputerEnabled ? "cocodex.agent.fullComputer.disable" : "cocodex.agent.fullComputer.enable")}</button>}
                 </div>
               </div>}
+              {!status.agentConfigured && projectId && <form className="cocodex-agent-setup" onSubmit={configureAgent}>
+                <strong>{t("cocodex.agent.setup.title")}</strong>
+                <small>{t("cocodex.agent.setup.subtitle")}</small>
+                <input className="input" value={agentName} onChange={event => setAgentName(event.target.value)}
+                  placeholder={t("cocodex.agent.setup.name")} required maxLength={120} />
+                <input className="input" value={agentWorkspace} onChange={event => setAgentWorkspace(event.target.value)}
+                  placeholder={t("cocodex.agent.setup.workspace")} required />
+                <select className="input" value={agentWorkspaceMode}
+                  onChange={event => setAgentWorkspaceMode(event.target.value as "shared" | "git-worktree")}>
+                  <option value="git-worktree">{t("cocodex.agent.setup.worktree")}</option>
+                  <option value="shared">{t("cocodex.agent.setup.shared")}</option>
+                </select>
+                <input className="input cocodex-key-input" value={trustedRequesterDeviceId}
+                  onChange={event => setTrustedRequesterDeviceId(event.target.value)}
+                  placeholder={t("cocodex.agent.setup.device")} required />
+                <input className="input cocodex-key-input" value={trustedRequesterFingerprint}
+                  onChange={event => setTrustedRequesterFingerprint(event.target.value)}
+                  placeholder={t("cocodex.agent.setup.fingerprint")} required />
+                <button className="btn btn-ghost" disabled={busy || status.state !== "connected"}>
+                  {t("cocodex.agent.setup.action")}
+                </button>
+              </form>}
             </div>
           </aside>
 
@@ -927,10 +985,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               {!chat.length && <div className="cocodex-empty">{t("cocodex.chat.empty")}</div>}
             </div>
             <form className="cocodex-composer" onSubmit={sendPrompt}>
-              <input className="input cocodex-agent-input" value={agentId}
-                onChange={event => setAgentId(event.target.value)} placeholder={t("cocodex.agent.placeholder")} />
+              <select className="input cocodex-agent-input" value={agentId}
+                onChange={event => setAgentId(event.target.value)}>
+                <option value="">{t("cocodex.agent.placeholder")}</option>
+                {visibleAgents.filter(agent => agent.enabled).map(agent =>
+                  <option key={agent.id} value={agent.id}>{agent.name} · {agent.hostDisplayName}</option>)}
+              </select>
               <textarea className="input" value={draft} onChange={event => setDraft(event.target.value)}
-                placeholder={agentId ? t("cocodex.composer.agent", { agent: agentId }) : t("cocodex.composer.chat")} rows={3}
+                placeholder={agentId
+                  ? t("cocodex.composer.agent", { agent: visibleAgents.find(agent => agent.id === agentId)?.name ?? agentId })
+                  : t("cocodex.composer.chat")} rows={3}
                 disabled={status.state !== "connected"} />
               <button className="btn btn-primary" disabled={!draft.trim() || status.state !== "connected"}>
                 {agentId ? <><IconBot /> {t("cocodex.agent.run")}</> : t("cocodex.send")}

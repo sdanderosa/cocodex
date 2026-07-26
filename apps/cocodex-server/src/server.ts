@@ -7,6 +7,7 @@ import {
   decodeInvitation,
   enrollmentClaimSchema,
   agentListFrameSchema,
+  agentCreatedFrameSchema,
   agentExecutionAcceptedFrameSchema,
   agentTaskListFrameSchema,
   projectKeyRotationRequiredFrameSchema,
@@ -19,7 +20,7 @@ import {
   presenceUpdateFrameSchema,
   websocketAuthTranscript,
 } from "@cocodex/protocol";
-import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks } from "./agent-routing";
+import { appendAgentResult, cancelAgentTask, createAgentForHost, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks } from "./agent-routing";
 import { acceptAgentExecutionReport } from "./agent-execution";
 import {
   appendEncryptedAgentResult,
@@ -642,8 +643,17 @@ export function startCoCodexServer(
             if (!message.agentId && registeredAgents.length > 1) {
               throw new Error("Agent ID is required when a device hosts multiple agents");
             }
+            const readyAgentId = message.agentId ?? registeredAgents[0];
+            for (const candidate of sockets) {
+              if (candidate !== socket
+                && candidate.data.authenticatedDeviceId === deviceId
+                && candidate.data.agentReady
+                && candidate.data.agentId === readyAgentId) {
+                candidate.close(4009, "Agent ready lease replaced by a newer local session");
+              }
+            }
             socket.data.agentReady = true;
-            socket.data.agentId = message.agentId ?? registeredAgents[0];
+            socket.data.agentId = readyAgentId;
             for (const task of pendingAgentTasks(db, deviceId, new Date(), socket.data.agentId)) {
               socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
             }
@@ -677,6 +687,24 @@ export function startCoCodexServer(
               requestId,
               projectId: message.projectId,
               agents,
+            })));
+            return;
+          }
+          if (message.type === "agent.create") {
+            const result = createAgentForHost(db, {
+              id: message.agentId,
+              projectId: message.projectId,
+              hostDeviceId: deviceId,
+              name: message.name,
+              signature: message.signature,
+            });
+            socket.send(JSON.stringify(agentCreatedFrameSchema.parse({
+              version: 1,
+              type: "agent.created",
+              requestId,
+              projectId: message.projectId,
+              agent: result.agent,
+              created: result.created,
             })));
             return;
           }

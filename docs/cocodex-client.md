@@ -112,6 +112,18 @@ grant: a task still requires the full signed server route and local host policy
 checks. Persistent activity history, dependency-graph editing, co-agents, and
 full computer/browser helpers remain later requirements (ADR 0018).
 
+The CoCodex page can now create the first agent hosted by this Client. Select a
+Co-Project and enter its display name, the canonical local repository root,
+workspace mode, and the trusted requester's device ID/fingerprint. The Client
+preflights those local values, signs a self-hosted definition, waits for Server
+acceptance, commits the local policy, and reconnects as ready. The Server never
+receives the workspace path, sandbox, or access profile. The composer selects
+agents from the verified roster instead of accepting a typed internal ID.
+
+This setup currently supports one enabled local agent per project. It does not
+yet provide the multi-policy runtime store needed to host Lucas and Angela
+concurrently from one Client. See ADR 0025.
+
 The client also subscribes to `agent.task.list`. Its activity cards show the
 server-derived task status, dependency count, event count, and whether the
 task uses an encrypted project envelope. Prompt and result bodies continue to

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentExecutionSigningTranscript, agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
-import { createAgentTask, listAgentTasks, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
+import { agentDefinitionSigningTranscript, agentExecutionSigningTranscript, agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
+import { createAgentForHost, createAgentTask, listAgentTasks, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
 import { acceptAgentExecutionReport } from "../src/agent-execution";
 import { appendEncryptedAgentResult, cancelEncryptedAgentTask, createEncryptedAgentTask, pendingEncryptedAgentTasks } from "../src/encrypted-agent-routing";
 import { openDatabase } from "../src/database";
@@ -56,6 +56,66 @@ function contentEnvelope(projectId: string, sender: ReturnType<typeof device>, r
 }
 
 describe("authoritative agent dependencies", () => {
+  test("self-registers one signed host agent idempotently and audits once", () => {
+    const db = openDatabase(":memory:");
+    const now = new Date("2027-01-01T00:00:00.000Z");
+    try {
+      const stephen = device(db, "Stephen", now);
+      const kai = device(db, "Kai", now);
+      const project = createProject(db, "Agent setup", stephen.id, now);
+      addProjectMember(db, project.id, stephen.id, kai.id, now);
+      const id = randomUUID();
+      const definition = {
+        projectId: project.id,
+        agentId: id,
+        name: "Lucas",
+        hostDeviceId: stephen.id,
+      };
+      const signature = sign(
+        null,
+        agentDefinitionSigningTranscript(definition),
+        stephen.privateKey,
+      ).toString("base64url");
+      const input = { id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas", signature };
+      expect(createAgentForHost(db, input, now)).toEqual({
+        agent: { id, projectId: project.id, hostDeviceId: stephen.id, name: "Lucas", enabled: true },
+        created: true,
+      });
+      expect(createAgentForHost(db, input, now).created).toBeFalse();
+      expect(db.query("SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'agent.created'").get())
+        .toEqual({ count: 1 });
+      expect(() => createAgentForHost(db, {
+        ...input,
+        name: "Spoofed",
+        signature: sign(null, agentDefinitionSigningTranscript({
+          ...definition,
+          name: "Spoofed",
+        }), stephen.privateKey).toString("base64url"),
+      }, now))
+        .toThrow("different definition");
+      const secondId = randomUUID();
+      expect(() => createAgentForHost(db, {
+        id: secondId,
+        projectId: project.id,
+        hostDeviceId: stephen.id,
+        name: "Angela",
+        signature: sign(null, agentDefinitionSigningTranscript({
+          projectId: project.id,
+          agentId: secondId,
+          name: "Angela",
+          hostDeviceId: stephen.id,
+        }), stephen.privateKey).toString("base64url"),
+      }, now)).toThrow("one enabled agent");
+      expect(() => createAgentForHost(db, {
+        ...input,
+        id: randomUUID(),
+        hostDeviceId: kai.id,
+      }, now)).toThrow("signature");
+    } finally {
+      db.close();
+    }
+  });
+
   test("accepts only the assigned host's signed and immutable workspace report", () => {
     const db = openDatabase(":memory:");
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-execution-"));

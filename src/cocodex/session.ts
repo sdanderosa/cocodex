@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, sign } from "node:crypto";
 import {
+  agentDefinitionSigningTranscript,
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
   privateServerFrameSchema,
@@ -11,14 +12,16 @@ import {
   type EncryptedAgentTask,
   type ChatEvent,
 } from "@cocodex/protocol";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { parse as parsePath } from "node:path";
 import { createInterface } from "node:readline";
 import { attachLocalAgentBridge, type LocalAgentBridgeHandle } from "./agent-bridge";
-import { loadLocalAgentPolicy } from "./agent-policy";
+import { loadLocalAgentPolicy, saveLocalAgentPolicy, validateLocalAgentPolicy } from "./agent-policy";
 import {
   emergencyStopAgent,
   loadAgentSafety,
   resumeAgent,
+  saveAgentSafety,
   setFullComputerEnabled,
   type LocalAgentSafetyState,
 } from "./agent-safety";
@@ -152,6 +155,21 @@ export async function runJsonLineSession(
     keyEpoch: 1;
     frame: Record<string, unknown>;
     commandId: string;
+  }>();
+  const pendingAgentConfigurations = new Map<string, {
+    commandId: string;
+    projectId: string;
+    agentId: string;
+    name: string;
+    workspaceRoot: string;
+    workspaceMode: "shared" | "git-worktree";
+    sandbox: "read-only" | "workspace-write";
+    accessProfile: "project-only" | "full-computer";
+    fullComputerOptIn: boolean;
+    approvalMode: "trusted-device" | "always";
+    trustedRequesterDeviceId: string;
+    trustedRequesterFingerprint: string;
+    frame: Record<string, unknown>;
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
@@ -1114,7 +1132,8 @@ export async function runJsonLineSession(
       let frame: Record<string, any>;
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
-      if (frame.type === "agent.list.result" || frame.type === "agent.task.list.result"
+      if (frame.type === "agent.list.result" || frame.type === "agent.created"
+        || frame.type === "agent.task.list.result"
         || frame.type === "project.key.initialized"
         || frame.type === "project.key.rotation-required"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
@@ -1133,6 +1152,16 @@ export async function runJsonLineSession(
         }
       }
       if (frame.type === "error" && typeof frame.requestId === "string") {
+        const pendingAgent = pendingAgentConfigurations.get(frame.requestId);
+        if (pendingAgent) {
+          pendingAgentConfigurations.delete(frame.requestId);
+          emit({
+            source: "control",
+            id: pendingAgent.commandId,
+            ok: false,
+            error: String(frame.error ?? "Agent configuration failed"),
+          });
+        }
         const pending = pendingProjectKeyInitializations.get(frame.requestId);
         if (pending) {
           pendingProjectKeyInitializations.delete(frame.requestId);
@@ -1314,6 +1343,66 @@ export async function runJsonLineSession(
         || frame.type === "project.context.updated"
         || frame.type === "project.context.changed") {
         openEncryptedProjectContext(frame);
+      } else if (frame.type === "agent.created" && typeof frame.requestId === "string") {
+        const pending = pendingAgentConfigurations.get(frame.requestId);
+        if (pending) {
+          const returned = frame.agent as Record<string, unknown> | undefined;
+          if (!returned || returned.id !== pending.agentId || returned.projectId !== pending.projectId
+            || returned.hostDeviceId !== connection.deviceId || returned.name !== pending.name) {
+            pendingAgentConfigurations.delete(frame.requestId);
+            emitError({
+              source: "agent-configuration",
+              id: pending.commandId,
+              error: "Server returned a mismatched agent definition",
+            });
+          } else {
+            try {
+              const policy = validateLocalAgentPolicy({
+                version: 1,
+                projectId: pending.projectId,
+                agentId: pending.agentId,
+                workspaceRoot: pending.workspaceRoot,
+                workspaceMode: pending.workspaceMode,
+                sandbox: pending.sandbox,
+                accessProfile: pending.accessProfile,
+                fullComputerOptIn: pending.fullComputerOptIn,
+                approvalMode: pending.approvalMode,
+                trustedRequesterFingerprints: {
+                  [pending.trustedRequesterDeviceId]: pending.trustedRequesterFingerprint,
+                },
+              });
+              // Write supporting state first; the policy is the final marker
+              // that makes the local agent discoverable on the next connect.
+              trustDevice(paths.trustedDevices, pending.trustedRequesterDeviceId, pending.trustedRequesterFingerprint);
+              saveAgentSafety(paths.agentSafety, {
+                executionEnabled: true,
+                fullComputerEnabled: false,
+                reason: policy.accessProfile === "full-computer"
+                  ? "Full-computer access requires a separate local enable action."
+                  : undefined,
+              });
+              saveLocalAgentPolicy(paths.agentPolicy, policy);
+              pendingAgentConfigurations.delete(frame.requestId);
+              emit({
+                source: "agent-configuration",
+                id: pending.commandId,
+                configured: true,
+                projectId: pending.projectId,
+                agentId: pending.agentId,
+                created: frame.created === true,
+              });
+              // Reconnect through the normal supervisor so the newly persisted
+              // host policy is loaded before this client announces agent.ready.
+              setTimeout(() => connected.close(1012, "Local agent configuration changed"), 0);
+            } catch (error) {
+              emitError({
+                source: "agent-configuration",
+                id: pending.commandId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
       }
       if ((frame.type === "context.result" || frame.type === "context.updated" || frame.type === "context.changed")
         && frame.context && typeof frame.context === "object" && !Array.isArray(frame.context)) {
@@ -1329,6 +1418,10 @@ export async function runJsonLineSession(
       emit({ source: "server", frame });
     };
     connected.addEventListener("message", listener);
+    for (const pending of pendingAgentConfigurations.values()) {
+      try { send(pending.frame); }
+      catch { /* the connection supervisor will replay the exact signed create */ }
+    }
     for (const pending of pendingProjectKeyInitializations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will retry on its next cycle */ }
@@ -1502,6 +1595,86 @@ export async function runJsonLineSession(
         }
         if (command.type === "project.list") {
           send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
+        } else if (command.type === "agent.configure") {
+          const projectId = String(command.projectId);
+          const name = String(command.name ?? "").trim();
+          const workspaceRoot = String(command.workspaceRoot ?? "").trim();
+          const workspaceMode = command.workspaceMode === "shared" ? "shared" : "git-worktree";
+          const sandbox = command.sandbox === "read-only" ? "read-only" : "workspace-write";
+          const accessProfile = command.accessProfile === "full-computer" ? "full-computer" : "project-only";
+          const fullComputerOptIn = command.fullComputerOptIn === true;
+          const approvalMode = command.approvalMode === "always" ? "always" : "trusted-device";
+          const trustedRequesterDeviceId = String(command.trustedRequesterDeviceId ?? "");
+          const trustedRequesterFingerprint = String(command.trustedRequesterFingerprint ?? "").trim();
+          if (!workspaceRoot) throw new Error("Agent workspace is required");
+          if (accessProfile === "full-computer" && !fullComputerOptIn) {
+            throw new Error("Full-computer access requires explicit local confirmation");
+          }
+          const canonicalWorkspace = realpathSync(workspaceRoot);
+          if (!statSync(canonicalWorkspace).isDirectory()) throw new Error("Agent workspace must be a directory");
+          if (parsePath(canonicalWorkspace).root === canonicalWorkspace || canonicalWorkspace.startsWith("\\\\")) {
+            throw new Error("Agent workspace cannot be a drive root or network path");
+          }
+          if (workspaceMode === "git-worktree") {
+            const git = Bun.spawnSync(["git", "-C", canonicalWorkspace, "rev-parse", "--show-toplevel"], {
+              stdout: "pipe",
+              stderr: "ignore",
+            });
+            if (git.exitCode !== 0) throw new Error("Git-worktree mode requires a Git repository");
+            const gitRoot = realpathSync(new TextDecoder().decode(git.stdout).trim());
+            if (gitRoot !== canonicalWorkspace) {
+              throw new Error("Git-worktree mode requires the repository root, not a subdirectory");
+            }
+          }
+          const agentId = String(command.agentId ?? randomUUID());
+          const policy = validateLocalAgentPolicy({
+            version: 1,
+            projectId,
+            agentId,
+            workspaceRoot: canonicalWorkspace,
+            workspaceMode,
+            sandbox,
+            accessProfile,
+            fullComputerOptIn,
+            approvalMode,
+            trustedRequesterFingerprints: { [trustedRequesterDeviceId]: trustedRequesterFingerprint },
+          });
+          const requestId = controlRequestId(command.id);
+          const frame = {
+            version: 1,
+            type: "agent.create",
+            requestId,
+            projectId,
+            agentId: policy.agentId,
+            name,
+            signature: sign(null, agentDefinitionSigningTranscript({
+              projectId,
+              agentId: policy.agentId,
+              name,
+              hostDeviceId: connection.deviceId,
+            }), identity.privateKeyPem).toString("base64url"),
+          } as const;
+          pendingAgentConfigurations.set(requestId, {
+            commandId: String(command.id ?? requestId),
+            projectId,
+            agentId: policy.agentId,
+            name,
+            workspaceRoot: policy.workspaceRoot,
+            workspaceMode,
+            sandbox,
+            accessProfile,
+            fullComputerOptIn,
+            approvalMode,
+            trustedRequesterDeviceId,
+            trustedRequesterFingerprint,
+            frame,
+          });
+          try {
+            send(frame);
+          } catch (error) {
+            pendingAgentConfigurations.delete(requestId);
+            throw error;
+          }
         } else if (command.type === "agent.list") {
           const projectId = String(command.projectId);
           agentSubscriptions.add(projectId);

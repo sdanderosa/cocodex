@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import * as Y from "yjs";
 import {
+  agentDefinitionSigningTranscript,
   agentRequestSigningTranscript,
   decodeInvitation,
   enrollmentSigningTranscript,
@@ -192,6 +193,77 @@ function usageReport(deviceId: string, revision = 1): UsageReport {
 }
 
 describe("authenticated WSS collaboration", () => {
+  test("creates a signed self-hosted agent over WSS and rejects spoofed authority", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const outsider = approvedDevice(db, fingerprint, "Outsider");
+    const project = createProject(db, "Agent setup", stephen.id);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false);
+    const outsiderSocket = await connect(server.port, outsider, fingerprint, false);
+    const agentId = randomUUID();
+    const name = "Lucas";
+    const requestId = randomUUID();
+    const definition = { projectId: project.id, agentId, name, hostDeviceId: stephen.id };
+    const created = nextFrame(stephenSocket, "agent.created");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.create",
+      requestId,
+      projectId: project.id,
+      agentId,
+      name,
+      signature: sign(null, agentDefinitionSigningTranscript(definition), stephen.privateKey).toString("base64url"),
+    }));
+    expect(await created).toMatchObject({
+      requestId,
+      projectId: project.id,
+      created: true,
+      agent: { id: agentId, hostDeviceId: stephen.id, name },
+    });
+    const replay = nextFrame(stephenSocket, "agent.created");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.create",
+      requestId: randomUUID(),
+      projectId: project.id,
+      agentId,
+      name,
+      signature: sign(null, agentDefinitionSigningTranscript(definition), stephen.privateKey).toString("base64url"),
+    }));
+    expect((await replay).created).toBeFalse();
+    const outsiderError = nextFrame(outsiderSocket, "agent.created");
+    const outsiderAgentId = randomUUID();
+    outsiderSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.create",
+      requestId: randomUUID(),
+      projectId: project.id,
+      agentId: outsiderAgentId,
+      name: "Imposter",
+      signature: sign(null, agentDefinitionSigningTranscript({
+        projectId: project.id,
+        agentId: outsiderAgentId,
+        name: "Imposter",
+        hostDeviceId: outsider.id,
+      }), outsider.privateKey).toString("base64url"),
+    }));
+    await expect(outsiderError).rejects.toThrow("approved project member");
+    expect(db.query("SELECT host_device_id AS hostDeviceId FROM agents WHERE id = ?").get(agentId))
+      .toEqual({ hostDeviceId: stephen.id });
+  });
+
   test("two members share authoritative chat order and recover history by cursor", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-collaboration-"));
     roots.push(root);
