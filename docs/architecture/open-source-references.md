@@ -46,16 +46,20 @@ reviewed again before release.
   bounds, transactional replay-index insertion, a durable client cursor and
   bounded receipt/deferred-ciphertext sets, retry after trust/key recovery,
   self-sent delivery accounting, sender-visible delivered/read receipts with
-  an independent recovery cursor, and an active authorization-revocation sweep. The
+  an independent recovery cursor, a bounded ciphertext-only local timeline for
+  sender echo/restart replay/local search, and an active
+  authorization-revocation sweep. The
   evaluated official Apache-2.0 Matrix bindings are not silently substituted
   until a supported Bun/package persistence path exists. Do not claim forward
   secrecy, rotation, or full multi-device messaging; do not invent a cipher or
   use AGPL libsignal in an MIT-only build. The exact boundary and migration
-  conditions are recorded in ADR 0014, ADR 0022, and ADR 0034. Receipt metadata
+  conditions are recorded in ADR 0014, ADR 0022, ADR 0034, and ADR 0035.
+  Receipt metadata
   uses the authenticated WSS session and server-side recipient binding; it is
-  not a second cryptographic protocol. Decrypted private text
-  remains resident-only and enters an agent context only through the explicit
-  signed/encrypted `private.share` path.
+  not a second cryptographic protocol. Decrypted private text exists only in
+  the resident process; disk history contains self/recipient sealed ciphertext
+  and enters an agent context only through the explicit signed/encrypted
+  `private.share` path.
 - **Project content:** use a separate X25519 project-wrap keypair and random
   per-project keys. Owner-signed sealed key envelopes and XChaCha20-Poly1305
   content envelopes keep the server blind to the shipped Final Goal/context,

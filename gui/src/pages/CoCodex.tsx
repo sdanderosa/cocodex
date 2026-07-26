@@ -56,7 +56,11 @@ interface PrivateMessage {
   senderDeviceId: string;
   recipientDeviceId: string;
   text: string;
+  clientCreatedAt?: string;
   acceptedAt?: string;
+  serverSequence?: number;
+  direction?: "sent" | "received";
+  restored?: boolean;
 }
 
 interface PrivateReceipt {
@@ -409,7 +413,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
-  const [privateReceipts, setPrivateReceipts] = useState<Record<string, "delivered" | "read">>({});
+  const [privateReceipts, setPrivateReceipts] = useState<Record<string, "sent" | "delivered" | "read">>({});
+  const [privateSearch, setPrivateSearch] = useState("");
   const [presence, setPresence] = useState<PresenceMember[]>([]);
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
   const [draft, setDraft] = useState("");
@@ -645,10 +650,19 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (value?.source === "private" && privateMessage?.text) {
         setPrivateReceipts(previous => previous[privateMessage.messageId]
           ? previous
-          : { ...previous, [privateMessage.messageId]: "delivered" });
-        setPrivateMessages(previous => previous.some(item => item.messageId === privateMessage.messageId)
-          ? previous
-          : [...previous, privateMessage]);
+          : {
+            ...previous,
+            [privateMessage.messageId]: privateMessage.direction === "sent" ? "sent" : "delivered",
+          });
+        setPrivateMessages(previous => {
+          const byId = new Map(previous.map(item => [item.messageId, item]));
+          byId.set(privateMessage.messageId, { ...byId.get(privateMessage.messageId), ...privateMessage });
+          return [...byId.values()].sort((left, right) =>
+            (left.serverSequence ?? Number.MAX_SAFE_INTEGER) - (right.serverSequence ?? Number.MAX_SAFE_INTEGER)
+            || String(left.clientCreatedAt ?? left.acceptedAt ?? "").localeCompare(
+              String(right.clientCreatedAt ?? right.acceptedAt ?? ""),
+            ) || left.messageId.localeCompare(right.messageId));
+        });
       }
       if (value?.source === "private-receipt" && value.receipt?.messageId) {
         setPrivateReceipts(previous => {
@@ -1057,6 +1071,10 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
+  const normalizedPrivateSearch = privateSearch.trim().toLocaleLowerCase();
+  const visiblePrivateMessages = normalizedPrivateSearch
+    ? privateMessages.filter(message => message.text.toLocaleLowerCase().includes(normalizedPrivateSearch))
+    : privateMessages;
 
   return (
     <div className="cocodex-page">
@@ -1506,24 +1524,36 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <div><strong>{t("cocodex.private.title")}</strong><small>{t("cocodex.private.encrypted")}</small></div>
               <IconLock />
             </div>
+            <input
+              className="input"
+              type="search"
+              value={privateSearch}
+              onChange={event => setPrivateSearch(event.target.value)}
+              placeholder={t("cocodex.private.search")}
+              aria-label={t("cocodex.private.search")}
+            />
             <div className="cocodex-private-list">
-              {privateMessages.map(message => (
+              {visiblePrivateMessages.map(message => (
                 <article key={message.messageId}>
                   <strong>{message.senderDeviceId === status.deviceId ? t("cocodex.you") : message.senderDeviceId.slice(0, 8)}</strong>
                   <p>{message.text}</p>
                   {privateReceipts[message.messageId] && <small>
                     {privateReceipts[message.messageId] === "read"
                       ? t("cocodex.private.read")
-                      : t("cocodex.private.delivered")}
+                      : privateReceipts[message.messageId] === "delivered"
+                        ? t("cocodex.private.delivered")
+                        : t("cocodex.private.sent")}
                   </small>}
                   {message.recipientDeviceId === status.deviceId && privateReceipts[message.messageId] !== "read" &&
-                    <button className="btn btn-ghost" type="button" disabled={status.state !== "connected"}
+                    <button className="btn btn-ghost" type="button" disabled={!status.running}
                       onClick={() => void markPrivateRead(message)}>{t("cocodex.private.markRead")}</button>}
                   <button className="btn btn-ghost" type="button" disabled={status.state !== "connected" || !agentId.trim()}
                     onClick={() => void sharePrivate(message)}>{t("cocodex.private.share")}</button>
                 </article>
               ))}
-              {!privateMessages.length && <p className="muted">{t("cocodex.private.empty")}</p>}
+              {!visiblePrivateMessages.length && <p className="muted">
+                {privateMessages.length ? t("cocodex.private.noSearchResults") : t("cocodex.private.empty")}
+              </p>}
             </div>
             <form className="cocodex-private-form" onSubmit={sendPrivate}>
               <input className="input" value={recipientDeviceId} onChange={event => setRecipientDeviceId(event.target.value)}
@@ -1534,7 +1564,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 placeholder={t("cocodex.private.key")} required rows={3} />
               <textarea className="input" value={privateDraft} onChange={event => setPrivateDraft(event.target.value)}
                 placeholder={t("cocodex.private.message")} required rows={2} />
-              <button className="btn btn-ghost" disabled={status.state !== "connected"}>{t("cocodex.private.send")}</button>
+              <button className="btn btn-ghost" disabled={!status.running}>{t("cocodex.private.send")}</button>
             </form>
           </aside>
         </div>

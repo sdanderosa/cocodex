@@ -45,7 +45,7 @@ import {
   loadOrCreateClientIdentity,
   verifyDeviceKeyCertificate,
 } from "./identity";
-import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox } from "./outbox";
+import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox, queuedEvents } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { prepareTaskWorkspace } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
@@ -61,6 +61,16 @@ import {
   type PrivateMailboxRemoteReceipt,
   type PrivateMailboxState,
 } from "./private-mailbox";
+import {
+  acknowledgePrivateHistoryEntry,
+  loadPrivateHistory,
+  markPrivateHistoryEntryQueued,
+  reconcileStagedPrivateHistory,
+  recordPrivateHistoryEntry,
+  savePrivateHistory,
+  type PrivateHistoryEntry,
+  type PrivateHistoryState,
+} from "./private-history";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 import { loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
 import {
@@ -218,6 +228,14 @@ export async function runJsonLineSession(
   const agentTaskSubscriptions = new Set<string>();
   const legacyContextSnapshots = new Map<string, { revision: number; finalGoal: string; context: Record<string, unknown> }>();
   let privateMailbox: PrivateMailboxState = loadPrivateMailbox(paths.privateMailbox, connection.deviceId);
+  let privateHistory: PrivateHistoryState = loadPrivateHistory(paths.privateHistory, connection.deviceId);
+  privateHistory = reconcileStagedPrivateHistory(
+    privateHistory,
+    new Set(queuedEvents(paths)
+      .filter(event => event.type === "private.send")
+      .map(event => event.messageId)),
+  );
+  savePrivateHistory(paths.privateHistory, privateHistory);
   let privateCursor = privateMailbox.cursor;
   let privateReceiptCursor = privateMailbox.receiptCursor;
   let privateProcessing = Promise.resolve();
@@ -233,6 +251,8 @@ export async function runJsonLineSession(
     senderDeviceId: string;
     recipientDeviceId: string;
     clientCreatedAt: string;
+    acceptedAt: string | null;
+    serverSequence: number | null;
   }>();
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
@@ -738,12 +758,98 @@ export async function runJsonLineSession(
     savePrivateMailbox(paths.privateMailbox, privateMailbox);
   };
 
+  const rememberDecryptedPrivateMessage = (
+    entry: Pick<PrivateHistoryEntry,
+      "messageId" | "senderDeviceId" | "recipientDeviceId" | "clientCreatedAt" | "acceptedAt" | "serverSequence">,
+    text: string,
+    restored: boolean,
+  ): void => {
+    decryptedPrivateMessages.set(entry.messageId, {
+      text,
+      senderDeviceId: entry.senderDeviceId,
+      recipientDeviceId: entry.recipientDeviceId,
+      clientCreatedAt: entry.clientCreatedAt,
+      acceptedAt: entry.acceptedAt,
+      serverSequence: entry.serverSequence,
+    });
+    while (decryptedPrivateMessages.size > 512) {
+      const oldest = decryptedPrivateMessages.keys().next().value;
+      if (typeof oldest !== "string") break;
+      decryptedPrivateMessages.delete(oldest);
+    }
+    emit({
+      source: "private",
+      message: {
+        messageId: entry.messageId,
+        senderDeviceId: entry.senderDeviceId,
+        recipientDeviceId: entry.recipientDeviceId,
+        clientCreatedAt: entry.clientCreatedAt,
+        ...(entry.acceptedAt ? { acceptedAt: entry.acceptedAt } : {}),
+        ...(entry.serverSequence ? { serverSequence: entry.serverSequence } : {}),
+        text,
+        direction: entry.senderDeviceId === connection.deviceId ? "sent" : "received",
+        restored,
+      },
+    });
+  };
+
+  const openPrivateHistoryEntry = async (entry: PrivateHistoryEntry, restored: boolean): Promise<void> => {
+    const expectedSenderFingerprint = entry.senderDeviceId === connection.deviceId
+      ? publicKeyFingerprint(identity.publicKeyPem)
+      : loadTrustedDevices(paths.trustedDevices)[entry.senderDeviceId];
+    if (!expectedSenderFingerprint) {
+      emitError({
+        source: "private-history",
+        messageId: entry.messageId,
+        error: `Private-history sender ${entry.senderDeviceId} is not trusted`,
+      });
+      return;
+    }
+    try {
+      const opened = await openSignedPrivateMessage(
+        entry.localCiphertext,
+        identity.messagingPrivateKeyPem,
+        identity.messagingPublicKeyPem,
+        entry,
+        expectedSenderFingerprint,
+      );
+      rememberDecryptedPrivateMessage(entry, opened.text, restored);
+    } catch (error) {
+      emitError({
+        source: "private-history",
+        messageId: entry.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const replayPrivateHistory = async (): Promise<void> => {
+    const ordered = [...privateHistory.entries].sort((left, right) =>
+      (left.serverSequence ?? Number.MAX_SAFE_INTEGER) - (right.serverSequence ?? Number.MAX_SAFE_INTEGER)
+      || left.clientCreatedAt.localeCompare(right.clientCreatedAt)
+      || left.messageId.localeCompare(right.messageId));
+    for (const entry of ordered) {
+      if (entry.deliveryState !== "staged") await openPrivateHistoryEntry(entry, true);
+    }
+  };
+
+  const replayPrivateReceipts = (): void => {
+    for (const receipt of privateMailbox.remoteReceipts) {
+      emit({ source: "private-receipt", receipt });
+    }
+  };
+
   const openPrivateEnvelope = async (message: PrivateMailboxMessage): Promise<void> => {
     if (hasPrivateMailboxReceipt(privateMailbox, message.messageId)) return;
     if (message.recipientDeviceId !== connection.deviceId) {
       // The mailbox also includes messages sent by this device. They are not
       // decryptable inbound deliveries, but still advance the durable cursor
       // so reconnects do not replay the sender's own history forever.
+      const acknowledged = acknowledgePrivateHistoryEntry(privateHistory, message);
+      if (acknowledged !== privateHistory) {
+        privateHistory = acknowledged;
+        savePrivateHistory(paths.privateHistory, privateHistory);
+      }
       privateMailbox = recordPrivateMailboxReceipt(privateMailbox, {
         messageId: message.messageId,
         sequence: message.sequence,
@@ -769,6 +875,18 @@ export async function runJsonLineSession(
         message,
         trusted,
       );
+      const historyEntry: PrivateHistoryEntry = {
+        messageId: message.messageId,
+        senderDeviceId: message.senderDeviceId,
+        recipientDeviceId: message.recipientDeviceId,
+        localCiphertext: message.ciphertext,
+        clientCreatedAt: message.clientCreatedAt,
+        deliveryState: "accepted",
+        serverSequence: message.sequence,
+        acceptedAt: message.acceptedAt,
+      };
+      privateHistory = recordPrivateHistoryEntry(privateHistory, historyEntry);
+      savePrivateHistory(paths.privateHistory, privateHistory);
       if (!queuePrivateReceipt(message.messageId, "delivered")) {
         throw new Error("Private delivery receipt could not be persisted");
       }
@@ -778,21 +896,7 @@ export async function runJsonLineSession(
       });
       privateCursor = privateMailbox.cursor;
       savePrivateMailbox(paths.privateMailbox, privateMailbox);
-      decryptedPrivateMessages.set(message.messageId, {
-        text: opened.text,
-        senderDeviceId: message.senderDeviceId,
-        recipientDeviceId: message.recipientDeviceId,
-        clientCreatedAt: message.clientCreatedAt,
-      });
-      while (decryptedPrivateMessages.size > 256) {
-        const oldest = decryptedPrivateMessages.keys().next().value;
-        if (typeof oldest !== "string") break;
-        decryptedPrivateMessages.delete(oldest);
-      }
-      emit({
-        source: "private",
-        message: { ...message, ciphertext: undefined, text: opened.text },
-      });
+      rememberDecryptedPrivateMessage(historyEntry, opened.text, false);
     } catch (error) {
       deferPrivateEnvelope(message);
       emitError({
@@ -1619,6 +1723,9 @@ export async function runJsonLineSession(
     startAgentWorker(policy, localAgentLegacyRuntime.get(policy.agentId) === true);
   }
 
+  await replayPrivateHistory();
+  replayPrivateReceipts();
+
   const session = maintainAuthenticatedClient(paths, async connected => {
     socket = connected;
     const listener = (event: MessageEvent) => {
@@ -1848,7 +1955,22 @@ export async function runJsonLineSession(
             error: error instanceof Error ? error.message : String(error),
           });
         });
-      } else if (frame.type === "private.accepted" || frame.type === "private.message") {
+      } else if (frame.type === "private.accepted") {
+        try {
+          const acknowledged = acknowledgePrivateHistoryEntry(privateHistory, frame.message);
+          if (acknowledged !== privateHistory) {
+            privateHistory = acknowledged;
+            savePrivateHistory(paths.privateHistory, privateHistory);
+          }
+        } catch (error) {
+          emitError({
+            source: "private-history",
+            messageId: frame.message.messageId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        queuePrivateEnvelope(frame.message);
+      } else if (frame.type === "private.message") {
         queuePrivateEnvelope(frame.message);
       } else if (frame.type === "private.receipt") {
         rememberPrivateReceipt(frame.receipt);
@@ -2910,7 +3032,10 @@ export async function runJsonLineSession(
           const fingerprint = String(command.fingerprint);
           trustDevice(paths.trustedDevices, deviceId, fingerprint);
           privateProcessing = privateProcessing
-            .then(retryDeferredPrivateMessages)
+            .then(async () => {
+              await retryDeferredPrivateMessages();
+              await replayPrivateHistory();
+            })
             .catch(error => {
               emitError({
                 source: "private",
@@ -2940,13 +3065,39 @@ export async function runJsonLineSession(
           if (!trustedFingerprint || trustedFingerprint !== certificate.fingerprint) {
             throw new Error("Recipient device key certificate does not match the trusted fingerprint");
           }
-          const ciphertext = await sealSignedPrivateMessage({
+          const plaintext = {
             messageId,
             senderDeviceId: connection.deviceId,
             recipientDeviceId,
             text: String(command.text),
             clientCreatedAt,
-          }, identity.privateKeyPem, identity.publicKeyPem, certificate.messagingPublicKeyPem);
+          };
+          const [ciphertext, localCiphertext] = await Promise.all([
+            sealSignedPrivateMessage(
+              plaintext,
+              identity.privateKeyPem,
+              identity.publicKeyPem,
+              certificate.messagingPublicKeyPem,
+            ),
+            sealSignedPrivateMessage(
+              plaintext,
+              identity.privateKeyPem,
+              identity.publicKeyPem,
+              identity.messagingPublicKeyPem,
+            ),
+          ]);
+          const historyEntry: PrivateHistoryEntry = {
+            messageId,
+            senderDeviceId: connection.deviceId,
+            recipientDeviceId,
+            localCiphertext,
+            clientCreatedAt,
+            deliveryState: "staged",
+            serverSequence: null,
+            acceptedAt: null,
+          };
+          privateHistory = recordPrivateHistoryEntry(privateHistory, historyEntry);
+          savePrivateHistory(paths.privateHistory, privateHistory);
           enqueueDurableEvent(paths, {
             version: 1,
             type: "private.send",
@@ -2956,6 +3107,9 @@ export async function runJsonLineSession(
             ciphertext,
             clientCreatedAt,
           });
+          privateHistory = markPrivateHistoryEntryQueued(privateHistory, messageId);
+          savePrivateHistory(paths.privateHistory, privateHistory);
+          rememberDecryptedPrivateMessage(historyEntry, plaintext.text, false);
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, messageId });
         } else {

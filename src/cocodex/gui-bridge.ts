@@ -40,6 +40,7 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
 ]);
 const SENSITIVE_RENDERER_KEYS = new Set([
   "ciphertext",
+  "localCiphertext",
   "sealedProjectKey",
   "projectWrapPublicKeyPem",
   "deviceKeyCertificate",
@@ -157,6 +158,25 @@ export interface CoCodexGuiStatus {
 function withoutSensitiveServerPayloads(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, any>;
+  if (record.source === "private" && record.message && typeof record.message === "object") {
+    const message = record.message as Record<string, unknown>;
+    return {
+      source: "private",
+      message: {
+        messageId: message.messageId,
+        senderDeviceId: message.senderDeviceId,
+        recipientDeviceId: message.recipientDeviceId,
+        text: message.text,
+        ...(typeof message.clientCreatedAt === "string" ? { clientCreatedAt: message.clientCreatedAt } : {}),
+        ...(typeof message.acceptedAt === "string" ? { acceptedAt: message.acceptedAt } : {}),
+        ...(typeof message.serverSequence === "number" ? { serverSequence: message.serverSequence } : {}),
+        ...(message.direction === "sent" || message.direction === "received"
+          ? { direction: message.direction }
+          : {}),
+        ...(typeof message.restored === "boolean" ? { restored: message.restored } : {}),
+      },
+    };
+  }
   const frame = record.frame;
   if (!frame || typeof frame !== "object") return value;
   if (frame.type === "project.key.result"

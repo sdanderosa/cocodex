@@ -31,6 +31,20 @@ describe("CoCodex GUI bridge", () => {
         frame: { type: "private.message", message: { messageId: "message", ciphertext: "secret-box" } },
       })}\n`);
       output.write(`${JSON.stringify({
+        source: "private",
+        message: {
+          messageId: "local-history-message",
+          senderDeviceId: "sender",
+          recipientDeviceId: "recipient",
+          text: "safe local history text",
+          clientCreatedAt: "2030-01-01T00:00:00.000Z",
+          direction: "sent",
+          restored: true,
+          localCiphertext: "LOCAL_HISTORY_CIPHERTEXT_CANARY",
+          signature: "LOCAL_HISTORY_SIGNATURE_CANARY",
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
         source: "server",
         frame: {
           type: "private.receipt",
@@ -217,6 +231,20 @@ describe("CoCodex GUI bridge", () => {
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");
+    const localHistoryEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.message?.messageId === "local-history-message");
+    expect(localHistoryEvent?.value).toEqual({
+      source: "private",
+      message: {
+        messageId: "local-history-message",
+        senderDeviceId: "sender",
+        recipientDeviceId: "recipient",
+        text: "safe local history text",
+        clientCreatedAt: "2030-01-01T00:00:00.000Z",
+        direction: "sent",
+        restored: true,
+      },
+    });
     const privateReceiptEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.receipt");
     expect(privateReceiptEvent?.value).toEqual({
@@ -269,6 +297,9 @@ describe("CoCodex GUI bridge", () => {
     expect(rendererEvents).not.toContain("SENDER_KEY_CANARY");
     expect(rendererEvents).not.toContain("SIGNATURE_FIELD_CANARY");
     expect(rendererEvents).not.toContain("TOKEN_FIELD_CANARY");
+    expect(rendererEvents).not.toContain("LOCAL_HISTORY_CIPHERTEXT_CANARY");
+    expect(rendererEvents).not.toContain("LOCAL_HISTORY_SIGNATURE_CANARY");
+    expect(rendererEvents).toContain("safe local history text");
     expect(rendererEvents).toContain("safe chat content");
     expect(rendererEvents).toContain("Unsupported server frame withheld");
   });

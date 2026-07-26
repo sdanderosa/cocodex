@@ -157,8 +157,9 @@ project agent:
 {"id":"share-1","type":"private.share","projectId":"PROJECT_ID","agentId":"lucas","messageId":"PRIVATE_MESSAGE_ID"}
 ```
 
-The command resolves only a message retained by the resident client, requires
-an encrypted project, and sends the resulting prompt through the existing
+The command resolves only a message decrypted into the resident client from
+live delivery or the protected ciphertext-only local history, requires an
+encrypted project, and sends the resulting prompt through the existing
 signed/encrypted agent route. The server records the explicit-share marker and
 opaque task/result envelopes, never the private text. A same-device task is
 accepted only with this explicit marker; ordinary same-device agent requests
@@ -171,6 +172,18 @@ Client queues a `delivered` receipt. The private panel exposes an explicit
 receipt before local decryption. Receipt state is metadata only and does not
 change the single-device sealed-box limitations documented in ADRs 0014,
 0022, and 0034.
+
+Each successfully opened message is also retained in
+`private-history.json` as ciphertext only. A sender creates a second self-sealed
+local copy; only the recipient ciphertext enters the durable outbox and Server.
+Staged local copies reconcile against that outbox after a crash, so an
+unqueued remnant is never shown as sent. On Client restart, the resident
+process decrypts and re-verifies the bounded history, orders accepted entries
+by authoritative Server sequence, and replays persisted delivery/read receipts
+before attempting a connection. The private panel therefore shows both sides
+of the local timeline and its known receipt status while offline, and filters
+that timeline locally without uploading a search query or plaintext. See ADR
+0035.
 
 The same session can request the project-scoped `agent.list` roster. The
 server supplies the approved host name, readiness-derived status, and task

@@ -53,6 +53,24 @@ protocol authority model or expose the local OpenCodex proxy.
 - A compromised client cannot rewrite authoritative shared history.
 - Local OpenCodex/Codex behavior does not depend on collaboration availability.
 
+## Local private-message history
+
+The Client owns a bounded `private-history.json` protected with the same
+device-state ACL and atomic-write boundary as other sensitive local state. It
+contains ciphertext only. Received messages retain their recipient ciphertext;
+sent messages store a separate self-sealed local copy that is never sent to the
+Server. The resident Client re-verifies and decrypts each entry before exposing
+it to the GUI, which enables sender echo, offline-readable history, restart
+recovery, and local search without putting plaintext on disk.
+
+Outgoing entries use staged, queued, and accepted states and reconcile with the
+durable outbox on startup. Accepted entries follow authoritative Server
+sequence; persisted delivery/read receipts replay offline. Capacity pressure
+never evicts an unaccepted sender copy.
+
+This cache remains single-device and does not claim a ratchet, forward secrecy,
+multi-device synchronization, or private-message backup. See ADR 0035.
+
 ## Test isolation
 
 The mandatory harness launches one server and two clients as real processes.

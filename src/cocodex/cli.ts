@@ -33,6 +33,12 @@ import { clientPaths } from "./paths";
 import { resolveCodexHomeDir } from "../codex/home";
 import { createDeviceKeyCertificate, loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
+import {
+  loadPrivateHistory,
+  markPrivateHistoryEntryQueued,
+  recordPrivateHistoryEntry,
+  savePrivateHistory,
+} from "./private-history";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import { runJsonLineSession } from "./session";
 import { reportAgentExecution } from "./agent-execution-client";
@@ -285,17 +291,46 @@ async function run(): Promise<void> {
       }
       const messageId = crypto.randomUUID();
       const clientCreatedAt = new Date().toISOString();
-      const ciphertext = await sealSignedPrivateMessage({
+      const text = required("--message");
+      const plaintext = {
         messageId,
         senderDeviceId: connection.deviceId,
         recipientDeviceId,
-        text: required("--message"),
+        text,
         clientCreatedAt,
-      }, identity.privateKeyPem, identity.publicKeyPem, certificate.messagingPublicKeyPem);
+      };
+      const [ciphertext, localCiphertext] = await Promise.all([
+        sealSignedPrivateMessage(
+          plaintext,
+          identity.privateKeyPem,
+          identity.publicKeyPem,
+          certificate.messagingPublicKeyPem,
+        ),
+        sealSignedPrivateMessage(
+          plaintext,
+          identity.privateKeyPem,
+          identity.publicKeyPem,
+          identity.messagingPublicKeyPem,
+        ),
+      ]);
+      let history = loadPrivateHistory(paths.privateHistory, connection.deviceId);
+      history = recordPrivateHistoryEntry(history, {
+        messageId,
+        senderDeviceId: connection.deviceId,
+        recipientDeviceId,
+        localCiphertext,
+        clientCreatedAt,
+        deliveryState: "staged",
+        serverSequence: null,
+        acceptedAt: null,
+      });
+      savePrivateHistory(paths.privateHistory, history);
       enqueueDurableEvent(paths, {
         version: 1, type: "private.send", requestId: crypto.randomUUID(), messageId,
         recipientDeviceId, ciphertext, clientCreatedAt,
       });
+      history = markPrivateHistoryEntryQueued(history, messageId);
+      savePrivateHistory(paths.privateHistory, history);
       try {
         const socket = await connectAuthenticatedClient(paths);
         const flushedEvents = await flushDurableOutbox(socket, paths);
@@ -311,12 +346,29 @@ async function run(): Promise<void> {
       const connection = loadClientConnection(paths);
       const identity = loadOrCreateClientIdentity(paths);
       const expectedFingerprint = required("--trust-fingerprint");
+      let history = loadPrivateHistory(paths.privateHistory, connection.deviceId);
       const render = async (message: any) => {
         if (message.recipientDeviceId !== connection.deviceId) return;
         const opened = await openSignedPrivateMessage(
           message.ciphertext, identity.messagingPrivateKeyPem, identity.messagingPublicKeyPem, message, expectedFingerprint,
         );
-        console.log(JSON.stringify({ ...message, ciphertext: undefined, text: opened.text }));
+        history = recordPrivateHistoryEntry(history, {
+          messageId: message.messageId,
+          senderDeviceId: message.senderDeviceId,
+          recipientDeviceId: message.recipientDeviceId,
+          localCiphertext: message.ciphertext,
+          clientCreatedAt: message.clientCreatedAt,
+          deliveryState: "accepted",
+          serverSequence: message.sequence,
+          acceptedAt: message.acceptedAt,
+        });
+        savePrivateHistory(paths.privateHistory, history);
+        console.log(JSON.stringify({
+          ...message,
+          ciphertext: undefined,
+          text: opened.text,
+          direction: "received",
+        }));
       };
       const snapshot = nextFrame(socket, "private.snapshot");
       socket.send(JSON.stringify({

@@ -264,12 +264,12 @@ describe("three-process CoCodex private alpha", () => {
       "project-add-member", "--project", project.id, "--owner-device", stephenDevice.id,
       "--member-device", kaiDevice.id, "--state-root", serverRoot,
     ]);
-    const stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
+    let stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "stephen-account",
       CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
     });
-    const kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
+    let kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "kai-account",
       CODEX_RUNTIME_MARKER: JSON.stringify({ allowFullComputer: true }),
@@ -969,6 +969,33 @@ describe("three-process CoCodex private alpha", () => {
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 3 }) }),
     ]));
 
+    traceCheckpoint("restarting Stephen client for private history");
+    stephen.send({ id: "restart-stephen", type: "shutdown" });
+    await stephen.process.exited;
+    residents.splice(residents.indexOf(stephen), 1);
+    stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
+      CODEX_CLI_PATH: fixtureExe,
+      COCODEX_ACCOUNT_FIXTURE: "stephen-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    const [restoredInbound, restoredOutbound] = await Promise.all([
+      waitFor(stephen, line => line.source === "private"
+        && line.message?.text === privateCanary
+        && line.message?.direction === "received"
+        && line.message?.restored === true),
+      waitFor(stephen, line => line.source === "private"
+        && line.message?.text === offlinePrivateK
+        && line.message?.direction === "sent"
+        && line.message?.restored === true),
+    ]);
+    expect(restoredInbound.message.messageId).toBe(privateMessageId);
+    expect(restoredOutbound.message.senderDeviceId).toBe(stephenDevice.id);
+    await waitFor(stephen, line => line.source === "session" && line.state === "connected");
+    const privateHistoryRaw = readFileSync(join(stephenRoot, "private-history.json"), "utf8");
+    expect(privateHistoryRaw).not.toContain(privateCanary);
+    expect(privateHistoryRaw).not.toContain(offlinePrivateK);
+    expect(privateHistoryRaw).toContain("localCiphertext");
+
     traceCheckpoint("recovered snapshots received");
     stephen.send({ id: "stop-s", type: "shutdown" });
     kai.send({ id: "stop-k", type: "shutdown" });
@@ -979,6 +1006,27 @@ describe("three-process CoCodex private alpha", () => {
     server.process.kill();
     await server.process.exited;
     residents.splice(residents.indexOf(server), 1);
+
+    traceCheckpoint("restarting Kai offline for private history and receipts");
+    kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
+      CODEX_CLI_PATH: fixtureExe,
+      COCODEX_ACCOUNT_FIXTURE: "kai-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    const [offlineRestoredMessage, offlineRestoredRead] = await Promise.all([
+      waitFor(kai, line => line.source === "private"
+        && line.message?.messageId === privateMessageId
+        && line.message?.text === privateCanary
+        && line.message?.direction === "sent"
+        && line.message?.restored === true),
+      waitFor(kai, line => line.source === "private-receipt"
+        && line.receipt?.messageId === privateMessageId
+        && line.receipt?.receipt === "read"),
+    ]);
+    expect(offlineRestoredMessage.message.serverSequence).toBeGreaterThan(0);
+    expect(offlineRestoredRead.receipt.senderDeviceId).toBe(kaiDevice.id);
+    kai.send({ id: "stop-offline-k", type: "shutdown" });
+    await kai.process.exited;
 
     const db = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
     const ciphertext = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };

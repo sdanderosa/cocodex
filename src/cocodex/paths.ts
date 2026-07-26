@@ -18,6 +18,7 @@ export interface ClientPaths {
   taskWorktreeRegistry: string;
   trustedDevices: string;
   privateMailbox: string;
+  privateHistory: string;
   outbox: string;
   usageReport: string;
 }
@@ -45,6 +46,7 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     taskWorktreeRegistry: resolve(absoluteRoot, "task-worktrees.json"),
     trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
     privateMailbox: resolve(absoluteRoot, "private-mailbox.json"),
+    privateHistory: resolve(absoluteRoot, "private-history.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),
     usageReport: resolve(absoluteRoot, "usage-report.json"),
   };
