@@ -1254,6 +1254,7 @@ Static/security commands:
 
 Both exited `0`; typecheck completed for protocol, Server, and root TypeScript,
 and the privacy scan reported `Privacy scan passed`. No CoCodex Server/client
-process or listener remained after the runs. The pending implementation delta
-is recorded in ADR 0034 and is to be published with the final Git commit for
-this checkpoint.
+process or listener remained after the runs. The implementation delta is
+recorded in ADR 0034 and published in commit
+`c18dedde37ab83b6d4cdcb4a9065f3724847da20` on
+`feat/cocodex-foundation`.
