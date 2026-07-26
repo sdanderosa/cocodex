@@ -148,6 +148,50 @@ describe("CoCodex durable offline outbox", () => {
     }
   });
 
+  test("discards a terminal file-reference error so later durable work can drain", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-terminal-"));
+    const paths = clientPaths(root);
+    const projectId = randomUUID();
+    const referenceId = randomUUID();
+    const reference = {
+      version: 1 as const, type: "project.file-reference.publish" as const,
+      requestId: randomUUID(), referenceId, projectId, artifactId: randomUUID(),
+      envelope: {
+        version: 1 as const, projectId, keyEpoch: 1, recordType: "file-reference" as const,
+        recordId: referenceId, nonce: Buffer.alloc(24, 1).toString("base64url"),
+        ciphertext: Buffer.alloc(64, 2).toString("base64url"), senderDeviceId: randomUUID(),
+        senderPublicKeyPem: "P".repeat(64), signature: Buffer.alloc(64, 3).toString("base64url"),
+      },
+    };
+    const chat = {
+      version: 1 as const, type: "chat.send" as const, requestId: randomUUID(),
+      projectId, eventId: randomUUID(), content: "next", clientCreatedAt: new Date().toISOString(),
+    };
+    class Socket {
+      private listeners = new Set<(event: MessageEvent) => void>();
+      addEventListener(type: string, listener: (event: MessageEvent) => void) { if (type === "message") this.listeners.add(listener); }
+      removeEventListener(type: string, listener: (event: MessageEvent) => void) { if (type === "message") this.listeners.delete(listener); }
+      send(value: string) {
+        const sent = JSON.parse(value) as { requestId: string; type: string };
+        const response = sent.type === "project.file-reference.publish"
+          ? { type: "error", requestId: sent.requestId, error: "File-reference artifact is not in this project" }
+          : { type: "chat.accepted", requestId: sent.requestId };
+        queueMicrotask(() => this.listeners.forEach(listener => listener({ data: JSON.stringify(response) } as MessageEvent)));
+      }
+    }
+    try {
+      enqueueDurableEvent(paths, reference);
+      enqueueDurableEvent(paths, chat);
+      const socket = new Socket() as unknown as WebSocket;
+      await expect(flushDurableOutbox(socket, paths)).rejects.toThrow("File-reference artifact");
+      expect(queuedEvents(paths)).toEqual([chat]);
+      expect(await flushDurableOutbox(socket, paths)).toBe(1);
+      expect(queuedEvents(paths)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("does not let a stale project-context update block future outbox work", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-context-conflict-"));
     const paths = clientPaths(root);

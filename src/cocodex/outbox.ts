@@ -111,6 +111,7 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
       if (response.requestId !== frame.requestId) return;
       if (response.type === "error") {
         const message = String(response.error);
+        const normalizedMessage = message.toLowerCase();
         // An optimistic context write cannot ever succeed on a retry once the
         // server has advanced the revision. Keep transient failures durable,
         // but discard this non-retryable event so it cannot block later work.
@@ -122,12 +123,12 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
           // terminal rather than an outbox head-of-line blocker.
           discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (frame.type === "project.file-reference.publish"
-          && (message.includes("file-reference artifact")
-            || message.includes("artifact host")
-            || message.includes("file-reference ID")
-            || message.includes("file-reference record ID")
-            || message.includes("file-reference project limit")
-            || message.includes("file-reference envelope must use the current"))) {
+          && (normalizedMessage.includes("file-reference artifact")
+            || normalizedMessage.includes("artifact host")
+            || normalizedMessage.includes("file-reference id")
+            || normalizedMessage.includes("file-reference record id")
+            || normalizedMessage.includes("file-reference project limit")
+            || normalizedMessage.includes("file-reference envelope must use the current"))) {
           discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (message.includes("Project requires encrypted content frames")
           || message.includes("Project key rotation is required")) {
