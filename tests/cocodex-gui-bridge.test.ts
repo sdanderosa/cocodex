@@ -47,6 +47,44 @@ describe("CoCodex GUI bridge", () => {
       output.write(`${JSON.stringify({
         source: "server",
         frame: {
+          type: "future.secret.frame",
+          nested: {
+            deviceKeyCertificate: "DEVICE_CERTIFICATE_CANARY",
+            ciphertext: "UNKNOWN_CIPHERTEXT_CANARY",
+          },
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          type: "project.list.result",
+          projects: [],
+          sealedProjectKey: "MALFORMED_PROJECT_LIST_CANARY",
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          version: 1,
+          type: "chat.event",
+          projectId: "project",
+          event: {
+            sequence: 7,
+            projectId: "project",
+            eventId: "event",
+            senderDeviceId: "device",
+            content: "safe chat content",
+            acceptedAt: "2030-01-01T00:00:00.000Z",
+            workspaceRoot: "C:\\\\PRIVATE_WORKSPACE_CANARY",
+            senderPublicKeyPem: "SENDER_KEY_CANARY",
+            signature: "SIGNATURE_FIELD_CANARY",
+            token: "TOKEN_FIELD_CANARY",
+          },
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
           type: "project.key.accepted",
           requestId: "accepted-request",
           projectId: "project",
@@ -89,6 +127,17 @@ describe("CoCodex GUI bridge", () => {
     expect(bridge.command({
       type: "usage.get",
       projectId: crypto.randomUUID(),
+    }).accepted).toBe(true);
+    const memberProjectId = crypto.randomUUID();
+    const removedDeviceId = crypto.randomUUID();
+    expect(bridge.command({
+      type: "project.member.list",
+      projectId: memberProjectId,
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.member.remove-and-rotate",
+      projectId: memberProjectId,
+      deviceId: removedDeviceId,
     }).accepted).toBe(true);
     expect(bridge.command({
       type: "agent.list",
@@ -142,6 +191,10 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "context.get")).toBe(true);
     expect(received.some((value: any) => value.type === "context.update" && value.finalGoal === "Keep the shared goal authoritative")).toBe(true);
     expect(received.some((value: any) => value.type === "usage.get")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.member.list"
+      && value.projectId === memberProjectId)).toBe(true);
+    expect(received.some((value: any) => value.type === "project.member.remove-and-rotate"
+      && value.deviceId === removedDeviceId)).toBe(true);
     expect(received.some((value: any) => value.type === "agent.approval" && value.approved === true)).toBe(true);
     expect(received.some((value: any) => value.type === "agent.safety.status")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.emergency.stop")).toBe(true);
@@ -177,5 +230,15 @@ describe("CoCodex GUI bridge", () => {
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SEALED_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_PUBLIC_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SIGNATURE_CANARY");
+    const rendererEvents = JSON.stringify(bridge.eventsAfter(0).events);
+    expect(rendererEvents).not.toContain("DEVICE_CERTIFICATE_CANARY");
+    expect(rendererEvents).not.toContain("UNKNOWN_CIPHERTEXT_CANARY");
+    expect(rendererEvents).not.toContain("MALFORMED_PROJECT_LIST_CANARY");
+    expect(rendererEvents).not.toContain("PRIVATE_WORKSPACE_CANARY");
+    expect(rendererEvents).not.toContain("SENDER_KEY_CANARY");
+    expect(rendererEvents).not.toContain("SIGNATURE_FIELD_CANARY");
+    expect(rendererEvents).not.toContain("TOKEN_FIELD_CANARY");
+    expect(rendererEvents).toContain("safe chat content");
+    expect(rendererEvents).toContain("Unsupported server frame withheld");
   });
 });

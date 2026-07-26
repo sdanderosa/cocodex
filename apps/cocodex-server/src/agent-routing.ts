@@ -602,6 +602,7 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
       AND a.enabled = 1
     WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NULL
       AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.target_device_id)
+      AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.requester_device_id)
       AND (t.status = 'running' OR (t.status = 'queued' AND t.expires_at > ?))
       ${agentFilter}
     ORDER BY t.accepted_at, t.id`).all(targetDeviceId, now.toISOString(), ...(agentId ? [agentId] : [])) as TaskRow[];

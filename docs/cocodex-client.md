@@ -146,13 +146,15 @@ task uses an encrypted project envelope. Prompt and result bodies continue to
 arrive only through their normal local-decryption path; activity metadata is
 not an authorization grant.
 
-When the server removes a member, the client marks the local project key ring
-as rotation-required and surfaces the notice without silently falling back to
-plaintext. The owner can still load the current key for an explicit rotation;
-only a strictly newer server-accepted epoch clears the local gate. If a key is
-introduced after legacy context exists, the client durably re-encrypts the last
-known context revision before switching its reconnect subscription to the
-encrypted projection.
+The owner member roster verifies device-signed key certificates against the
+explicit trusted-device fingerprint store. Its Remove action generates a fresh
+project key locally and durably submits membership removal plus one signed
+sealed envelope for every verified survivor as a single operation. Removed
+clients mark the local key ring revoked, purge queued project writes, clear
+subscriptions, and emergency-stop local agents live or during authoritative
+project-list reconciliation. A strictly newer valid envelope restores access
+only after the server later re-adds the device. The older two-step path still
+surfaces `rotation-required` without silently falling back to plaintext.
 
 ## Encrypted project context
 

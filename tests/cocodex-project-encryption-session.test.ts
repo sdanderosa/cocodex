@@ -19,6 +19,8 @@ import { enrollClient } from "../src/cocodex/client";
 import { loadOrCreateClientIdentity } from "../src/cocodex/identity";
 import { clientPaths } from "../src/cocodex/paths";
 import { runJsonLineSession } from "../src/cocodex/session";
+import { loadProjectKeyState } from "../src/cocodex/project-key-store";
+import { queuedEvents } from "../src/cocodex/outbox";
 import { loadLocalAgentPolicies, loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
 import { trustDevice } from "../src/cocodex/trusted-devices";
 
@@ -127,7 +129,8 @@ describe("CoCodex encrypted project context session", () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-server-"));
     const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-stephen-"));
     const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-kai-"));
-    roots.push(serverRoot, stephenRoot, kaiRoot);
+    const angelaRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-angela-"));
+    roots.push(serverRoot, stephenRoot, kaiRoot, angelaRoot);
 
     const paths = serverPaths(serverRoot);
     const identity = createServerIdentity(paths);
@@ -159,14 +162,28 @@ describe("CoCodex encrypted project context session", () => {
       .get(kaiConnection.deviceId) as { fingerprint: string };
     expect(approveDevice(db, kaiRow.fingerprint)).toBeTrue();
 
+    const angelaConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Angela", clientPaths(angelaRoot));
+    const angelaRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(angelaConnection.deviceId) as { fingerprint: string };
+    expect(approveDevice(db, angelaRow.fingerprint)).toBeTrue();
+
     const project = createProject(db, "Encrypted session project", stephenConnection.deviceId);
     addProjectMember(db, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
+    addProjectMember(db, project.id, stephenConnection.deviceId, angelaConnection.deviceId);
     const stephenPaths = clientPaths(stephenRoot);
     const kaiPaths = clientPaths(kaiRoot);
+    const angelaPaths = clientPaths(angelaRoot);
     const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
     const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+    const angelaIdentity = loadOrCreateClientIdentity(angelaPaths);
     trustDevice(kaiPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
     trustDevice(stephenPaths.trustedDevices, kaiConnection.deviceId, publicKeyFingerprint(kaiIdentity.publicKeyPem));
+    trustDevice(stephenPaths.trustedDevices, angelaConnection.deviceId, publicKeyFingerprint(angelaIdentity.publicKeyPem));
+    trustDevice(angelaPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
 
     const stephen = new JsonSessionHarness();
     const kai = new JsonSessionHarness();
@@ -185,9 +202,10 @@ describe("CoCodex encrypted project context session", () => {
       recipients: [
         { deviceId: stephenConnection.deviceId, projectWrapPublicKeyPem: stephenIdentity.projectWrapPublicKeyPem },
         { deviceId: kaiConnection.deviceId, projectWrapPublicKeyPem: kaiIdentity.projectWrapPublicKeyPem },
+        { deviceId: angelaConnection.deviceId, projectWrapPublicKeyPem: angelaIdentity.projectWrapPublicKeyPem },
       ],
     });
-    await stephen.waitFor(event => event.source === "control" && event.ok === true && event.sharedRecipients === 2);
+    await stephen.waitFor(event => event.source === "control" && event.ok === true && event.sharedRecipients === 3);
     await new Promise(resolve => setTimeout(resolve, 50));
 
     kai.send({ id: crypto.randomUUID(), type: "project.key.get", projectId: project.id });
@@ -482,10 +500,168 @@ describe("CoCodex encrypted project context session", () => {
       ]));
     }
 
+    const angela = new JsonSessionHarness();
+    const angelaRun = runJsonLineSession(angelaPaths, {
+      input: angela.input,
+      output: angela.output,
+      errorOutput: angela.errors,
+    });
+    await angela.waitFor(event => event.source === "session" && event.state === "connected");
+    angela.send({ id: crypto.randomUUID(), type: "project.key.get", projectId: project.id });
+    await angela.waitFor(event => event.source === "project-encryption"
+      && event.state === "key-available" && event.projectId === project.id && event.keyEpoch === 1);
+
+    const memberListRequest = crypto.randomUUID();
+    stephen.send({ id: memberListRequest, type: "project.member.list", projectId: project.id });
+    const memberList = await stephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === memberListRequest);
+    expect((memberList.frame as Record<string, any>).members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: stephenConnection.deviceId, role: "owner" }),
+      expect.objectContaining({ deviceId: kaiConnection.deviceId, role: "member" }),
+      expect.objectContaining({ deviceId: angelaConnection.deviceId, role: "member", trusted: true }),
+    ]));
+    expect(JSON.stringify(memberList)).not.toContain("projectWrapPublicKeyPem");
+
+    const removalRequest = crypto.randomUUID();
+    stephen.send({
+      id: removalRequest,
+      type: "project.member.remove-and-rotate",
+      projectId: project.id,
+      deviceId: kaiConnection.deviceId,
+    });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "control" && event.id === removalRequest && event.ok === true),
+      stephen.waitFor(event => event.source === "project-encryption"
+        && event.state === "key-available" && event.projectId === project.id && event.keyEpoch === 2),
+      kai.waitFor(event => event.source === "project-encryption"
+        && event.state === "revoked" && event.projectId === project.id),
+      angela.waitFor(event => event.source === "project-encryption"
+        && event.state === "key-available" && event.projectId === project.id && event.keyEpoch === 2),
+    ]);
+    expect(loadProjectKeyState(stephenPaths.projectKeys, project.id)).toMatchObject({ currentEpoch: 2, revoked: false });
+    expect(loadProjectKeyState(kaiPaths.projectKeys, project.id)).toMatchObject({ revoked: true });
+    expect(loadProjectKeyState(angelaPaths.projectKeys, project.id)).toMatchObject({ currentEpoch: 2, revoked: false });
+    expect(db.query("SELECT role FROM project_members WHERE project_id = ? AND device_id = ?")
+      .get(project.id, kaiConnection.deviceId)).toBeNull();
+    expect(db.query(`
+      SELECT recipient_device_id AS recipientDeviceId
+      FROM project_key_envelopes WHERE project_id = ? AND key_epoch = 2
+    `).all(project.id)).toEqual(
+      [angelaConnection.deviceId, stephenConnection.deviceId]
+        .sort()
+        .map(recipientDeviceId => ({ recipientDeviceId })),
+    );
+
+    const postRevocationSubscribe = crypto.randomUUID();
+    angela.send({ id: postRevocationSubscribe, type: "chat.subscribe", projectId: project.id });
+    await angela.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === postRevocationSubscribe);
+    const survivorMessage = "Angela continues securely after Kai is revoked";
+    angela.send({ id: crypto.randomUUID(), type: "chat.send", projectId: project.id, content: survivorMessage });
+    await stephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "chat.event"
+      && ((event.frame as Record<string, unknown>).event as Record<string, unknown> | undefined)?.content === survivorMessage);
+    expect(db.query(`
+      SELECT json_extract(envelope_json, '$.keyEpoch') AS keyEpoch,
+        json_extract(envelope_json, '$.senderDeviceId') AS senderDeviceId
+      FROM project_chat_events
+      WHERE project_id = ?
+      ORDER BY sequence DESC
+      LIMIT 1
+    `).get(project.id)).toEqual({
+      keyEpoch: 2,
+      senderDeviceId: angelaConnection.deviceId,
+    });
+
+    const offlineProject = createProject(db, "Offline atomic replay", stephenConnection.deviceId);
+    addProjectMember(db, offlineProject.id, stephenConnection.deviceId, kaiConnection.deviceId);
+    const offlineInitializeId = crypto.randomUUID();
+    stephen.send({
+      id: offlineInitializeId,
+      type: "project.key.initialize",
+      projectId: offlineProject.id,
+      keyEpoch: 1,
+      recipients: [
+        { deviceId: stephenConnection.deviceId, projectWrapPublicKeyPem: stephenIdentity.projectWrapPublicKeyPem },
+        { deviceId: kaiConnection.deviceId, projectWrapPublicKeyPem: kaiIdentity.projectWrapPublicKeyPem },
+      ],
+    });
+    await stephen.waitFor(event => event.source === "control"
+      && event.id === offlineInitializeId && event.ok === true && event.sharedRecipients === 2);
+    kai.send({ id: crypto.randomUUID(), type: "project.key.get", projectId: offlineProject.id });
+    await kai.waitFor(event => event.source === "project-encryption"
+      && event.state === "key-available" && event.projectId === offlineProject.id && event.keyEpoch === 1);
+    const offlineRosterId = crypto.randomUUID();
+    stephen.send({ id: offlineRosterId, type: "project.member.list", projectId: offlineProject.id });
+    const offlineRoster = await stephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === offlineRosterId);
+    expect((offlineRoster.frame as Record<string, any>).members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: stephenConnection.deviceId, trusted: true }),
+      expect.objectContaining({ deviceId: kaiConnection.deviceId, trusted: true }),
+    ]));
+
+    const offlineStephenDisconnected = stephen.waitFor(event => event.source === "session" && event.state === "disconnected");
+    const offlineKaiDisconnected = kai.waitFor(event => event.source === "session" && event.state === "disconnected");
+    const offlineAngelaDisconnected = angela.waitFor(event => event.source === "session" && event.state === "disconnected");
+    const restartedIndex = servers.indexOf(restarted);
+    if (restartedIndex >= 0) servers.splice(restartedIndex, 1);
+    await restarted.stop(true);
+    await Promise.all([offlineStephenDisconnected, offlineKaiDisconnected, offlineAngelaDisconnected]);
+
+    const offlineRemovalId = crypto.randomUUID();
+    stephen.send({
+      id: offlineRemovalId,
+      type: "project.member.remove-and-rotate",
+      projectId: offlineProject.id,
+      deviceId: kaiConnection.deviceId,
+    });
+    await stephen.waitFor(event => event.source === "control"
+      && event.id === offlineRemovalId && event.ok === true && event.queued === true);
+    expect(queuedEvents(stephenPaths)).toEqual([
+      expect.objectContaining({
+        requestId: offlineRemovalId,
+        type: "project.member.remove-and-rotate",
+        projectId: offlineProject.id,
+      }),
+    ]);
+
     stephen.close();
+    await stephenRun;
+    const recoveredStephen = new JsonSessionHarness();
+    const recoveredStephenRun = runJsonLineSession(stephenPaths, {
+      input: recoveredStephen.input,
+      output: recoveredStephen.output,
+      errorOutput: recoveredStephen.errors,
+    });
+    await recoveredStephen.waitFor(event => event.source === "session"
+      && (event.state === "retrying" || event.state === "disconnected"));
+    const recoveredServer = startCoCodexServer({ ...config, port: server.port }, db, identity);
+    servers.push(recoveredServer);
+    await Promise.all([
+      waitUntilConnectedViaProjectList(recoveredStephen),
+      waitUntilConnectedViaProjectList(kai),
+      waitUntilConnectedViaProjectList(angela),
+      recoveredStephen.waitFor(event => event.source === "project-encryption"
+        && event.state === "key-available" && event.projectId === offlineProject.id && event.keyEpoch === 2),
+      kai.waitFor(event => event.source === "project-encryption"
+        && event.state === "revoked" && event.projectId === offlineProject.id),
+    ]);
+    expect(queuedEvents(stephenPaths)).toEqual([]);
+    expect(db.query("SELECT role FROM project_members WHERE project_id = ? AND device_id = ?")
+      .get(offlineProject.id, kaiConnection.deviceId)).toBeNull();
+    expect(db.query(`
+      SELECT key_epoch AS keyEpoch FROM project_member_removal_rotations
+      WHERE rotation_id = ?
+    `).get(offlineRemovalId)).toEqual({ keyEpoch: 2 });
+
+    recoveredStephen.close();
     kai.close();
-    await Promise.all([stephenRun, kaiRun]);
-  }, 30_000);
+    angela.close();
+    await Promise.all([recoveredStephenRun, kaiRun, angelaRun]);
+  }, 45_000);
 
   test("configures two signed self-hosted agents with independent ready workers", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-server-"));

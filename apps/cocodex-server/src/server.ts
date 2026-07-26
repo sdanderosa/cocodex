@@ -10,6 +10,7 @@ import {
   agentCreatedFrameSchema,
   agentExecutionAcceptedFrameSchema,
   agentTaskListFrameSchema,
+  projectMemberListFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
@@ -18,6 +19,7 @@ import {
   presenceLeaveFrameSchema,
   presenceSnapshotFrameSchema,
   presenceUpdateFrameSchema,
+  verifyDeviceKeyCertificate,
   websocketAuthTranscript,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { appendAgentResult, cancelAgentTask, createAgentForHost, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks, requireAgentReadyRuntime } from "./agent-routing";
@@ -30,12 +32,13 @@ import {
   pendingEncryptedAgentTasks,
 } from "./encrypted-agent-routing";
 import { verifyAdminToken, type ServerConfig } from "./config";
-import { createEnrollmentChallenge, enrollDevice } from "./enrollment";
+import { createEnrollmentChallenge, devicePublicKeys, enrollDevice } from "./enrollment";
 import type { ServerIdentity } from "./identity";
 import {
   appendChatEventResult,
   chatEventsAfter,
   listProjects,
+  listProjectMembers,
   requireProjectMembership,
 } from "./shared-state";
 import { tlsCertificateFingerprint } from "./tls";
@@ -57,6 +60,7 @@ import {
   listProjectKeyEnvelopes,
   listProjectKeyEnvelopesForDevice,
   removeProjectMemberAndInvalidateKeys,
+  removeProjectMemberAndRotateKeys,
   rotateProjectKeyEpoch,
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
@@ -700,6 +704,31 @@ export function startCoCodexServer(
             }));
             return;
           }
+          if (message.type === "device.key-certificate.publish") {
+            const verified = verifyDeviceKeyCertificate(message.certificate, deviceId);
+            const enrolled = devicePublicKeys(db, deviceId);
+            if (verified.fingerprint !== enrolled.fingerprint
+              || verified.devicePublicKeyPem !== enrolled.devicePublicKeyPem
+              || verified.messagingPublicKeyPem !== enrolled.messagingPublicKeyPem
+              || verified.projectWrapPublicKeyPem !== enrolled.projectWrapPublicKeyPem) {
+              throw new Error("Device key certificate does not match enrolled keys");
+            }
+            db.query(`
+              UPDATE devices SET device_key_certificate = ?
+              WHERE id = ? AND status = 'approved'
+            `).run(message.certificate, deviceId);
+            return;
+          }
+          if (message.type === "project.member.list") {
+            socket.send(JSON.stringify(projectMemberListFrameSchema.parse({
+              version: 1,
+              type: "project.member.list.result",
+              requestId,
+              projectId: message.projectId,
+              members: listProjectMembers(db, message.projectId, deviceId),
+            })));
+            return;
+          }
           if (message.type === "agent.list") {
             const agents = listAgents(db, message.projectId, deviceId, (hostDeviceId, agentId) =>
               [...sockets].some(candidate => candidate.data.authenticatedDeviceId === hostDeviceId
@@ -1231,13 +1260,13 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.member.remove") {
-            const cancelledTaskIds = removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
-            for (const taskId of cancelledTaskIds) {
-              sendToDevice(message.deviceId, {
+            const cancelledTasks = removeProjectMemberAndInvalidateKeys(db, message.projectId, deviceId, message.deviceId);
+            for (const task of cancelledTasks) {
+              sendToDevice(task.targetDeviceId, {
                 version: 1,
                 type: "agent.cancel",
-                taskId,
-                reason: "Host device was removed from the project.",
+                taskId: task.taskId,
+                reason: "A task participant was removed from the project.",
               }, true);
             }
             clearProjectPresence(message.projectId, message.deviceId);
@@ -1263,6 +1292,60 @@ export function startCoCodexServer(
                 removedDeviceId: message.deviceId,
                 currentEpoch: keyEpoch.currentEpoch,
               }));
+            }
+            return;
+          }
+          if (message.type === "project.member.remove-and-rotate") {
+            const rotated = removeProjectMemberAndRotateKeys(
+              db,
+              message.projectId,
+              deviceId,
+              message.deviceId,
+              message.expectedEpoch,
+              message.requestId,
+              message.envelopes,
+            );
+            if (rotated.created) {
+              for (const task of rotated.cancelledTasks) {
+                sendToDevice(task.targetDeviceId, {
+                  version: 1,
+                  type: "agent.cancel",
+                  taskId: task.taskId,
+                  reason: "A task participant was removed from the project.",
+                }, true);
+              }
+              clearProjectPresence(message.projectId, message.deviceId);
+              sendToDevice(message.deviceId, {
+                version: 1,
+                type: "project.member.removed",
+                projectId: message.projectId,
+                deviceId: message.deviceId,
+              });
+              sendToProjectMembers(message.projectId, {
+                version: 1,
+                type: "project.member.removed",
+                projectId: message.projectId,
+                deviceId: message.deviceId,
+              });
+            }
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.key.rotated",
+              requestId,
+              projectId: message.projectId,
+              keyEpoch: rotated.keyEpoch,
+              envelopes: rotated.envelopes,
+              created: rotated.created,
+            }));
+            if (rotated.created) {
+              for (const envelope of rotated.envelopes) {
+                sendToDevice(envelope.recipientDeviceId, {
+                  version: 1,
+                  type: "project.key.changed",
+                  projectId: message.projectId,
+                  envelope,
+                });
+              }
             }
             return;
           }

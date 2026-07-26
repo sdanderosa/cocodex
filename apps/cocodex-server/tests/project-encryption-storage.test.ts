@@ -17,6 +17,7 @@ import {
   initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
   removeProjectMemberAndInvalidateKeys,
+  removeProjectMemberAndRotateKeys,
   rotateProjectKeyEpoch,
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
@@ -29,6 +30,7 @@ interface TestDevice {
   id: string;
   publicKey: string;
   privateKey: string;
+  projectWrapPublicKey: string;
 }
 
 function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): TestDevice {
@@ -37,6 +39,10 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): Test
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
   const messaging = generateKeyPairSync("x25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const projectWrap = generateKeyPairSync("x25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
@@ -56,6 +62,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): Test
     displayName: name,
     devicePublicKeyPem: signing.publicKey,
     messagingPublicKeyPem: messaging.publicKey,
+    projectWrapPublicKeyPem: projectWrap.publicKey,
   }), signing.privateKey).toString("base64url");
   const enrolled = enrollDevice(db, {
     invitation,
@@ -64,10 +71,16 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): Test
     displayName: name,
     devicePublicKeyPem: signing.publicKey,
     messagingPublicKeyPem: messaging.publicKey,
+    projectWrapPublicKeyPem: projectWrap.publicKey,
     signature,
   }, now);
   expect(approveDevice(db, enrolled.fingerprint, now)).toBeTrue();
-  return { id: enrolled.id, publicKey: signing.publicKey, privateKey: signing.privateKey };
+  return {
+    id: enrolled.id,
+    publicKey: signing.publicKey,
+    privateKey: signing.privateKey,
+    projectWrapPublicKey: projectWrap.publicKey,
+  };
 }
 
 function keyEnvelope(
@@ -370,6 +383,176 @@ describe("opaque project-encryption server storage", () => {
       );
       expect(afterRemoval).toMatchObject({ keyEpoch: 3, created: true });
       expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 3 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("atomically removes a member, cancels both task directions, and rotates to the exact remaining roster", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const owner = approvedDevice(db, "Stephen");
+      const removed = approvedDevice(db, "Kai");
+      const survivor = approvedDevice(db, "Angela");
+      const project = createProject(db, "Atomic member revocation", owner.id, now);
+      addProjectMember(db, project.id, owner.id, removed.id, now);
+      addProjectMember(db, project.id, owner.id, survivor.id, now);
+      initializeProjectKeyEpoch(db, project.id, owner.id, randomUUID(), [
+        keyEnvelope(project.id, owner, owner.id, 1),
+        keyEnvelope(project.id, owner, removed.id, 1),
+        keyEnvelope(project.id, owner, survivor.id, 1),
+      ], now);
+
+      const ownerAgent = randomUUID();
+      const removedAgent = randomUUID();
+      db.query(`
+        INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
+        VALUES (?, ?, ?, 'Owner agent', 1, ?), (?, ?, ?, 'Removed agent', 1, ?)
+      `).run(ownerAgent, project.id, owner.id, now.toISOString(),
+        removedAgent, project.id, removed.id, now.toISOString());
+      const insertTask = db.query(`
+        INSERT INTO agent_tasks (
+          id, project_id, requester_device_id, target_device_id, agent_id,
+          prompt, nonce, issued_at, expires_at, requester_signature,
+          server_signature, status, accepted_at
+        ) VALUES (?, ?, ?, ?, ?, 'opaque', ?, ?, ?, 'request-signature',
+          'server-signature', 'queued', ?)
+      `);
+      const removedRequesterTask = randomUUID();
+      const removedTargetTask = randomUUID();
+      const unrelatedTask = randomUUID();
+      const expiry = new Date(now.getTime() + 60_000).toISOString();
+      insertTask.run(removedRequesterTask, project.id, removed.id, owner.id, ownerAgent,
+        randomUUID(), now.toISOString(), expiry, now.toISOString());
+      insertTask.run(removedTargetTask, project.id, owner.id, removed.id, removedAgent,
+        randomUUID(), now.toISOString(), expiry, now.toISOString());
+      insertTask.run(unrelatedTask, project.id, owner.id, survivor.id, ownerAgent,
+        randomUUID(), now.toISOString(), expiry, now.toISOString());
+
+      const rotationId = randomUUID();
+      const epochTwoOwner = keyEnvelope(project.id, owner, owner.id, 2);
+      const epochTwoSurvivor = keyEnvelope(project.id, owner, survivor.id, 2);
+      expect(() => removeProjectMemberAndRotateKeys(
+        db, project.id, owner.id, removed.id, 1, rotationId, [epochTwoOwner], now,
+      )).toThrow("every remaining approved project member");
+      expect(db.query("SELECT role FROM project_members WHERE project_id = ? AND device_id = ?")
+        .get(project.id, removed.id)).toEqual({ role: "member" });
+      expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 1 });
+
+      db.exec(`
+        CREATE TRIGGER inject_atomic_removal_failure
+        BEFORE INSERT ON project_member_removal_rotations
+        BEGIN
+          SELECT RAISE(ABORT, 'injected atomic removal failure');
+        END;
+      `);
+      expect(() => removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoSurvivor],
+        now,
+      )).toThrow("injected atomic removal failure");
+      db.exec("DROP TRIGGER inject_atomic_removal_failure");
+      expect(db.query("SELECT role FROM project_members WHERE project_id = ? AND device_id = ?")
+        .get(project.id, removed.id)).toEqual({ role: "member" });
+      expect(getProjectKeyEpoch(db, project.id, owner.id)).toMatchObject({ currentEpoch: 1 });
+      expect(db.query("SELECT enabled FROM agents WHERE id = ?").get(removedAgent)).toEqual({ enabled: 1 });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(removedRequesterTask)).toEqual({ status: "queued" });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(removedTargetTask)).toEqual({ status: "queued" });
+
+      const rotated = removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoSurvivor],
+        now,
+      );
+      expect(rotated).toMatchObject({
+        created: true,
+        keyEpoch: 2,
+        removedDeviceId: removed.id,
+        rotationRequired: false,
+      });
+      expect(rotated.cancelledTasks.map(task => task.taskId).sort())
+        .toEqual([removedRequesterTask, removedTargetTask].sort());
+      expect(db.query("SELECT role FROM project_members WHERE project_id = ? AND device_id = ?")
+        .get(project.id, removed.id)).toBeNull();
+      expect(db.query(`
+        SELECT recipient_device_id AS recipientDeviceId
+        FROM project_key_envelopes WHERE project_id = ? AND key_epoch = 2
+        ORDER BY recipient_device_id
+      `).all(project.id)).toEqual(
+        [owner.id, survivor.id].sort().map(recipientDeviceId => ({ recipientDeviceId })),
+      );
+      expect(db.query("SELECT enabled FROM agents WHERE id = ?").get(removedAgent)).toEqual({ enabled: 0 });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(removedRequesterTask)).toEqual({ status: "failed" });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(removedTargetTask)).toEqual({ status: "failed" });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(unrelatedTask)).toEqual({ status: "queued" });
+      expect(removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoSurvivor],
+        now,
+      )).toMatchObject({ created: false, cancelledTasks: rotated.cancelledTasks });
+      expect(() => removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        1,
+        rotationId,
+        [keyEnvelope(project.id, owner, owner.id, 2), epochTwoSurvivor],
+        now,
+      )).toThrow("replay conflict");
+      const epochThreeOwner = keyEnvelope(project.id, owner, owner.id, 3);
+      const epochThreeSurvivor = keyEnvelope(project.id, owner, survivor.id, 3);
+      expect(rotateProjectKeyEpoch(
+        db,
+        project.id,
+        owner.id,
+        2,
+        randomUUID(),
+        [epochThreeOwner, epochThreeSurvivor],
+        now,
+      )).toMatchObject({ created: true, keyEpoch: 3 });
+      expect(removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        1,
+        rotationId,
+        [epochTwoOwner, epochTwoSurvivor],
+        now,
+      )).toMatchObject({
+        created: false,
+        keyEpoch: 2,
+        currentEpoch: 3,
+        cancelledTasks: rotated.cancelledTasks,
+      });
+      expect(() => removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        owner.id,
+        removed.id,
+        2,
+        rotationId,
+        [epochTwoOwner, epochTwoSurvivor],
+        now,
+      )).toThrow("replay conflict");
+      expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     } finally {
       db.close();
     }

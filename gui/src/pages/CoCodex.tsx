@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as Y from "yjs";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
+import {
+  confirmProjectMemberRemoval,
+  projectMemberRemovalCommand,
+  reconcileRevokedProject,
+  type Project,
+  type ProjectMember,
+} from "../cocodex-member-state";
 import { useT, type TFn, type TKey } from "../i18n";
 import { IconBot, IconKey, IconLock, IconRefresh, IconServer } from "../icons";
 import "../styles-cocodex.css";
@@ -33,12 +40,6 @@ interface Status {
     fullComputerEnabled: boolean;
   }>;
   latestEventSequence: number;
-}
-
-interface Project {
-  id: string;
-  name: string;
-  role: "owner" | "member";
 }
 
 interface ChatEvent {
@@ -195,7 +196,8 @@ interface LocalPresence {
 
 interface SessionValue {
   source?: string;
-  state?: ConnectionState | "key-available" | "rotation-required";
+  state?: ConnectionState | "key-available" | "rotation-required" | "revoked";
+  projectId?: string;
   approvalState?: "pending" | "resolved";
   executionEnabled?: boolean;
   fullComputerEnabled?: boolean;
@@ -215,7 +217,7 @@ interface SessionValue {
     cursor?: { x: number; y: number } | null;
     caret?: { anchor: number; head: number } | null;
     typing?: boolean;
-    members?: PresenceMember[];
+    members?: PresenceMember[] | ProjectMember[];
     projects?: Project[];
     events?: ChatEvent[];
     event?: ChatEvent;
@@ -335,11 +337,66 @@ export function FileReferenceMetadata({ reference, local }: { reference: FileRef
   );
 }
 
+export function ProjectMemberRoster({
+  members,
+  owner,
+  connected,
+  busy,
+  onRefresh,
+  onTrust,
+  onRemove,
+}: {
+  members: ProjectMember[];
+  owner: boolean;
+  connected: boolean;
+  busy: boolean;
+  onRefresh: () => void;
+  onTrust: (member: ProjectMember) => void;
+  onRemove: (member: ProjectMember) => void;
+}) {
+  const t = useT();
+  return (
+    <section className="cocodex-members">
+      <div className="cocodex-section-head">
+        <span>{t("cocodex.members.title")}</span>
+        <button type="button" className="btn btn-ghost btn-icon"
+          title={t("cocodex.members.refresh")} onClick={onRefresh} disabled={!connected}>
+          <IconRefresh />
+        </button>
+      </div>
+      <div className="cocodex-member-list">
+        {members.map(member => (
+          <article key={member.deviceId}>
+            <span>
+              <strong>{member.displayName}</strong>
+              <small>{member.role} · {member.fingerprint.slice(-12)} · {t(member.trusted
+                ? "cocodex.members.trusted"
+                : "cocodex.members.unverified")}</small>
+            </span>
+            {owner && member.role !== "owner" && <span className="cocodex-member-actions">
+              {!member.trusted && <button type="button" className="btn btn-ghost"
+                disabled={busy || !connected} onClick={() => onTrust(member)}>
+                {t("cocodex.members.trust")}
+              </button>}
+              <button type="button" className="btn btn-danger btn-ghost"
+                disabled={busy || !connected} onClick={() => onRemove(member)}>
+                {t("cocodex.members.remove")}
+              </button>
+            </span>}
+          </article>
+        ))}
+        {!members.length && <p className="muted">{t("cocodex.members.empty")}</p>}
+      </div>
+    </section>
+  );
+}
+
 export default function CoCodex({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [status, setStatus] = useState<Status>();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
   const [presence, setPresence] = useState<PresenceMember[]>([]);
@@ -457,6 +514,31 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
       }
+      if (value?.source === "project-encryption" && value.state === "revoked" && value.projectId) {
+        const reconciled = reconcileRevokedProject(projects, projectId, value.projectId);
+        setProjects(reconciled.projects);
+        setProjectId(reconciled.selectedProjectId);
+        if (reconciled.clearedSelection) {
+          subscribedProject.current = "";
+          setChat([]);
+          setPresence([]);
+          setProjectMembers([]);
+          setSharedContext(undefined);
+          setFinalGoalDraft("");
+          setUsageReports([]);
+          setAgents([]);
+          setTasks([]);
+          setArtifacts([]);
+          setFileReferences([]);
+          setSelectedArtifactIds([]);
+          dispatchReferenceArtifactSelection({ type: "project-changed" });
+          promptDoc.current?.destroy();
+          promptDoc.current = undefined;
+          promptProject.current = "";
+          setSharedPrompt("");
+        }
+        void command({ type: "project.list" });
+      }
       if (event.channel === "error" && value?.error) setNotice(String(value.error));
       if (value?.source === "agent-approval") {
         if (value.approvalState === "resolved" && value.taskId) {
@@ -517,10 +599,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       const listedProjects = frame?.projects;
       if (frame?.type === "project.list.result" && Array.isArray(listedProjects)) {
         setProjects(listedProjects);
-        setProjectId(previous => previous || listedProjects[0]?.id || "");
+        setProjectId(previous => listedProjects.some(project => project.id === previous)
+          ? previous
+          : listedProjects[0]?.id ?? "");
       }
       if (frame?.projectId === projectId && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
-        setPresence(frame.members.map(member => ({ ...member, typing: member.typing === true })));
+        setPresence((frame.members as PresenceMember[]).map(member => ({ ...member, typing: member.typing === true })));
+      } else if (frame?.projectId === projectId && frame.type === "project.member.list.result"
+        && Array.isArray(frame.members)) {
+        setProjectMembers(frame.members as ProjectMember[]);
+      } else if (frame?.projectId === projectId && frame.type === "project.member.removed" && frame.deviceId) {
+        setProjectMembers(previous => previous.filter(member => member.deviceId !== frame.deviceId));
       } else if (frame?.projectId === projectId && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
         setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
           deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null,
@@ -548,7 +637,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           : [...previous, privateMessage]);
       }
     }
-  }, [ensurePromptDocument, loadStatus, projectId, status?.deviceId, t]);
+  }, [command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -592,6 +681,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     subscribedProject.current = projectId;
     setChat([]);
     setPresence([]);
+    setProjectMembers([]);
     setSharedContext(undefined);
     setFinalGoalDraft("");
     setUsageReports([]);
@@ -610,6 +700,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     void command({ type: "agent.task.list", projectId });
     void command({ type: "artifact.list", projectId });
     void command({ type: "project.file-reference.list", projectId });
+    void command({ type: "project.member.list", projectId });
   }, [status?.state, projectId, command, ensurePromptDocument]);
 
   useEffect(() => {
@@ -826,6 +917,44 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const removeProjectMember = async (member: ProjectMember) => {
+    if (!projectId || projects.find(project => project.id === projectId)?.role !== "owner") return;
+    if (!confirmProjectMemberRemoval(t, member, message => window.confirm(message))) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command(projectMemberRemovalCommand(projectId, member));
+      setNotice(t("cocodex.members.removalQueued", { name: member.displayName }));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const trustProjectMember = async (member: ProjectMember) => {
+    if (!projectId || member.trusted) return;
+    if (!window.confirm(t("cocodex.members.trustConfirm", {
+      name: member.displayName,
+      fingerprint: member.fingerprint,
+    }))) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "device.trust",
+        deviceId: member.deviceId,
+        fingerprint: member.fingerprint,
+      });
+      await command({ type: "project.member.list", projectId });
+      setNotice(t("cocodex.members.trustedNotice", { name: member.displayName }));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveFinalGoal = async (event: FormEvent) => {
     event.preventDefault();
     if (!projectId || !sharedContext || status?.state !== "connected") return;
@@ -986,6 +1115,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               ))}
               {!projects.length && <p className="muted">{t("cocodex.projects.empty")}</p>}
             </div>
+            {projectId && <ProjectMemberRoster
+              members={projectMembers}
+              owner={projects.find(project => project.id === projectId)?.role === "owner"}
+              connected={status.state === "connected"}
+              busy={busy}
+              onRefresh={() => void command({ type: "project.member.list", projectId })}
+              onTrust={member => void trustProjectMember(member)}
+              onRemove={member => void removeProjectMember(member)}
+            />}
             <div className="cocodex-device">
               <small>{t("cocodex.device.this")}</small>
               <strong>{status.displayName}</strong>

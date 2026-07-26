@@ -264,6 +264,25 @@ describe("CoCodex protocol", () => {
       deviceId: recipientDeviceId,
     };
     expect(clientFrameSchema.parse(remove)).toEqual(remove);
+    const listMembers = {
+      version: 1 as const,
+      type: "project.member.list" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+    };
+    expect(clientFrameSchema.parse(listMembers)).toEqual(listMembers);
+    const removeAndRotate = {
+      version: 1 as const,
+      type: "project.member.remove-and-rotate" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      deviceId: recipientDeviceId,
+      expectedEpoch: 1,
+      envelopes: [{ ...keyEnvelope, keyEpoch: 2, recipientDeviceId: senderDeviceId }],
+    };
+    expect(clientFrameSchema.parse(removeAndRotate)).toEqual(removeAndRotate);
+    expect(() => clientFrameSchema.parse({ ...removeAndRotate, unexpected: true })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...removeAndRotate, expectedEpoch: 0 })).toThrow();
     expect(() => clientFrameSchema.parse({ ...keyShare, envelope: { ...keyEnvelope, extra: true } })).toThrow();
     expect(() => clientFrameSchema.parse({ ...contextUpdate, envelope: { ...contentEnvelope, ciphertext: "%%%" } })).toThrow();
 
@@ -316,6 +335,27 @@ describe("CoCodex protocol", () => {
       projectId,
       deviceId: recipientDeviceId,
     })).toMatchObject({ type: "project.member.removed", deviceId: recipientDeviceId });
+    expect(projectServerFrameSchema.parse({
+      version: 1 as const,
+      type: "project.member.list.result" as const,
+      requestId: listMembers.requestId,
+      projectId,
+      members: [{
+        deviceId: senderDeviceId,
+        displayName: "Stephen",
+        fingerprint: "AAAA-BBBB-CCCC-DDDD",
+        role: "owner",
+        deviceKeyCertificate: "C".repeat(256),
+      }],
+    })).toMatchObject({ type: "project.member.list.result", projectId });
+    const projectList = {
+      version: 1 as const,
+      type: "project.list.result" as const,
+      requestId: crypto.randomUUID(),
+      projects: [{ id: projectId, name: "Nocturne Launcher", role: "owner" as const }],
+    };
+    expect(projectServerFrameSchema.parse(projectList)).toEqual(projectList);
+    expect(() => projectServerFrameSchema.parse({ ...projectList, extra: "withheld" })).toThrow();
     expect(() => projectServerFrameSchema.parse({ ...result, extra: true })).toThrow();
   });
   test("accepts encrypted shared-chat frames while keeping payloads opaque", () => {

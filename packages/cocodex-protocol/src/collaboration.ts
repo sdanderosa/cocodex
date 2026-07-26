@@ -153,6 +153,18 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("device.key-certificate.publish"),
+    requestId,
+    certificate: z.string().min(256).max(8_192),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("project.member.list"),
+    requestId,
+    projectId,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("agent.list"),
     requestId,
     projectId,
@@ -368,6 +380,15 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("project.member.remove-and-rotate"),
+    requestId,
+    projectId,
+    deviceId: z.uuid(),
+    expectedEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX - 1),
+    envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(127),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("project.context.get"),
     requestId,
     projectId,
@@ -470,6 +491,33 @@ export const projectMemberRemovedFrameSchema = z.object({
   requestId: requestId.optional(),
   projectId,
   deviceId,
+}).strict();
+
+export const projectListResultFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.list.result"),
+  requestId,
+  projects: z.array(z.object({
+    id: projectId,
+    name: z.string().trim().min(1).max(120),
+    role: z.enum(["owner", "member"]),
+  }).strict()).max(10_000),
+}).strict();
+
+export const projectMemberViewSchema = z.object({
+  deviceId,
+  displayName: z.string().trim().min(1).max(80),
+  fingerprint: z.string().trim().min(16).max(256),
+  role: z.enum(["owner", "member"]),
+  deviceKeyCertificate: z.string().min(256).max(8_192).nullable(),
+}).strict();
+
+export const projectMemberListFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.member.list.result"),
+  requestId,
+  projectId,
+  members: z.array(projectMemberViewSchema).min(1).max(128),
 }).strict();
 
 export const agentStatusSchema = z.enum(["offline", "available", "queued", "working", "completed", "failed"]);
@@ -636,6 +684,7 @@ export const presenceAcceptedFrameSchema = z.object({
 }).strict();
 
 export const projectServerFrameSchema = z.discriminatedUnion("type", [
+  projectListResultFrameSchema,
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
   encryptedChatEventFrameSchema,
@@ -657,6 +706,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
+  projectMemberListFrameSchema,
   agentListFrameSchema,
   agentCreatedFrameSchema,
   agentReadyAcceptedFrameSchema,
@@ -709,6 +759,8 @@ export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema
 export type ProjectKeyRotatedFrame = z.infer<typeof projectKeyRotatedFrameSchema>;
 export type ProjectKeyRotationRequiredFrame = z.infer<typeof projectKeyRotationRequiredFrameSchema>;
 export type ProjectMemberRemovedFrame = z.infer<typeof projectMemberRemovedFrameSchema>;
+export type ProjectMemberView = z.infer<typeof projectMemberViewSchema>;
+export type ProjectMemberListFrame = z.infer<typeof projectMemberListFrameSchema>;
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export type AgentView = z.infer<typeof agentViewSchema>;
 export type AgentListFrame = z.infer<typeof agentListFrameSchema>;

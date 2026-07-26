@@ -1,10 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { clientFrameSchema, type ClientFrame } from "../../packages/cocodex-protocol/src/index.ts";
+import {
+  clientFrameSchema,
+  projectKeyRotatedFrameSchema,
+  type ClientFrame,
+} from "../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" }>;
 
 interface OutboxFile {
   version: 1;
@@ -20,7 +24,8 @@ function parseOutbox(path: string): OutboxFile {
     const frame = clientFrameSchema.parse(event);
     if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
-      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update") {
+      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
+      && frame.type !== "project.member.remove-and-rotate") {
       throw new Error("Unsupported durable CoCodex event");
     }
     return frame;
@@ -51,6 +56,26 @@ function discardQueuedEvent(path: string, requestId: string): void {
   saveOutbox(path, events);
 }
 
+export function discardQueuedProjectEvents(paths: ClientPaths, projectId: string): number {
+  const events = parseOutbox(paths.outbox).events;
+  const retained = events.filter(event => !("projectId" in event) || event.projectId !== projectId);
+  const removed = events.length - retained.length;
+  if (removed > 0) saveOutbox(paths.outbox, retained);
+  return removed;
+}
+
+function sameEnvelopeSet(
+  left: readonly { recipientDeviceId: string }[],
+  right: readonly { recipientDeviceId: string }[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const canonical = (values: readonly { recipientDeviceId: string }[]) =>
+    values.map(value => JSON.stringify(value)).sort();
+  const expected = canonical(left);
+  const actual = canonical(right);
+  return expected.every((value, index) => value === actual[index]);
+}
+
 export function queuedEvents(paths: ClientPaths): DurableFrame[] {
   return parseOutbox(paths.outbox).events;
 }
@@ -59,8 +84,9 @@ export function enqueueDurableEvent(paths: ClientPaths, value: unknown): Durable
   const frame = clientFrameSchema.parse(value);
   if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
-      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update") {
-    throw new Error("Only chat, encrypted chat, private-message, agent, prompt, encrypted prompt, artifact, encrypted artifact, and project-context updates can be queued durably");
+      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
+      && frame.type !== "project.member.remove-and-rotate") {
+    throw new Error("Only supported collaboration updates and atomic member-removal rotations can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
   const duplicate = events.find(event => event.requestId === frame.requestId);
@@ -115,7 +141,10 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
         // An optimistic context write cannot ever succeed on a retry once the
         // server has advanced the revision. Keep transient failures durable,
         // but discard this non-retryable event so it cannot block later work.
-        if ((frame.type === "context.update" || frame.type === "project.context.update") && message.includes("revision conflict")) {
+        if ("projectId" in frame
+          && normalizedMessage.includes("device is not an approved project member")) {
+          discardQueuedProjectEvents(paths, frame.projectId);
+        } else if ((frame.type === "context.update" || frame.type === "project.context.update") && message.includes("revision conflict")) {
           discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (frame.type === "project.context.update" && message.includes("replay conflict")) {
           // Two clients may race the deterministic legacy-context migration;
@@ -130,6 +159,15 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
             || normalizedMessage.includes("file-reference project limit")
             || normalizedMessage.includes("file-reference envelope must use the current"))) {
           discardQueuedEvent(paths.outbox, frame.requestId);
+        } else if (frame.type === "project.member.remove-and-rotate"
+          && (normalizedMessage.includes("project member removal")
+            || normalizedMessage.includes("project key rotation conflict")
+            || normalizedMessage.includes("device is not a project member")
+            || normalizedMessage.includes("project owner"))) {
+          // Membership/epoch/recipient-set conflicts cannot become valid by
+          // replaying the same sealed batch. Drop this exact operation so the
+          // owner can refresh the authoritative roster and retry safely.
+          discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (message.includes("Project requires encrypted content frames")
           || message.includes("Project key rotation is required")) {
           // A legacy queued event cannot be safely replayed after a project
@@ -138,6 +176,17 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
           discardQueuedEvent(paths.outbox, frame.requestId);
         }
         finish(new Error(message));
+      }
+      else if (response.type === "project.key.rotated" && frame.type === "project.member.remove-and-rotate") {
+        const parsed = projectKeyRotatedFrameSchema.safeParse(response);
+        if (!parsed.success) return;
+        if (parsed.data.projectId !== frame.projectId
+          || parsed.data.keyEpoch !== frame.expectedEpoch + 1
+          || !sameEnvelopeSet(parsed.data.envelopes, frame.envelopes)) {
+          finish(new Error("Project member removal acknowledgement did not match the queued operation"));
+          return;
+        }
+        finish();
       }
       else if (response.type === "chat.accepted" || response.type === "project.chat.accepted" || response.type === "private.accepted"
         || response.type === "agent.accepted" || response.type === "project.agent.accepted" || response.type === "prompt.accepted" || response.type === "project.prompt.accepted"

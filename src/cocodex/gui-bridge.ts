@@ -9,12 +9,75 @@ import { agentRuntimePaths } from "./agent-runtime-paths";
 import { loadAgentSafety } from "./agent-safety";
 
 const MAX_EVENTS = 500;
+const RENDERER_SERVER_FRAME_TYPES = new Set([
+  "project.list.result",
+  "project.member.list.result",
+  "project.member.removed",
+  "prompt.snapshot",
+  "prompt.update",
+  "context.result",
+  "context.updated",
+  "context.changed",
+  "usage.result",
+  "usage.changed",
+  "usage.accepted",
+  "agent.list.result",
+  "agent.task.list.result",
+  "artifact.list.result",
+  "artifact.accepted",
+  "artifact.published",
+  "file-reference.list.result",
+  "file-reference.accepted",
+  "file-reference.published",
+  "presence.snapshot",
+  "presence.update",
+  "presence.leave",
+  "chat.snapshot",
+  "chat.event",
+  "agent.result",
+]);
+const SENSITIVE_RENDERER_KEYS = new Set([
+  "ciphertext",
+  "sealedProjectKey",
+  "projectWrapPublicKeyPem",
+  "deviceKeyCertificate",
+  "privateKey",
+  "privateKeyPem",
+  "envelope",
+  "envelopes",
+]);
+const RENDERER_FRAME_FIELDS = new Set([
+  "version", "type", "requestId", "projectId",
+  "projects", "members", "events", "event", "updates", "update",
+  "context", "reports", "report", "agents", "tasks", "artifacts", "artifact",
+  "references", "reference",
+  "id", "name", "role", "deviceId", "displayName", "fingerprint", "trusted",
+  "sequence", "eventId", "senderDeviceId", "content", "acceptedAt",
+  "updateId", "finalGoal", "revision", "updatedByDeviceId", "updatedAt",
+  "requests", "inputTokens", "cachedInputTokens", "outputTokens",
+  "reasoningOutputTokens", "activeAgents", "accountLabel",
+  "fiveHourPercent", "fiveHourResetAt", "weeklyPercent", "weeklyResetAt",
+  "monthlyPercent", "monthlyResetAt", "customWindows", "label", "percent", "resetAt",
+  "agentId", "agentName", "primaryModel", "primaryEffort", "coAgentModel",
+  "coAgentEffort", "maxConcurrentCoAgents", "hostDeviceId", "hostDisplayName",
+  "enabled", "status", "activeTasks", "queuedTasks", "lastTaskAt",
+  "requesterDeviceId", "targetDeviceId", "dependencies", "inputArtifactIds",
+  "workspaceMode", "workspaceRef", "branch", "baseCommit", "mergeTarget",
+  "startedAt", "completedAt", "lastActivityAt", "eventCount", "encrypted",
+  "taskId", "authorDeviceId", "title", "summary", "createdAt",
+  "referenceId", "artifactId", "relativePath", "commitSha", "sha256",
+  "sizeBytes", "mediaType", "hostDeviceId",
+  "cursor", "caret", "typing", "x", "y", "anchor", "head",
+  "final",
+]);
 const ALLOWED_COMMANDS = new Set([
   "project.list",
   "project.key.get",
   "project.key.share",
   "project.key.initialize",
   "project.key.rotate",
+  "project.member.list",
+  "project.member.remove-and-rotate",
   "project.member.remove",
   "device.trust",
   "chat.subscribe",
@@ -99,7 +162,7 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
     || frame.type === "project.key.initialized"
     || frame.type === "project.key.rotated") {
     return {
-      ...record,
+      source: "server",
       frame: {
         type: frame.type,
         ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
@@ -112,14 +175,14 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
     };
   }
   if (frame.type === "private.message" && frame.message) {
-    return { ...record, frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
+    return { source: "server", frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
   }
   if (frame.type === "private.accepted" && frame.message) {
-    return { ...record, frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
+    return { source: "server", frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
   }
   if (frame.type === "private.snapshot" && Array.isArray(frame.messages)) {
     return {
-      ...record,
+      source: "server",
       frame: {
         ...frame,
         messages: frame.messages.map((message: Record<string, unknown>) => ({
@@ -129,7 +192,20 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
       },
     };
   }
-  return value;
+  if (record.source === "server" && !RENDERER_SERVER_FRAME_TYPES.has(String(frame.type))) {
+    return { source: "protocol", error: "Unsupported server frame withheld from the renderer" };
+  }
+  const projectRendererFields = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(projectRendererFields);
+    if (!candidate || typeof candidate !== "object") return candidate;
+    const projected: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(candidate as Record<string, unknown>)) {
+      if (!RENDERER_FRAME_FIELDS.has(key) || SENSITIVE_RENDERER_KEYS.has(key)) continue;
+      projected[key] = projectRendererFields(child);
+    }
+    return projected;
+  };
+  return { source: "server", frame: projectRendererFields(frame) };
 }
 
 export class CoCodexGuiBridge {

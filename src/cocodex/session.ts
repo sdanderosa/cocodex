@@ -14,6 +14,7 @@ import {
   type EncryptedAgentTask,
   type ChatEvent,
   type FileReferencePlaintext,
+  type ProjectMemberView,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
@@ -39,8 +40,12 @@ import {
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
 import { reportAgentExecution } from "./agent-execution-client";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
-import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
-import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
+import {
+  createDeviceKeyCertificate,
+  loadOrCreateClientIdentity,
+  verifyDeviceKeyCertificate,
+} from "./identity";
+import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { prepareTaskWorkspace } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
@@ -69,10 +74,12 @@ import {
   loadProjectKey,
   loadProjectKeyForEncryption,
   loadProjectKeyForRotation,
+  loadProjectKeyStore,
   loadProjectKeyState,
   markProjectKeyRotationRequired,
   removeProjectKey,
   revokeProjectKey,
+  restoreProjectKeyAccess,
   stageProjectKeyInitialization,
   storeProjectKey,
 } from "./project-key-store";
@@ -81,6 +88,11 @@ interface ControlCommand extends Record<string, unknown> {
   id?: string;
   type: string;
 }
+
+type CachedProjectMember = Omit<ProjectMemberView, "deviceKeyCertificate"> & {
+  projectWrapPublicKeyPem: string | null;
+  trusted: boolean;
+};
 
 function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -197,6 +209,8 @@ export async function runJsonLineSession(
   const contextSubscriptions = new Set<string>();
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
+  const projectMemberSubscriptions = new Set<string>();
+  const projectMembers = new Map<string, CachedProjectMember[]>();
   const usageSubscriptions = new Set<string>();
   const agentSubscriptions = new Set<string>();
   const agentTaskSubscriptions = new Set<string>();
@@ -1299,7 +1313,17 @@ export async function runJsonLineSession(
         expectedKeyEpoch: parsedEnvelope.keyEpoch,
         expectedSenderPublicKeyPem: senderPublicKeyPem,
       }).then(projectKey => {
-        storeProjectKey(paths.projectKeys, parsedEnvelope.projectId, parsedEnvelope.keyEpoch, projectKey);
+        const state = loadProjectKeyState(paths.projectKeys, parsedEnvelope.projectId);
+        if (state?.revoked) {
+          restoreProjectKeyAccess(
+            paths.projectKeys,
+            parsedEnvelope.projectId,
+            parsedEnvelope.keyEpoch,
+            projectKey,
+          );
+        } else {
+          storeProjectKey(paths.projectKeys, parsedEnvelope.projectId, parsedEnvelope.keyEpoch, projectKey);
+        }
         void migrateProjectSubscriptions(parsedEnvelope.projectId);
         emit({ source: "project-encryption", state: "key-available", projectId: parsedEnvelope.projectId, keyEpoch: parsedEnvelope.keyEpoch });
       }).catch(error => emitError({
@@ -1508,6 +1532,43 @@ export async function runJsonLineSession(
     localAgentWorkerRuns.set(policy.agentId, run);
   };
 
+  const revokeLocalProjectAccess = (projectId: string, reason: string): void => {
+    discardQueuedProjectEvents(paths, projectId);
+    const current = loadProjectKeyState(paths.projectKeys, projectId);
+    if (current && !current.revoked) {
+      revokeProjectKey(paths.projectKeys, projectId);
+      emit({ source: "project-encryption", state: "revoked", projectId });
+    }
+    chatSubscriptions.delete(projectId);
+    chatCursors.delete(projectId);
+    encryptedChatCursors.delete(projectId);
+    promptSubscriptions.delete(projectId);
+    encryptedPromptSubscriptions.delete(projectId);
+    encryptedPromptCursors.delete(projectId);
+    encryptedArtifactSubscriptions.delete(projectId);
+    encryptedFileReferenceSubscriptions.delete(projectId);
+    contextSubscriptions.delete(projectId);
+    encryptedContextSubscriptions.delete(projectId);
+    projectKeySubscriptions.delete(projectId);
+    projectMemberSubscriptions.delete(projectId);
+    usageSubscriptions.delete(projectId);
+    agentSubscriptions.delete(projectId);
+    agentTaskSubscriptions.delete(projectId);
+    projectMembers.delete(projectId);
+    for (const policy of localAgentPolicies.values()) {
+      if (policy.projectId !== projectId) continue;
+      const runtime = agentRuntimePaths(
+        paths,
+        policy.agentId,
+        localAgentLegacyRuntime.get(policy.agentId) === true,
+      );
+      const safety = emergencyStopAgent(runtime.safety, reason);
+      localAgentSafeties.set(policy.agentId, safety);
+      localAgentBridges.get(policy.agentId)?.emergencyStop(reason);
+      emitAgentSafety(undefined, policy.agentId);
+    }
+  };
+
   for (const policy of localAgentPolicies.values()) {
     startAgentWorker(policy, localAgentLegacyRuntime.get(policy.agentId) === true);
   }
@@ -1518,10 +1579,14 @@ export async function runJsonLineSession(
       let frame: Record<string, any>;
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
-      if (frame.type === "agent.list.result" || frame.type === "agent.created"
+      if (frame.type === "project.list.result"
+        || frame.type === "agent.list.result" || frame.type === "agent.created"
         || frame.type === "agent.task.list.result"
-        || frame.type === "project.key.initialized"
+        || frame.type === "project.key.result" || frame.type === "project.key.accepted"
+        || frame.type === "project.key.initialized" || frame.type === "project.key.changed"
+        || frame.type === "project.key.rotated"
         || frame.type === "project.key.rotation-required"
+        || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
         try { frame = projectServerFrameSchema.parse(frame) as Record<string, any>; }
@@ -1576,11 +1641,13 @@ export async function runJsonLineSession(
         // Project membership is authoritative on the server. Refreshing the
         // addressed key envelopes after a project-list response recovers a
         // recipient that was offline during the original initialization.
+        const activeProjectIds = new Set<string>();
         for (const project of frame.projects) {
           const projectId = project && typeof project === "object"
             ? String((project as Record<string, unknown>).id ?? "")
             : "";
           if (!projectId) continue;
+          activeProjectIds.add(projectId);
           projectKeySubscriptions.add(projectId);
           try {
             send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
@@ -1589,6 +1656,72 @@ export async function runJsonLineSession(
             // socket is ready again.
           }
         }
+        const keyStore = loadProjectKeyStore(paths.projectKeys);
+        const knownProjectIds = new Set([
+          ...Object.keys(keyStore.projects),
+          ...Object.keys(keyStore.states ?? {}),
+        ]);
+        for (const knownProjectId of knownProjectIds) {
+          const state = loadProjectKeyState(paths.projectKeys, knownProjectId);
+          if (!activeProjectIds.has(knownProjectId) && state && !state.revoked) {
+            revokeLocalProjectAccess(
+              knownProjectId,
+              "Project membership was removed by the authoritative CoCodex Server.",
+            );
+          }
+        }
+      }
+      if (frame.type === "project.member.list.result") {
+        const trustedDevices = loadTrustedDevices(paths.trustedDevices);
+        const members = frame.members.map((member: ProjectMemberView): CachedProjectMember => {
+          let projectWrapPublicKeyPem: string | null = null;
+          let trusted = false;
+          if (member.deviceKeyCertificate) {
+            try {
+              const certificate = verifyDeviceKeyCertificate(
+                member.deviceKeyCertificate,
+                member.deviceId,
+              );
+              if (certificate.fingerprint !== member.fingerprint) {
+                throw new Error("Project member certificate fingerprint does not match the roster");
+              }
+              trusted = member.deviceId === connection.deviceId
+                ? certificate.projectWrapPublicKeyPem === identity.projectWrapPublicKeyPem
+                : trustedDevices[member.deviceId] === certificate.fingerprint;
+              if (trusted) projectWrapPublicKeyPem = certificate.projectWrapPublicKeyPem ?? null;
+            } catch (error) {
+              emitError({
+                source: "project-encryption",
+                projectId: frame.projectId,
+                deviceId: member.deviceId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          return {
+            deviceId: member.deviceId,
+            displayName: member.displayName,
+            fingerprint: member.fingerprint,
+            role: member.role,
+            projectWrapPublicKeyPem,
+            trusted,
+          };
+        });
+        projectMembers.set(String(frame.projectId), members);
+        emit({
+          source: "server",
+          frame: {
+            ...frame,
+            members: members.map((member: CachedProjectMember) => ({
+              deviceId: member.deviceId,
+              displayName: member.displayName,
+              fingerprint: member.fingerprint,
+              role: member.role,
+              trusted: member.trusted,
+            })),
+          },
+        });
+        return;
       }
       if (frame.type === "project.prompt.snapshot" || frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
         void openEncryptedPromptFrame(frame);
@@ -1728,10 +1861,17 @@ export async function runJsonLineSession(
         markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
         emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), removedDeviceId: String(frame.removedDeviceId), currentEpoch: Number(frame.currentEpoch) });
       } else if (frame.type === "project.member.removed") {
+        const projectId = String(frame.projectId);
+        projectMembers.set(
+          projectId,
+          (projectMembers.get(projectId) ?? []).filter(member => member.deviceId !== frame.deviceId),
+        );
         if (frame.deviceId === connection.deviceId) {
           try {
-            revokeProjectKey(paths.projectKeys, String(frame.projectId));
-            emit({ source: "project-encryption", state: "revoked", projectId: String(frame.projectId) });
+            revokeLocalProjectAccess(
+              projectId,
+              "Project membership was removed by the authoritative CoCodex Server.",
+            );
           } catch (error) {
             emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
           }
@@ -1835,6 +1975,12 @@ export async function runJsonLineSession(
       emit({ source: "server", frame });
     };
     connected.addEventListener("message", listener);
+    send({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: createDeviceKeyCertificate(connection.deviceId, identity),
+    });
     for (const pending of pendingAgentConfigurations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will replay the exact signed create */ }
@@ -1894,6 +2040,9 @@ export async function runJsonLineSession(
     }
     for (const projectId of projectKeySubscriptions) {
       send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
+    }
+    for (const projectId of projectMemberSubscriptions) {
+      send({ version: 1, type: "project.member.list", requestId: randomUUID(), projectId });
     }
     for (const projectId of encryptedContextSubscriptions) {
       send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
@@ -2181,6 +2330,77 @@ export async function runJsonLineSession(
           send({ version: 1, type: "project.key.rotate", requestId, projectId, expectedEpoch: current.keyEpoch, envelopes });
           projectKeySubscriptions.add(projectId);
           emit({ source: "control", id: command.id, ok: true, projectId, keyEpoch: nextEpoch, recipients: envelopes.length });
+        } else if (command.type === "project.member.list") {
+          const projectId = String(command.projectId);
+          projectMemberSubscriptions.add(projectId);
+          send({
+            version: 1,
+            type: "project.member.list",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
+        } else if (command.type === "project.member.remove-and-rotate") {
+          if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
+          const projectId = String(command.projectId);
+          const deviceId = String(command.deviceId);
+          const current = loadProjectKeyForRotation(paths.projectKeys, projectId);
+          if (!current) throw new Error(`No project encryption key is available for ${projectId}`);
+          const members = projectMembers.get(projectId);
+          if (!members) {
+            throw new Error("Refresh the authoritative project member list before removing a device");
+          }
+          const owner = members.find(member => member.deviceId === connection.deviceId);
+          if (!owner || owner.role !== "owner") throw new Error("Only a project owner can remove members");
+          if (owner.projectWrapPublicKeyPem !== identity.projectWrapPublicKeyPem) {
+            throw new Error("The server project-wrap key for this device does not match its local identity");
+          }
+          const target = members.find(member => member.deviceId === deviceId);
+          if (!target || target.role === "owner") throw new Error("The selected device is not a removable project member");
+          const remaining = members.filter(member => member.deviceId !== deviceId);
+          if (remaining.length < 1 || remaining.length > 127) {
+            throw new Error("Project member removal requires 1-127 remaining members");
+          }
+          if (remaining.some(member => !member.projectWrapPublicKeyPem)) {
+            throw new Error("Every remaining project member must enroll a project-wrap key before rotation");
+          }
+          const projectKey = createProjectKey();
+          const nextEpoch = current.keyEpoch + 1;
+          const envelopes = [];
+          for (const member of remaining) {
+            envelopes.push(await sealProjectKeyEnvelope({
+              projectId,
+              keyEpoch: nextEpoch,
+              recipientDeviceId: member.deviceId,
+              senderDeviceId: connection.deviceId,
+              projectKey,
+              recipientProjectWrapPublicKeyPem: member.projectWrapPublicKeyPem!,
+              senderPrivateKeyPem: identity.privateKeyPem,
+              senderPublicKeyPem: identity.publicKeyPem,
+            }));
+          }
+          const requestId = controlRequestId(command.id);
+          projectKeySubscriptions.add(projectId);
+          projectMemberSubscriptions.add(projectId);
+          enqueueDurableEvent(paths, {
+            version: 1,
+            type: "project.member.remove-and-rotate",
+            requestId,
+            projectId,
+            deviceId,
+            expectedEpoch: current.keyEpoch,
+            envelopes,
+          });
+          const delivered = await flush();
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            queued: delivered === 0,
+            projectId,
+            deviceId,
+            keyEpoch: nextEpoch,
+            recipients: envelopes.length,
+          });
         } else if (command.type === "project.member.remove") {
           const projectId = String(command.projectId);
           const deviceId = String(command.deviceId);

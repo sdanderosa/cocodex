@@ -111,6 +111,73 @@ describe("CoCodex durable offline outbox", () => {
     }
   });
 
+  test("persists atomic member removal until a strict key-rotation acknowledgement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-member-removal-outbox-"));
+    const paths = clientPaths(root);
+    const projectId = randomUUID();
+    const frame = {
+      version: 1 as const,
+      type: "project.member.remove-and-rotate" as const,
+      requestId: randomUUID(),
+      projectId,
+      deviceId: randomUUID(),
+      expectedEpoch: 1,
+      envelopes: [{
+        version: 1 as const,
+        projectId,
+        keyEpoch: 2,
+        recipientDeviceId: randomUUID(),
+        senderDeviceId: randomUUID(),
+        sealedProjectKey: Buffer.alloc(80, 1).toString("base64url"),
+        senderPublicKeyPem: "P".repeat(64),
+        signature: Buffer.alloc(64, 2).toString("base64url"),
+      }],
+    };
+    class Socket {
+      constructor(private readonly mismatch?: "project" | "epoch" | "envelope") {}
+      private listeners = new Set<(event: MessageEvent) => void>();
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.add(listener);
+      }
+      removeEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.delete(listener);
+      }
+      send(value: string) {
+        const sent = JSON.parse(value) as typeof frame;
+        const envelopes = this.mismatch === "envelope"
+          ? sent.envelopes.map(envelope => ({
+            ...envelope,
+            sealedProjectKey: Buffer.alloc(80, 9).toString("base64url"),
+          }))
+          : sent.envelopes;
+        queueMicrotask(() => this.listeners.forEach(listener => listener({
+          data: JSON.stringify({
+            version: 1,
+            type: "project.key.rotated",
+            requestId: sent.requestId,
+            projectId: this.mismatch === "project" ? randomUUID() : sent.projectId,
+            keyEpoch: this.mismatch === "epoch" ? 3 : 2,
+            envelopes,
+            created: true,
+          }),
+        } as MessageEvent)));
+      }
+    }
+    try {
+      expect(enqueueDurableEvent(paths, frame)).toEqual(frame);
+      expect(queuedEvents(clientPaths(root))).toEqual([frame]);
+      for (const mismatch of ["project", "epoch", "envelope"] as const) {
+        await expect(flushDurableOutbox(new Socket(mismatch) as unknown as WebSocket, paths))
+          .rejects.toThrow("did not match");
+        expect(queuedEvents(paths)).toEqual([frame]);
+      }
+      expect(await flushDurableOutbox(new Socket() as unknown as WebSocket, paths)).toBe(1);
+      expect(queuedEvents(paths)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("persists only the sealed file-reference envelope while offline", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-outbox-"));
     const paths = clientPaths(root);
@@ -229,6 +296,54 @@ describe("CoCodex durable offline outbox", () => {
       await expect(flushDurableOutbox(new ErrorSocket() as unknown as WebSocket, paths))
         .rejects.toThrow("revision conflict");
       expect(queuedEvents(paths)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("purges every queued write for an authoritatively revoked project", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-revoked-project-outbox-"));
+    const paths = clientPaths(root);
+    const revokedProjectId = randomUUID();
+    const retainedProjectId = randomUUID();
+    const makeChat = (projectId: string, content: string) => ({
+      version: 1 as const,
+      type: "chat.send" as const,
+      requestId: randomUUID(),
+      projectId,
+      eventId: randomUUID(),
+      content,
+      clientCreatedAt: new Date().toISOString(),
+    });
+    const revokedFirst = makeChat(revokedProjectId, "queued before revocation");
+    const revokedSecond = makeChat(revokedProjectId, "also terminal");
+    const retained = makeChat(retainedProjectId, "other project remains durable");
+    class RevokedSocket {
+      private listeners = new Set<(event: MessageEvent) => void>();
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.add(listener);
+      }
+      removeEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.delete(listener);
+      }
+      send(value: string) {
+        const sent = JSON.parse(value) as { requestId: string };
+        queueMicrotask(() => this.listeners.forEach(listener => listener({
+          data: JSON.stringify({
+            type: "error",
+            requestId: sent.requestId,
+            error: "Device is not an approved project member",
+          }),
+        } as MessageEvent)));
+      }
+    }
+    try {
+      enqueueDurableEvent(paths, revokedFirst);
+      enqueueDurableEvent(paths, revokedSecond);
+      enqueueDurableEvent(paths, retained);
+      await expect(flushDurableOutbox(new RevokedSocket() as unknown as WebSocket, paths))
+        .rejects.toThrow("not an approved project member");
+      expect(queuedEvents(paths)).toEqual([retained]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

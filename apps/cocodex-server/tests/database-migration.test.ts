@@ -58,7 +58,7 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }]);
       expect(migrated.query(`
         SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
           coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
@@ -121,6 +121,7 @@ describe("CoCodex database migrations", () => {
       const deviceId = randomUUID();
       const projectId = randomUUID();
       const agentId = randomUUID();
+      const taskId = randomUUID();
       legacy.query(`
         INSERT INTO invitations (id, token_hash, expires_at, consumed_at, created_at)
         VALUES (?, ?, ?, ?, ?)
@@ -142,6 +143,17 @@ describe("CoCodex database migrations", () => {
         INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
         VALUES (?, ?, ?, 'Legacy Agent', 1, ?)
       `).run(agentId, projectId, deviceId, appliedAt);
+      const insertLegacyTask = legacy.query(`
+        INSERT INTO agent_tasks (
+          id, project_id, requester_device_id, target_device_id, agent_id,
+          prompt, nonce, issued_at, expires_at, requester_signature,
+          server_signature, status, accepted_at
+        ) VALUES (?, ?, ?, ?, ?, 'Legacy task', ?, ?, ?, 'request-signature',
+          'server-signature', 'completed', ?)
+      `);
+      insertLegacyTask.run(taskId, projectId, deviceId, deviceId, agentId, randomUUID(),
+        appliedAt, new Date(Date.now() + 60_000).toISOString(), appliedAt);
+      insertLegacyTask.finalize();
       legacy.close();
 
       migrated = openDatabase(path);
@@ -162,11 +174,19 @@ describe("CoCodex database migrations", () => {
           coagent_effort = 'medium', max_concurrent_coagents = 0
         WHERE id = ?
       `).run(agentId)).toThrow("inconsistent agent runtime definition");
+      expect(migrated.query("SELECT id FROM agent_tasks WHERE id = ?").get(taskId)).toEqual({ id: taskId });
+      expect(migrated.query("SELECT id FROM agents WHERE id = ?").get(agentId)).toEqual({ id: agentId });
+      expect((migrated.query("PRAGMA foreign_key_list(agents)").all() as Array<{ table: string }>)
+        .some(constraint => constraint.table === "project_members")).toBeFalse();
+      expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;
     } finally {
-      migrated?.close();
+      if (migrated) {
+        try { migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;"); }
+        finally { migrated.close(); }
+      }
       Bun.gc(true);
       for (let attempt = 0; attempt < 60; attempt += 1) {
         try {

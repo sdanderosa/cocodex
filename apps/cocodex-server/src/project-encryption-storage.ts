@@ -68,6 +68,11 @@ export interface ProjectKeyInitializationResult extends ProjectKeyEpochRecord {
   created: boolean;
 }
 
+export interface ProjectMemberRemovalRotationResult extends ProjectKeyRotationResult {
+  removedDeviceId: string;
+  cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
+}
+
 function enrolledSigningKey(db: Database, deviceId: string): string {
   const row = db.query(`
     SELECT public_key_pem AS publicKeyPem
@@ -564,20 +569,26 @@ export function removeProjectMemberAndInvalidateKeys(
   ownerDeviceId: string,
   memberDeviceId: string,
   now = new Date(),
-): string[] {
-  let cancelledTaskIds: string[] = [];
+): Array<{ taskId: string; targetDeviceId: string }> {
+  let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }> = [];
   removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now, () => {
-    cancelledTaskIds = (db.query(`
-      SELECT id FROM agent_tasks
-      WHERE project_id = ? AND target_device_id = ? AND status IN ('queued', 'running')
+    db.query(`
+      UPDATE agents SET enabled = 0
+      WHERE project_id = ? AND host_device_id = ?
+    `).run(projectId, memberDeviceId);
+    cancelledTasks = db.query(`
+      SELECT id AS taskId, target_device_id AS targetDeviceId FROM agent_tasks
+      WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+        AND status IN ('queued', 'running')
       ORDER BY accepted_at ASC, id ASC
-    `).all(projectId, memberDeviceId) as Array<{ id: string }>).map(row => row.id);
-    if (cancelledTaskIds.length > 0) {
+    `).all(projectId, memberDeviceId, memberDeviceId) as Array<{ taskId: string; targetDeviceId: string }>;
+    if (cancelledTasks.length > 0) {
       db.query(`
         UPDATE agent_tasks
         SET status = 'failed', completed_at = ?
-        WHERE project_id = ? AND target_device_id = ? AND status IN ('queued', 'running')
-      `).run(now.toISOString(), projectId, memberDeviceId);
+        WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+          AND status IN ('queued', 'running')
+      `).run(now.toISOString(), projectId, memberDeviceId, memberDeviceId);
     }
     db.query(`
       DELETE FROM project_key_envelopes
@@ -589,7 +600,233 @@ export function removeProjectMemberAndInvalidateKeys(
       WHERE project_id = ?
     `).run(now.toISOString(), projectId);
   });
-  return cancelledTaskIds;
+  return cancelledTasks;
+}
+
+/**
+ * Remove one member and install the next complete key epoch in the same
+ * transaction. This closes the revocation window: either membership, active
+ * task cancellation, old-envelope invalidation, and the new recipient set all
+ * commit, or none of them do.
+ */
+export function removeProjectMemberAndRotateKeys(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  memberDeviceId: string,
+  expectedEpoch: number,
+  rotationId: string,
+  values: unknown,
+  now = new Date(),
+): ProjectMemberRemovalRotationResult {
+  if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 1) {
+    throw new Error("Invalid expected project key epoch");
+  }
+  if (!rotationId || rotationId.length > 128) throw new Error("Invalid project key rotation ID");
+  if (!Array.isArray(values) || values.length < 1 || values.length > 127) {
+    throw new Error("Project member removal requires 1-127 rotation envelopes");
+  }
+  const envelopes = values.map(value => projectKeyEnvelopeSchema.parse(value));
+  const priorOperation = db.query(`
+    SELECT project_id AS projectId, owner_device_id AS ownerDeviceId,
+      removed_device_id AS removedDeviceId, key_epoch AS keyEpoch,
+      envelopes_json AS envelopesJson, cancelled_tasks_json AS cancelledTasksJson,
+      created_at AS createdAt
+    FROM project_member_removal_rotations
+    WHERE rotation_id = ?
+  `).get(rotationId) as {
+    projectId: string;
+    ownerDeviceId: string;
+    removedDeviceId: string;
+    keyEpoch: number;
+    envelopesJson: string;
+    cancelledTasksJson: string;
+    createdAt: string;
+  } | null;
+  if (priorOperation) {
+    let priorEnvelopes: ProjectKeyEnvelope[];
+    let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
+    try {
+      const parsedEnvelopes = JSON.parse(priorOperation.envelopesJson) as unknown;
+      if (!Array.isArray(parsedEnvelopes)) throw new Error("invalid envelopes");
+      priorEnvelopes = parsedEnvelopes.map(value => projectKeyEnvelopeSchema.parse(value));
+      const parsedTasks = JSON.parse(priorOperation.cancelledTasksJson) as unknown;
+      if (!Array.isArray(parsedTasks)
+        || !parsedTasks.every(value =>
+          value && typeof value === "object"
+          && typeof (value as Record<string, unknown>).taskId === "string"
+          && typeof (value as Record<string, unknown>).targetDeviceId === "string")) {
+        throw new Error("invalid cancelled tasks");
+      }
+      cancelledTasks = parsedTasks as Array<{ taskId: string; targetDeviceId: string }>;
+    } catch {
+      throw new Error("Project member removal replay record is invalid");
+    }
+    if (priorOperation.projectId !== projectId
+      || priorOperation.ownerDeviceId !== ownerDeviceId
+      || priorOperation.removedDeviceId !== memberDeviceId
+      || priorOperation.keyEpoch !== expectedEpoch + 1
+      || !sameEnvelopeSet(priorEnvelopes, envelopes)) {
+      throw new Error("Project member removal replay conflict");
+    }
+    const currentState = readProjectKeyEpoch(db, projectId);
+    return {
+      projectId,
+      currentEpoch: currentState?.currentEpoch ?? priorOperation.keyEpoch,
+      lastRotationId: currentState?.lastRotationId ?? rotationId,
+      updatedAt: priorOperation.createdAt,
+      rotationRequired: currentState?.rotationRequired ?? false,
+      keyEpoch: priorOperation.keyEpoch,
+      envelopes: priorEnvelopes,
+      created: false,
+      removedDeviceId: memberDeviceId,
+      cancelledTasks,
+    };
+  }
+  const state = readProjectKeyEpoch(db, projectId);
+  const ownerMembership = requireProjectMembership(db, projectId, ownerDeviceId);
+  if (ownerMembership.role !== "owner") throw new Error("Only a project owner can remove members");
+  if (ownerDeviceId === memberDeviceId) throw new Error("A project owner cannot remove itself");
+  const member = db.query(`
+    SELECT role FROM project_members WHERE project_id = ? AND device_id = ?
+  `).get(projectId, memberDeviceId) as { role: "owner" | "member" } | null;
+  if (!member) throw new Error("Device is not a project member");
+  if (member.role === "owner") throw new Error("A project owner cannot be removed");
+  const currentEpoch = state?.currentEpoch ?? 0;
+  if (currentEpoch !== expectedEpoch) {
+    throw new Error(`Project key rotation conflict (expected ${expectedEpoch}, current ${currentEpoch})`);
+  }
+  const keyEpoch = currentEpoch + 1;
+  if (keyEpoch > 0x7fffffff) throw new Error("Project key epoch limit reached");
+  const remainingMembers = approvedProjectMembers(db, projectId).filter(id => id !== memberDeviceId);
+  const remainingSet = new Set(remainingMembers);
+  const recipients = new Set<string>();
+  if (envelopes.some(envelope => envelope.projectId !== projectId || envelope.keyEpoch !== keyEpoch)) {
+    throw new Error(`Project member removal envelopes must use project ${projectId} epoch ${keyEpoch}`);
+  }
+  for (const envelope of envelopes) {
+    if (envelope.senderDeviceId !== ownerDeviceId) {
+      throw new Error("Project member removal envelopes must be signed by the owner");
+    }
+    if (recipients.has(envelope.recipientDeviceId)) {
+      throw new Error("Project member removal contains duplicate recipients");
+    }
+    if (!remainingSet.has(envelope.recipientDeviceId)) {
+      throw new Error("Project member removal recipient is not a remaining approved project member");
+    }
+    recipients.add(envelope.recipientDeviceId);
+    verifyEnvelopeSender(
+      db,
+      ownerDeviceId,
+      envelope.senderPublicKeyPem,
+      projectKeyEnvelopeSigningTranscript(envelope),
+      envelope.signature,
+    );
+  }
+  if (recipients.size !== remainingSet.size || remainingMembers.some(id => !recipients.has(id))) {
+    throw new Error("Project member removal must rotate to every remaining approved project member");
+  }
+  const serialized = envelopes.map(envelope => envelopeJson(envelope));
+  let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }> = [];
+  removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now, () => {
+    db.query(`
+      UPDATE agents SET enabled = 0
+      WHERE project_id = ? AND host_device_id = ?
+    `).run(projectId, memberDeviceId);
+    cancelledTasks = db.query(`
+      SELECT id AS taskId, target_device_id AS targetDeviceId
+      FROM agent_tasks
+      WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+        AND status IN ('queued', 'running')
+      ORDER BY accepted_at ASC, id ASC
+    `).all(projectId, memberDeviceId, memberDeviceId) as Array<{ taskId: string; targetDeviceId: string }>;
+    if (cancelledTasks.length > 0) {
+      db.query(`
+        UPDATE agent_tasks SET status = 'failed', completed_at = ?
+        WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+          AND status IN ('queued', 'running')
+      `).run(now.toISOString(), projectId, memberDeviceId, memberDeviceId);
+    }
+    const removalAuditUpdate = db.query(`
+      UPDATE audit_events
+      SET details_json = ?
+      WHERE rowid = (
+        SELECT rowid FROM audit_events
+        WHERE event_type = 'project.member.removed' AND actor_device_id = ? AND subject_id = ?
+          AND json_extract(details_json, '$.projectId') = ?
+          AND json_extract(details_json, '$.rotationId') IS NULL
+        ORDER BY rowid DESC LIMIT 1
+      )
+    `).run(
+      JSON.stringify({ projectId, rotationId, keyEpoch, cancelledTasks }),
+      ownerDeviceId,
+      memberDeviceId,
+      projectId,
+    );
+    if (removalAuditUpdate.changes !== 1) {
+      throw new Error("Project member removal audit record was not created");
+    }
+    db.query(`
+      DELETE FROM project_key_envelopes
+      WHERE project_id = ? AND (recipient_device_id = ? OR sender_device_id = ?)
+    `).run(projectId, memberDeviceId, memberDeviceId);
+    const timestamp = now.toISOString();
+    for (let index = 0; index < envelopes.length; index += 1) {
+      const envelope = envelopes[index]!;
+      db.query(`
+        INSERT INTO project_key_envelopes (
+          project_id, key_epoch, recipient_device_id, sender_device_id,
+          envelope_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        projectId,
+        keyEpoch,
+        envelope.recipientDeviceId,
+        envelope.senderDeviceId,
+        serialized[index],
+        timestamp,
+        timestamp,
+      );
+    }
+    const advanced = db.query(`
+      UPDATE project_key_epochs
+      SET current_epoch = ?, last_rotation_id = ?, updated_by_device_id = ?,
+        updated_at = ?, rotation_required = 0
+      WHERE project_id = ? AND current_epoch = ?
+    `).run(keyEpoch, rotationId, ownerDeviceId, timestamp, projectId, expectedEpoch);
+    if (advanced.changes !== 1) throw new Error("Project key epoch changed during member removal");
+    db.query(`
+      INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
+      VALUES ('project.key.rotated-after-removal', ?, ?, ?, ?)
+    `).run(ownerDeviceId, memberDeviceId, timestamp, JSON.stringify({ projectId, keyEpoch, rotationId }));
+    db.query(`
+      INSERT INTO project_member_removal_rotations (
+        rotation_id, project_id, owner_device_id, removed_device_id,
+        key_epoch, envelopes_json, cancelled_tasks_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      rotationId,
+      projectId,
+      ownerDeviceId,
+      memberDeviceId,
+      keyEpoch,
+      JSON.stringify(envelopes),
+      JSON.stringify(cancelledTasks),
+      timestamp,
+    );
+  });
+  return {
+    projectId,
+    currentEpoch: keyEpoch,
+    lastRotationId: rotationId,
+    updatedAt: now.toISOString(),
+    rotationRequired: false,
+    keyEpoch,
+    envelopes,
+    created: true,
+    removedDeviceId: memberDeviceId,
+    cancelledTasks,
+  };
 }
 
 export function listProjectKeyEnvelopes(

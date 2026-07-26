@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { ChatEvent, SharedProject } from "../../../packages/cocodex-protocol/src/index.ts";
+import type { ProjectMemberView } from "../../../packages/cocodex-protocol/src/index.ts";
 
 interface DeviceStatusRow {
   status: "pending" | "approved" | "revoked";
@@ -49,6 +50,14 @@ export function addProjectMember(
   if (actor?.role !== "owner") throw new Error("Only a project owner can add members");
   const member = db.query("SELECT status FROM devices WHERE id = ?").get(memberDeviceId) as DeviceStatusRow | null;
   if (!member || member.status !== "approved") throw new Error("Project member device is not approved");
+  const existing = db.query(`
+    SELECT 1 AS present FROM project_members WHERE project_id = ? AND device_id = ?
+  `).get(projectId, memberDeviceId);
+  if (existing) return;
+  const count = db.query(`
+    SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?
+  `).get(projectId) as { count: number };
+  if (count.count >= 128) throw new Error("Project member limit reached");
   db.query(`
     INSERT INTO project_members (project_id, device_id, role, joined_at)
     VALUES (?, ?, 'member', ?)
@@ -92,6 +101,26 @@ export function listProjects(db: Database, deviceId: string): SharedProject[] {
     WHERE pm.device_id = ? AND d.status = 'approved'
     ORDER BY p.created_at ASC, p.id ASC
   `).all(deviceId) as SharedProject[];
+}
+
+export function listProjectMembers(
+  db: Database,
+  projectId: string,
+  deviceId: string,
+): ProjectMemberView[] {
+  requireProjectMembership(db, projectId, deviceId);
+  return db.query(`
+    SELECT
+      d.id AS deviceId,
+      d.display_name AS displayName,
+      d.fingerprint,
+      pm.role,
+      d.device_key_certificate AS deviceKeyCertificate
+    FROM project_members pm
+    JOIN devices d ON d.id = pm.device_id
+    WHERE pm.project_id = ? AND d.status = 'approved'
+    ORDER BY CASE pm.role WHEN 'owner' THEN 0 ELSE 1 END, pm.joined_at ASC, d.id ASC
+  `).all(projectId) as ProjectMemberView[];
 }
 
 export function requireProjectMembership(db: Database, projectId: string, deviceId: string): MembershipRow {

@@ -159,15 +159,16 @@ encryption metadata for the requesting project member. It joins both legacy
 and encrypted result-event tables without opening ciphertext or prompts, so a
 GUI activity card cannot become a server-side agent context leak.
 
-Removing a project member is an atomic security boundary: the server deletes
-their key envelopes, terminalizes queued/running work targeted at that host,
-marks the current key epoch as `rotation_required`, and notifies remaining
-members. While that gate is set, encrypted chat, prompt, context, artifact,
-and agent writes must use the current epoch and every legacy plaintext route is
-rejected. A complete owner-signed rotation containing every remaining approved
-member clears the gate. Historical pre-key plaintext rows are retained for
-audit but are not served through keyed routes; a full historical migration is
-still a release-gate item.
+The owner-facing removal path is one atomic security boundary. The server
+verifies a complete next-epoch envelope set for every remaining approved
+member, then one SQLite transaction removes membership, disables the removed
+host's agents, terminalizes queued/running work where that device is requester
+or target, deletes its key envelopes, installs the new epoch, and records the
+immutable replay result. Exact replay remains safe after later rotations and
+does not repeat cancellation or membership fanout. The older two-step removal
+route remains fail closed behind `rotation_required` for compatibility.
+Historical pre-key plaintext rows are retained for audit but are not served
+through keyed routes; a full historical migration is still a release-gate item.
 
 Presence is a separate ephemeral membership-scoped channel. Both legacy and
 encrypted chat subscriptions register the socket for presence snapshots and
@@ -214,10 +215,11 @@ This is not yet a whole-project E2EE claim. Legacy `context.*`, `agent.*`, and
 file-reference paths remain server-readable for projects without a key.
 Keyed projects now use encrypted metadata-only local file references; actual
 file-content transfer is not implemented. Legacy `prompt.*` and
-`artifact.*` remain for projects without a project key. Key rotation and
-project-member removal are implemented for the project-key lifecycle, but a
-release still needs automatic rotation orchestration and UI before claiming
-complete revocation UX. See ADR 0016 for the keyed agent boundary.
+`artifact.*` remain for projects without a project key. The owner GUI and
+resident Client now perform verified-device atomic removal and immediate key
+rotation; the removed client revokes local access live or during authoritative
+reconnect reconciliation. See ADRs 0016 and 0031 for the keyed agent and
+revocation boundaries.
 
 The private alpha deliberately defers relay/libp2p traversal, automatic
 failover, full multi-device ratchets, and cross-platform service installers.

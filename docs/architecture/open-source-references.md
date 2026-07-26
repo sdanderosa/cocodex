@@ -120,9 +120,15 @@ reviewed again before release.
     0026.
 - **Revocation-safe key rotation:** retain Syncthing-style cryptographic device
   identity and explicit trust, then add a CoCodex-specific server epoch gate
-  for member removal. No reference source code is copied; the transaction,
-  strict notice, and legacy-route rejection are independently implemented. See
-  ADR 0019.
+  plus an atomic owner removal/complete-recipient rotation command. The
+  resident Client, not the GUI or Server, generates the next key and sealed
+  envelopes from device-signed key certificates whose signing fingerprints
+  were explicitly trusted locally. Removed requesters
+  and hosts have active tasks terminalized, and reconnect project-list
+  reconciliation revokes devices that missed the live notice. No reference
+  source code is copied; the transactions, immutable exact replay, strict
+  notices, revoked-project outbox purge, and legacy-route rejection are
+  independently implemented. See ADR 0019 and ADR 0031.
 - **Authoritative project context:** the encrypted `project.context.*` path
   keeps only signed opaque envelopes in SQLite, with a monotonic server
   revision; stale optimistic writers receive a conflict instead of overwriting

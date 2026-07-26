@@ -841,12 +841,14 @@ The following also remain deferred or insufficiently evidenced:
   agent results now use explicit encrypted frames, but file references remain
   server-readable and legacy plaintext compatibility routes remain for
   projects without a key. Final Goal/context, shared chat, shared prompt
-  updates, keyed artifacts, and keyed agent events are encrypted only through
-  their explicit new frames. Automatic post-removal rotation orchestration and
-  revocation UI are still incomplete.
-- robust CGNAT detection, relay, libp2p,
-  forward-secret ratcheted messaging, multi-device messaging, and revocation
-  UI. The current GUI/server path includes a bounded Yjs shared-prompt
+  updates, keyed artifacts, keyed local-file-reference metadata, and keyed
+  agent events are encrypted only through their explicit new frames. The
+  owner revocation UI now uses verified device certificates and an atomic
+  removal/complete-recipient rotation path; production-grade key-directory
+  transparency remains deferred.
+- robust CGNAT detection, relay, libp2p, forward-secret ratcheted messaging,
+  and multi-device messaging. The current GUI/server path includes a bounded
+  Yjs shared-prompt
   document, but it does not yet provide a full Hocuspocus deployment or
   pagination-gap UX beyond the tested cursor protocol.
 

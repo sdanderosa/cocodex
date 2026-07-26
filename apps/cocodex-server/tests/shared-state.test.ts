@@ -10,6 +10,7 @@ import {
   appendChatEventResult,
   chatEventsAfter,
   createProject,
+  listProjectMembers,
   listProjects,
 } from "../src/shared-state";
 import { listArtifacts, publishArtifact } from "../src/artifacts";
@@ -65,6 +66,15 @@ describe("authoritative shared state", () => {
       addProjectMember(db, project.id, stephen, kai, now);
       expect(listProjects(db, stephen)).toEqual([project]);
       expect(listProjects(db, kai)).toEqual([{ ...project, role: "member" }]);
+      expect(listProjectMembers(db, project.id, stephen).map(member => ({
+        deviceId: member.deviceId,
+        displayName: member.displayName,
+        role: member.role,
+        deviceKeyCertificate: member.deviceKeyCertificate,
+      }))).toEqual([
+        { deviceId: stephen, displayName: "Stephen", role: "owner", deviceKeyCertificate: null },
+        { deviceId: kai, displayName: "Kai", role: "member", deviceKeyCertificate: null },
+      ]);
 
       const first = appendChatEvent(db, {
         projectId: project.id,

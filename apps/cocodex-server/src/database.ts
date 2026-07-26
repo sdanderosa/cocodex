@@ -34,9 +34,22 @@ function applyMigrations(db: Database): void {
     db.query("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
       .run(version, new Date().toISOString());
   });
-  for (const migration of migrations) {
-    const present = db.query("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration.version);
-    if (!present) apply.immediate(migration.version, migration.sql);
+  // SQLite requires foreign-key enforcement to be disabled outside a
+  // transaction while rebuilding a referenced table. Migration 24 removes
+  // the project-membership parent constraint from historical agent rows; all
+  // constraints are re-enabled and exhaustively checked before this function
+  // returns.
+  const requiresAgentParentRebuild = !db.query(
+    "SELECT 1 FROM schema_migrations WHERE version = 24",
+  ).get();
+  if (requiresAgentParentRebuild) db.exec("PRAGMA foreign_keys = OFF;");
+  try {
+    for (const migration of migrations) {
+      const present = db.query("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration.version);
+      if (!present) apply.immediate(migration.version, migration.sql);
+    }
+  } finally {
+    if (requiresAgentParentRebuild) db.exec("PRAGMA foreign_keys = ON;");
   }
   const invalid = db.query("PRAGMA foreign_key_check").all();
   if (invalid.length > 0) throw new Error("Database foreign-key validation failed after migration");

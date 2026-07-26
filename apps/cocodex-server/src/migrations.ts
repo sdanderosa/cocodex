@@ -391,4 +391,72 @@ CREATE INDEX project_file_references_project_created
 CREATE INDEX project_file_references_artifact_created
   ON project_file_references(artifact_id, created_at, id);`,
   },
+  {
+    version: 24,
+    sql: `
+CREATE TABLE agents_v24 (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  host_device_id TEXT NOT NULL REFERENCES devices(id),
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  created_at TEXT NOT NULL,
+  primary_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol',
+  primary_effort TEXT NOT NULL DEFAULT 'medium'
+    CHECK (primary_effort IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+  coagent_model TEXT,
+  coagent_effort TEXT
+    CHECK (coagent_effort IS NULL OR coagent_effort IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+  max_concurrent_coagents INTEGER NOT NULL DEFAULT 0
+    CHECK (max_concurrent_coagents BETWEEN 0 AND 8)
+);
+INSERT INTO agents_v24 (
+  id, project_id, host_device_id, name, enabled, created_at,
+  primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
+)
+SELECT
+  id, project_id, host_device_id, name, enabled, created_at,
+  primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
+FROM agents;
+DROP TABLE agents;
+ALTER TABLE agents_v24 RENAME TO agents;
+CREATE TRIGGER agents_runtime_definition_insert
+BEFORE INSERT ON agents
+WHEN NOT (
+  (NEW.max_concurrent_coagents = 0 AND NEW.coagent_model IS NULL AND NEW.coagent_effort IS NULL)
+  OR
+  (NEW.max_concurrent_coagents > 0 AND NEW.coagent_model IS NOT NULL AND NEW.coagent_effort IS NOT NULL)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inconsistent agent runtime definition');
+END;
+CREATE TRIGGER agents_runtime_definition_update
+BEFORE UPDATE OF coagent_model, coagent_effort, max_concurrent_coagents ON agents
+WHEN NOT (
+  (NEW.max_concurrent_coagents = 0 AND NEW.coagent_model IS NULL AND NEW.coagent_effort IS NULL)
+  OR
+  (NEW.max_concurrent_coagents > 0 AND NEW.coagent_model IS NOT NULL AND NEW.coagent_effort IS NOT NULL)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'inconsistent agent runtime definition');
+END;`,
+  },
+  {
+    version: 25,
+    sql: `
+ALTER TABLE devices ADD COLUMN device_key_certificate TEXT;
+CREATE TABLE project_member_removal_rotations (
+  rotation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  owner_device_id TEXT NOT NULL REFERENCES devices(id),
+  removed_device_id TEXT NOT NULL REFERENCES devices(id),
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 1),
+  envelopes_json TEXT NOT NULL,
+  cancelled_tasks_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, key_epoch)
+);
+CREATE INDEX project_member_removal_rotations_project
+  ON project_member_removal_rotations(project_id, key_epoch);`,
+  },
 ];

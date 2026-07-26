@@ -6,6 +6,13 @@ export {
 } from "./invitation";
 export { canonicalEd25519PublicKey, publicKeyFingerprint } from "./keys";
 export {
+  createDeviceKeyCertificate,
+  deviceKeyCertificateSchema,
+  deviceKeyCertificateSigningTranscript,
+  verifyDeviceKeyCertificate,
+  type DeviceKeyCertificate,
+} from "./device-certificate";
+export {
   enrollmentClaimSchema,
   enrollmentSigningTranscript,
   type EnrollmentClaim,
@@ -24,6 +31,8 @@ export {
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   projectMemberRemovedFrameSchema,
+  projectMemberViewSchema,
+  projectMemberListFrameSchema,
   agentStatusSchema,
   agentReasoningEffortSchema,
   agentTaskStatusSchema,
@@ -60,6 +69,8 @@ export {
   type ProjectKeyRotatedFrame,
   type ProjectKeyRotationRequiredFrame,
   type ProjectMemberRemovedFrame,
+  type ProjectMemberView,
+  type ProjectMemberListFrame,
   type AgentStatus,
   type AgentTaskStatus,
   type AgentView,
