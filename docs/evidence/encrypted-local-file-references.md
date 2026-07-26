@@ -40,5 +40,12 @@ local; this evidence does not claim encrypted file-content transfer.
 - Offline outbox storage contains only sealed frames, and list recovery succeeds
   after server restart.
 
-The final exit statuses and commit SHA are appended after the complete
-private-alpha gate passes.
+## Recorded result
+
+- Focused encryption/reference suite: 52 passed, 0 failed, 392 assertions.
+- Full `test:cocodex` gate: 115 passed, 0 failed, 1020 assertions across 30
+  files, including the real three-process private-alpha process.
+- Client build: exit 0.
+- Server build: exit 0.
+- Privacy scan: exit 0, `Privacy scan passed`.
+- Implementation commit: `36feba4544f85c8b42ca3d88246e59c68541ce3b`.
