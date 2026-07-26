@@ -592,7 +592,7 @@ switch (command) {
     break;
   case "status":
     await handleStatus();
-    break;
+    process.exit(process.exitCode ?? 0);
   case "doctor": {
     const { runDoctor } = await import("./doctor");
     await runDoctor(args.slice(1));
@@ -755,7 +755,7 @@ switch (command) {
     case "provider": {
     const { handleProviderCommand } = await import("./provider");
     await handleProviderCommand(args.slice(1));
-    break;
+    process.exit(process.exitCode ?? 0);
   }
   case "account": {
     const { cmdAccount } = await import("./account");
@@ -764,8 +764,8 @@ switch (command) {
   }
   case "models": {
     const { handleModels } = await import("./models");
-    handleModels(args.slice(1));
-    break;
+    await handleModels(args.slice(1));
+    process.exit(process.exitCode ?? 0);
   }
   case "claude": {
     const { cmdClaude } = await import("./claude");

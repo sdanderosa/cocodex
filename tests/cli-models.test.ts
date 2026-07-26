@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,4 +168,42 @@ describe("ocx models richer metadata", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("models add and remove finish persistence before the CLI exits", () => {
+    const { dir } = freshConfig({ port: 61991 });
+    const codexHome = join(dir, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    try {
+      const added = runCli([
+        "models",
+        "add",
+        "test",
+        "new-model",
+        "--display-name",
+        "New Model",
+      ], { OPENCODEX_HOME: dir, CODEX_HOME: codexHome });
+      expect(added.status).toBe(0);
+
+      const afterAdd = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(afterAdd.customModels).toHaveLength(1);
+      expect(afterAdd.customModels[0]).toMatchObject({
+        provider: "test",
+        modelId: "new-model",
+        displayName: "New Model",
+      });
+
+      const removed = runCli([
+        "models",
+        "remove",
+        afterAdd.customModels[0].id,
+        "--yes",
+      ], { OPENCODEX_HOME: dir, CODEX_HOME: codexHome });
+      expect(removed.status).toBe(0);
+
+      const afterRemove = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(afterRemove.customModels).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
