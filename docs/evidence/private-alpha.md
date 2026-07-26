@@ -1258,3 +1258,76 @@ process or listener remained after the runs. The implementation delta is
 recorded in ADR 0034 and published in commit
 `c18dedde37ab83b6d4cdcb4a9065f3724847da20` on
 `feat/cocodex-foundation`.
+
+## Encrypted local private-history checkpoint (2026-07-26)
+
+Feature commit:
+`426ee9b716d6381e4870c0d047d89e73a64c1f4e` (`feat(cocodex): persist
+encrypted private history`).
+
+This bounded checkpoint adds ciphertext-only sender/recipient history,
+self-sealed sender copies, sender echo, offline restart replay, persisted
+delivery/read replay, authoritative Server-sequence ordering, local search,
+and renderer redaction. Staged/queued/accepted states reconcile a crash between
+the local history write and durable outbox write; an unqueued staged remnant is
+removed rather than presented as sent. Pending entries are never silently
+evicted at the 512-entry capacity boundary.
+
+Focused real-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `249 expect()` calls in
+`13.23s`. The harness ran one separate Server and isolated Stephen/Kai Client
+processes, restarted Stephen and recovered both private-message directions,
+proved plaintext canaries absent from `private-history.json`, then stopped the
+Server, restarted Kai offline, and recovered the sender copy, authoritative
+sequence, and persisted read receipt.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `126 pass`, `0 fail`, `1162 expect()` calls
+across 31 files. The command includes the real process harness and five focused
+history tests for ciphertext-only persistence, immutable acknowledgements,
+bounded accepted-message eviction, pending-message preservation, and
+staged/outbox crash reconciliation.
+
+Static, privacy, and executable commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`;
+Client and Server compiled to `dist/cocodex-client.exe` and
+`dist/cocodex-server.exe`.
+
+GUI commands:
+
+```powershell
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`; GUI tests reported `112 pass`, `0 fail`, and
+`550 expect()` calls. Lint retained the pre-existing
+`use-app-route-state.ts:84` hook warning and no errors. The production build
+completed with the existing large-chunk advisory.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. No
+CoCodex process or listener remained after the runs. This checkpoint does not
+claim conversations, replies, reactions, edit/delete events, attachments,
+multi-device fan-out, ratchets, forward secrecy, post-compromise recovery, or
+concurrent standalone-CLI/resident writes; ADR 0035 records those limits.
