@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 if (Bun.argv.includes("--version")) {
@@ -20,6 +20,11 @@ const prompt = await Bun.stdin.text();
 if (!prompt.trim()) throw new Error("Prompt stdin is required");
 const marker = join(process.cwd(), `${account}-execution.json`);
 writeFileSync(marker, `${JSON.stringify({ account, prompt, cwd: process.cwd() }, null, 2)}\n`, "utf8");
+const barrierDirectory = process.env.COCODEX_FIXTURE_BARRIER_DIR?.trim();
+if (barrierDirectory) {
+  const release = join(barrierDirectory, "release");
+  while (!existsSync(release)) await Bun.sleep(25);
+}
 console.log(JSON.stringify({
   type: "item.completed",
   item: { type: "agent_message", text: `${account}: accepted locally` },

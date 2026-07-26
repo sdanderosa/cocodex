@@ -99,6 +99,7 @@ export const ja: Record<TKey, string> = {
   "cocodex.server.none": "No server",
   "cocodex.device.this": "This device",
   "cocodex.agent.ready": "Local agent ready",
+  "cocodex.agent.configuredCount": "{count} local agents configured",
   "cocodex.agent.none": "No local agent policy",
   "cocodex.agent.access": "ローカルアクセス: {profile}",
   "cocodex.agent.execution.enabled": "実行を有効化",

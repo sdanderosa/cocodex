@@ -34,7 +34,14 @@ const databases: Database[] = [];
 const sockets: WebSocket[] = [];
 
 afterEach(async () => {
-  for (const socket of sockets.splice(0)) socket.close();
+  await Promise.all(sockets.splice(0).map(async socket => {
+    if (socket.readyState === WebSocket.CLOSED) return;
+    const closed = new Promise<void>(resolve => {
+      socket.addEventListener("close", () => resolve(), { once: true });
+    });
+    socket.close();
+    await Promise.race([closed, Bun.sleep(500)]);
+  }));
   await Promise.all(servers.splice(0).map(server => server.stop(true)));
   for (const database of databases.splice(0)) database.close();
 
@@ -136,6 +143,7 @@ async function connect(
   device: TestDevice,
   serverFingerprint: string,
   announceAgentReady = true,
+  agentId?: string,
 ): Promise<WebSocket> {
   const socket = new WebSocket(
     `wss://127.0.0.1:${port}/v1/connect`,
@@ -168,6 +176,7 @@ async function connect(
       version: 1,
       type: "agent.ready",
       requestId: randomUUID(),
+      ...(agentId ? { agentId } : {}),
     }));
   }
   return socket;
@@ -203,8 +212,10 @@ describe("authenticated WSS collaboration", () => {
     const db = openDatabase(paths.database);
     databases.push(db);
     const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
     const outsider = approvedDevice(db, fingerprint, "Outsider");
     const project = createProject(db, "Agent setup", stephen.id);
+    addProjectMember(db, project.id, stephen.id, kai.id);
     const config = createDefaultConfig(paths, "127.0.0.1", 443);
     config.hostname = "127.0.0.1";
     config.port = 0;
@@ -262,6 +273,100 @@ describe("authenticated WSS collaboration", () => {
     await expect(outsiderError).rejects.toThrow("approved project member");
     expect(db.query("SELECT host_device_id AS hostDeviceId FROM agents WHERE id = ?").get(agentId))
       .toEqual({ hostDeviceId: stephen.id });
+
+    const angelaId = randomUUID();
+    const angelaDefinition = {
+      projectId: project.id,
+      agentId: angelaId,
+      name: "Angela",
+      hostDeviceId: stephen.id,
+    };
+    const angelaCreated = nextFrame(stephenSocket, "agent.created");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.create",
+      requestId: randomUUID(),
+      projectId: project.id,
+      agentId: angelaId,
+      name: angelaDefinition.name,
+      signature: sign(null, agentDefinitionSigningTranscript(angelaDefinition), stephen.privateKey).toString("base64url"),
+    }));
+    expect((await angelaCreated).created).toBeTrue();
+
+    const lucasWorker = await connect(server.port, stephen, fingerprint, false);
+    const angelaWorker = await connect(server.port, stephen, fingerprint, false);
+    const lucasReady = nextFrame(lucasWorker, "agent.ready.accepted");
+    lucasWorker.send(JSON.stringify({
+      version: 1,
+      type: "agent.ready",
+      requestId: randomUUID(),
+      agentId,
+    }));
+    expect(await lucasReady).toMatchObject({ agentId });
+    const angelaReady = nextFrame(angelaWorker, "agent.ready.accepted");
+    angelaWorker.send(JSON.stringify({
+      version: 1,
+      type: "agent.ready",
+      requestId: randomUUID(),
+      agentId: angelaId,
+    }));
+    expect(await angelaReady).toMatchObject({ agentId: angelaId });
+
+    const kaiSocket = await connect(server.port, kai, fingerprint, false);
+    const taskId = randomUUID();
+    const nonce = randomUUID();
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const prompt = "Prove worker result binding.";
+    const taskAtLucas = nextFrame(lucasWorker, "agent.task");
+    const acceptedAtKai = nextFrame(kaiSocket, "agent.accepted");
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.request",
+      requestId: randomUUID(),
+      taskId,
+      projectId: project.id,
+      agentId,
+      prompt,
+      nonce,
+      issuedAt,
+      expiresAt,
+      signature: sign(null, agentRequestSigningTranscript({
+        taskId,
+        projectId: project.id,
+        agentId,
+        prompt,
+        nonce,
+        issuedAt,
+        expiresAt,
+      }), kai.privateKey).toString("base64url"),
+    }));
+    await Promise.all([taskAtLucas, acceptedAtKai]);
+    const spoofRejected = nextFrame(angelaWorker, "agent.result.accepted");
+    angelaWorker.send(JSON.stringify({
+      version: 1,
+      type: "agent.result",
+      requestId: randomUUID(),
+      taskId,
+      eventId: randomUUID(),
+      content: "Wrong worker",
+      final: true,
+      status: "completed",
+    }));
+    await expect(spoofRejected).rejects.toThrow("matching ready worker lease");
+
+    const correctResult = nextFrame(lucasWorker, "agent.result.accepted");
+    lucasWorker.send(JSON.stringify({
+      version: 1,
+      type: "agent.result",
+      requestId: randomUUID(),
+      taskId,
+      eventId: randomUUID(),
+      content: "Correct worker",
+      final: true,
+      status: "completed",
+    }));
+    expect(await correctResult).toMatchObject({ taskId, sequence: 1 });
   });
 
   test("two members share authoritative chat order and recover history by cursor", async () => {

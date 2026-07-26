@@ -664,6 +664,7 @@ export function startCoCodexServer(
               version: 1,
               type: "agent.ready.accepted",
               requestId,
+              agentId: readyAgentId,
             }));
             return;
           }
@@ -1352,8 +1353,13 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "agent.result") {
-            const taskProject = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?")
-              .get(message.taskId) as { projectId: string } | null;
+            const taskProject = db.query(`
+              SELECT project_id AS projectId, agent_id AS agentId
+              FROM agent_tasks WHERE id = ?
+            `).get(message.taskId) as { projectId: string; agentId: string } | null;
+            if (!taskProject || !socket.data.agentReady || socket.data.agentId !== taskProject.agentId) {
+              throw new Error("Agent result requires the matching ready worker lease");
+            }
             if (taskProject) assertLegacyProjectWriteAllowed(db, taskProject.projectId);
             const result = appendAgentResult(
               db,
@@ -1389,6 +1395,11 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.agent.result") {
+            const task = db.query("SELECT agent_id AS agentId FROM agent_tasks WHERE id = ?")
+              .get(message.taskId) as { agentId: string } | null;
+            if (!task || !socket.data.agentReady || socket.data.agentId !== task.agentId) {
+              throw new Error("Encrypted agent result requires the matching ready worker lease");
+            }
             const result = appendEncryptedAgentResult(db, {
               taskId: message.taskId,
               eventId: message.eventId,

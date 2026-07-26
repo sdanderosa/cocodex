@@ -4,7 +4,8 @@ import { PassThrough } from "node:stream";
 import { enrollClient, loadClientConnection } from "./client";
 import { clientPaths, type ClientPaths } from "./paths";
 import { runJsonLineSession, type JsonLineSessionOptions } from "./session";
-import { loadLocalAgentPolicy } from "./agent-policy";
+import { loadLocalAgentPolicyStore } from "./agent-policy";
+import { agentRuntimePaths } from "./agent-runtime-paths";
 import { loadAgentSafety } from "./agent-safety";
 
 const MAX_EVENTS = 500;
@@ -69,6 +70,14 @@ export interface CoCodexGuiStatus {
   agentWorkspaceMode?: "shared" | "git-worktree";
   agentExecutionEnabled?: boolean;
   agentFullComputerEnabled?: boolean;
+  localAgents: Array<{
+    agentId: string;
+    projectId: string;
+    accessProfile: "project-only" | "full-computer";
+    workspaceMode: "shared" | "git-worktree";
+    executionEnabled: boolean;
+    fullComputerEnabled: boolean;
+  }>;
   latestEventSequence: number;
 }
 
@@ -133,14 +142,28 @@ export class CoCodexGuiBridge {
     let agentWorkspaceMode: CoCodexGuiStatus["agentWorkspaceMode"];
     let agentExecutionEnabled: boolean | undefined;
     let agentFullComputerEnabled: boolean | undefined;
+    const localAgents: CoCodexGuiStatus["localAgents"] = [];
     if (existsSync(this.paths.agentPolicy)) {
       try {
-        const policy = loadLocalAgentPolicy(this.paths.agentPolicy);
-        agentAccessProfile = policy.accessProfile;
-        agentWorkspaceMode = policy.workspaceMode;
-        const safety = loadAgentSafety(this.paths.agentSafety, policy);
-        agentExecutionEnabled = safety.executionEnabled;
-        agentFullComputerEnabled = safety.fullComputerEnabled;
+        const store = loadLocalAgentPolicyStore(this.paths.agentPolicy);
+        for (const policy of store.agents) {
+          const runtime = agentRuntimePaths(this.paths, policy.agentId, store.version === 1);
+          const safety = loadAgentSafety(runtime.safety, policy);
+          localAgents.push({
+            agentId: policy.agentId,
+            projectId: policy.projectId,
+            accessProfile: policy.accessProfile,
+            workspaceMode: policy.workspaceMode,
+            executionEnabled: safety.executionEnabled,
+            fullComputerEnabled: safety.fullComputerEnabled,
+          });
+        }
+        if (localAgents.length === 1) {
+          agentAccessProfile = localAgents[0].accessProfile;
+          agentWorkspaceMode = localAgents[0].workspaceMode;
+          agentExecutionEnabled = localAgents[0].executionEnabled;
+          agentFullComputerEnabled = localAgents[0].fullComputerEnabled;
+        }
       } catch {
         // The resident session reports malformed policy details as an event.
       }
@@ -159,6 +182,7 @@ export class CoCodexGuiBridge {
       agentWorkspaceMode,
       agentExecutionEnabled,
       agentFullComputerEnabled,
+      localAgents,
       latestEventSequence: this.sequence,
     };
   }

@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   canonicalEd25519PublicKey,
   agentListFrameSchema,
+  agentReadyAcceptedFrameSchema,
   agentTaskListFrameSchema,
   clientFrameSchema,
   decodeInvitation,
@@ -31,6 +32,18 @@ import {
 } from "../src";
 
 describe("CoCodex protocol", () => {
+  test("validates an agent-scoped ready acknowledgement", () => {
+    const frame = {
+      version: 1 as const,
+      type: "agent.ready.accepted" as const,
+      requestId: crypto.randomUUID(),
+      agentId: crypto.randomUUID(),
+    };
+    expect(agentReadyAcceptedFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => agentReadyAcceptedFrameSchema.parse({ ...frame, agentId: "" })).toThrow();
+  });
+
   test("round-trips a strict versioned invitation", () => {
     const payload = {
       version: 1 as const,

@@ -1,6 +1,7 @@
 import { createHash, randomUUID, sign } from "node:crypto";
 import {
   agentDefinitionSigningTranscript,
+  agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
   privateServerFrameSchema,
@@ -16,12 +17,20 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
 import { createInterface } from "node:readline";
 import { attachLocalAgentBridge, type LocalAgentBridgeHandle } from "./agent-bridge";
-import { loadLocalAgentPolicy, saveLocalAgentPolicy, validateLocalAgentPolicy } from "./agent-policy";
+import {
+  loadLocalAgentPolicies,
+  loadLocalAgentPolicyStore,
+  saveLocalAgentPolicy,
+  upsertLocalAgentPolicy,
+  validateLocalAgentPolicy,
+  type LocalAgentPolicy,
+} from "./agent-policy";
+import { agentRuntimePaths, stageLegacyAgentRuntimeState } from "./agent-runtime-paths";
 import {
   emergencyStopAgent,
   loadAgentSafety,
   resumeAgent,
-  saveAgentSafety,
+  configureAgentSafety,
   setFullComputerEnabled,
   type LocalAgentSafetyState,
 } from "./agent-safety";
@@ -146,9 +155,13 @@ export async function runJsonLineSession(
   let socket: WebSocket | undefined;
   let flushChain = Promise.resolve(0);
   let usageReport = loadUsageReport(paths.usageReport, connection.deviceId);
-  let localAgentBridge: LocalAgentBridgeHandle | undefined;
-  let localAgentPolicy: ReturnType<typeof loadLocalAgentPolicy> | undefined;
-  let localAgentSafety: LocalAgentSafetyState | undefined;
+  const localAgentPolicies = new Map<string, LocalAgentPolicy>();
+  const localAgentSafeties = new Map<string, LocalAgentSafetyState>();
+  const localAgentBridges = new Map<string, LocalAgentBridgeHandle>();
+  const localAgentWorkerRuns = new Map<string, Promise<void>>();
+  const localAgentWorkerSockets = new Map<string, WebSocket>();
+  const localAgentActiveCounts = new Map<string, number>();
+  const localAgentLegacyRuntime = new Map<string, boolean>();
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
   const pendingProjectKeyInitializations = new Map<string, {
     projectId: string;
@@ -173,25 +186,59 @@ export async function runJsonLineSession(
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
-  const ensureLocalAgentPolicy = (): ReturnType<typeof loadLocalAgentPolicy> => {
-    if (!localAgentPolicy) {
-      if (!existsSync(paths.agentPolicy)) throw new Error("No local agent policy is configured");
-      localAgentPolicy = loadLocalAgentPolicy(paths.agentPolicy);
-      localAgentSafety = loadAgentSafety(paths.agentSafety, localAgentPolicy);
+  const reloadLocalAgentPolicies = (): LocalAgentPolicy[] => {
+    localAgentPolicies.clear();
+    localAgentLegacyRuntime.clear();
+    if (!existsSync(paths.agentPolicy)) return [];
+    const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+    for (const policy of store.agents) {
+      localAgentPolicies.set(policy.agentId, policy);
+      localAgentLegacyRuntime.set(policy.agentId, store.version === 1);
+      const runtime = agentRuntimePaths(paths, policy.agentId, store.version === 1);
+      localAgentSafeties.set(policy.agentId, loadAgentSafety(runtime.safety, policy));
     }
-    return localAgentPolicy;
+    return store.agents;
   };
-  const emitAgentSafety = (id?: string) => emit({
+  const ensureLocalAgentPolicy = (agentId?: unknown): LocalAgentPolicy => {
+    if (localAgentPolicies.size === 0) reloadLocalAgentPolicies();
+    if (typeof agentId === "string" && agentId) {
+      const selected = localAgentPolicies.get(agentId);
+      if (!selected) throw new Error("No local policy is configured for this agent");
+      return selected;
+    }
+    if (localAgentPolicies.size !== 1) {
+      throw new Error("Multiple local agents are configured; specify an agent ID");
+    }
+    return [...localAgentPolicies.values()][0];
+  };
+  const emitAgentSafety = (id?: string, agentId?: string) => {
+    const policies = agentId
+      ? [ensureLocalAgentPolicy(agentId)]
+      : [...localAgentPolicies.values()];
+    emit({
     source: "agent-safety",
     id,
-    ...(localAgentSafety ? {
-      executionEnabled: localAgentSafety.executionEnabled,
-      fullComputerEnabled: localAgentSafety.fullComputerEnabled,
-      updatedAt: localAgentSafety.updatedAt,
-      reason: localAgentSafety.reason,
-      accessProfile: localAgentPolicy?.accessProfile,
-    } : { executionEnabled: false, fullComputerEnabled: false, accessProfile: undefined }),
+    agents: policies.map(policy => {
+      const safety = localAgentSafeties.get(policy.agentId);
+      return {
+        agentId: policy.agentId,
+        projectId: policy.projectId,
+        accessProfile: policy.accessProfile,
+        executionEnabled: safety?.executionEnabled ?? false,
+        fullComputerEnabled: safety?.fullComputerEnabled ?? false,
+        updatedAt: safety?.updatedAt,
+        reason: safety?.reason,
+      };
+    }),
+    ...(policies.length === 1 ? {
+      agentId: policies[0].agentId,
+      executionEnabled: localAgentSafeties.get(policies[0].agentId)?.executionEnabled ?? false,
+      fullComputerEnabled: localAgentSafeties.get(policies[0].agentId)?.fullComputerEnabled ?? false,
+      accessProfile: policies[0].accessProfile,
+    } : {}),
   });
+  };
+  reloadLocalAgentPolicies();
   for (const pending of loadPendingProjectKeyInitializations(paths.projectKeys)) {
     if (!loadProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch)) {
       clearProjectKeyInitialization(paths.projectKeys, pending.requestId);
@@ -1126,6 +1173,141 @@ export async function runJsonLineSession(
     }
   };
 
+  const startAgentWorker = (policy: LocalAgentPolicy, legacyRuntime: boolean): void => {
+    if (localAgentWorkerRuns.has(policy.agentId)) return;
+    const runtime = agentRuntimePaths(paths, policy.agentId, legacyRuntime);
+    const run = maintainAuthenticatedClient(paths, async workerSocket => {
+      localAgentWorkerSockets.set(policy.agentId, workerSocket);
+      const safety = loadAgentSafety(runtime.safety, policy);
+      localAgentSafeties.set(policy.agentId, safety);
+      const workerListener = (event: MessageEvent) => {
+        let frame: Record<string, any>;
+        try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
+        catch { return; }
+        if (frame.type === "project.agent.task") {
+          const task = frame.task as Record<string, unknown> | undefined;
+          if (task?.id && task.projectId) encryptedTaskProjects.set(String(task.id), String(task.projectId));
+          emit({
+            source: "agent-worker",
+            agentId: policy.agentId,
+            frame: {
+              version: 1,
+              type: "agent.task",
+              task: task ? { ...task, promptEnvelope: undefined } : task,
+            },
+          });
+        } else if (frame.type === "agent.task") {
+          emit({ source: "agent-worker", agentId: policy.agentId, frame });
+        } else if (frame.type === "agent.ready.accepted") {
+          const ready = agentReadyAcceptedFrameSchema.safeParse(frame);
+          if (!ready.success || ready.data.agentId !== policy.agentId) {
+            emitError({
+              source: "agent-worker",
+              agentId: policy.agentId,
+              error: `Agent worker lease mismatch for ${policy.agentId}`,
+            });
+            workerSocket.close(1008, "Agent worker lease mismatch");
+            return;
+          }
+          emit({ source: "agent-worker", agentId: policy.agentId, state: "ready", frame: ready.data });
+        } else if (frame.type === "error") {
+          emitError({
+            source: "agent-worker",
+            agentId: policy.agentId,
+            error: String(frame.error ?? "Agent worker request failed"),
+          });
+        }
+      };
+      workerSocket.addEventListener("message", workerListener);
+      const onUsage = (usage: CodexUsage) => {
+        emit({ source: "local-usage", deviceId: connection.deviceId, agentId: policy.agentId, usage });
+        publishUsage({
+          requests: usageReport.requests + 1,
+          inputTokens: usageReport.inputTokens + (usage.inputTokens ?? 0),
+          cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
+          outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
+          reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
+        });
+      };
+      const bridge = attachLocalAgentBridge(workerSocket, new CodexAgentAdapter({
+        projectId: policy.projectId,
+        agentId: policy.agentId,
+        workspaceRoot: policy.workspaceRoot,
+        sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
+        accessProfile: policy.accessProfile,
+        fullComputerOptIn: policy.fullComputerOptIn,
+        onUsage,
+        prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
+          worktreeRoot: runtime.worktreeRoot,
+          registryPath: runtime.worktreeRegistry,
+        }),
+        onWorkspacePrepared: (task, workspace) =>
+          reportAgentExecution(workerSocket, identity, task, workspace),
+        authorizeTask: async (task, signal) => {
+          const current = localAgentSafeties.get(policy.agentId);
+          if (!current?.executionEnabled) return false;
+          if (policy.accessProfile === "full-computer" && !current.fullComputerEnabled) return false;
+          return policy.approvalMode === "always" ? authorizeAgentTask(task, signal) : true;
+        },
+      }), {
+        localDeviceId: connection.deviceId,
+        agentId: policy.agentId,
+        serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
+        trustedRequesterFingerprints: new Map([
+          ...Object.entries(policy.trustedRequesterFingerprints),
+          [connection.deviceId, publicKeyFingerprint(identity.publicKeyPem)],
+        ]),
+        journalPath: runtime.journal,
+        onActiveAgents: activeAgents => {
+          localAgentActiveCounts.set(policy.agentId, activeAgents);
+          publishUsage({
+            activeAgents: [...localAgentActiveCounts.values()].reduce((sum, count) => sum + count, 0),
+          });
+        },
+        decryptTaskPrompt: decryptEncryptedAgentPrompt,
+        encryptResult: encryptAgentResult,
+        isExecutionAllowed: () => {
+          const current = localAgentSafeties.get(policy.agentId);
+          return Boolean(current?.executionEnabled
+            && (policy.accessProfile !== "full-computer" || current.fullComputerEnabled));
+        },
+      });
+      localAgentBridges.set(policy.agentId, bridge);
+      if (!safety.executionEnabled) bridge.emergencyStop(safety.reason);
+      emitAgentSafety(undefined, policy.agentId);
+      return async () => {
+        workerSocket.removeEventListener("message", workerListener);
+        await bridge();
+        if (localAgentBridges.get(policy.agentId) === bridge) localAgentBridges.delete(policy.agentId);
+        if (localAgentWorkerSockets.get(policy.agentId) === workerSocket) {
+          localAgentWorkerSockets.delete(policy.agentId);
+        }
+        localAgentActiveCounts.delete(policy.agentId);
+        publishUsage({
+          activeAgents: [...localAgentActiveCounts.values()].reduce((sum, count) => sum + count, 0),
+        });
+      };
+    }, {
+      signal: controller.signal,
+      onConnectionError: error => emitError({
+        source: "agent-worker",
+        agentId: policy.agentId,
+        state: "retrying",
+        error: error.message,
+      }),
+    }).finally(() => {
+      localAgentWorkerRuns.delete(policy.agentId);
+      localAgentBridges.delete(policy.agentId);
+      localAgentWorkerSockets.delete(policy.agentId);
+      localAgentActiveCounts.delete(policy.agentId);
+    });
+    localAgentWorkerRuns.set(policy.agentId, run);
+  };
+
+  for (const policy of localAgentPolicies.values()) {
+    startAgentWorker(policy, localAgentLegacyRuntime.get(policy.agentId) === true);
+  }
+
   const session = maintainAuthenticatedClient(paths, async connected => {
     socket = connected;
     const listener = (event: MessageEvent) => {
@@ -1372,16 +1554,26 @@ export async function runJsonLineSession(
                 },
               });
               // Write supporting state first; the policy is the final marker
-              // that makes the local agent discoverable on the next connect.
+              // that makes the local agent discoverable by a worker.
+              const currentStore = existsSync(paths.agentPolicy)
+                ? loadLocalAgentPolicyStore(paths.agentPolicy)
+                : undefined;
+              const existing = currentStore?.agents.find(candidate => candidate.agentId === policy.agentId);
+              if (currentStore?.version === 1 && !existing) {
+                stageLegacyAgentRuntimeState(paths, currentStore.agents[0].agentId);
+              }
+              const legacyRuntime = !currentStore || (currentStore.version === 1 && Boolean(existing));
+              const runtime = agentRuntimePaths(paths, policy.agentId, legacyRuntime);
               trustDevice(paths.trustedDevices, pending.trustedRequesterDeviceId, pending.trustedRequesterFingerprint);
-              saveAgentSafety(paths.agentSafety, {
-                executionEnabled: true,
-                fullComputerEnabled: false,
-                reason: policy.accessProfile === "full-computer"
-                  ? "Full-computer access requires a separate local enable action."
-                  : undefined,
-              });
-              saveLocalAgentPolicy(paths.agentPolicy, policy);
+              if (!existing) configureAgentSafety(runtime.safety, policy);
+              if (!currentStore || (currentStore.version === 1 && existing)) {
+                saveLocalAgentPolicy(paths.agentPolicy, policy);
+              } else {
+                upsertLocalAgentPolicy(paths.agentPolicy, policy);
+              }
+              localAgentPolicies.set(policy.agentId, policy);
+              localAgentLegacyRuntime.set(policy.agentId, legacyRuntime);
+              localAgentSafeties.set(policy.agentId, loadAgentSafety(runtime.safety, policy));
               pendingAgentConfigurations.delete(frame.requestId);
               emit({
                 source: "agent-configuration",
@@ -1391,9 +1583,9 @@ export async function runJsonLineSession(
                 agentId: pending.agentId,
                 created: frame.created === true,
               });
-              // Reconnect through the normal supervisor so the newly persisted
-              // host policy is loaded before this client announces agent.ready.
-              setTimeout(() => connected.close(1012, "Local agent configuration changed"), 0);
+              // Each agent owns an independent worker connection, so adding a
+              // second agent does not interrupt shared chat or existing work.
+              startAgentWorker(policy, legacyRuntime);
             } catch (error) {
               emitError({
                 source: "agent-configuration",
@@ -1508,66 +1700,9 @@ export async function runJsonLineSession(
       })
       .then(() => undefined);
     send({ version: 1, type: "private.subscribe", requestId: randomUUID(), afterSequence: privateCursor });
-    let detachAgent: (() => void | Promise<void>) | undefined;
-    if (existsSync(paths.agentPolicy)) {
-      const policy = loadLocalAgentPolicy(paths.agentPolicy);
-      localAgentPolicy = policy;
-      localAgentSafety = loadAgentSafety(paths.agentSafety, policy);
-      const onUsage = (usage: CodexUsage) => {
-        emit({ source: "local-usage", deviceId: connection.deviceId, usage });
-        publishUsage({
-          requests: usageReport.requests + 1,
-          inputTokens: usageReport.inputTokens + (usage.inputTokens ?? 0),
-          cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
-          outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
-          reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
-        });
-      };
-      detachAgent = attachLocalAgentBridge(connected, new CodexAgentAdapter({
-        projectId: policy.projectId,
-        agentId: policy.agentId,
-        workspaceRoot: policy.workspaceRoot,
-        sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
-        accessProfile: policy.accessProfile,
-        fullComputerOptIn: policy.fullComputerOptIn,
-        onUsage,
-        prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
-          worktreeRoot: paths.taskWorktrees,
-          registryPath: paths.taskWorktreeRegistry,
-        }),
-        onWorkspacePrepared: (task, workspace) =>
-          reportAgentExecution(connected, identity, task, workspace),
-        authorizeTask: async (task, signal) => {
-          if (!localAgentSafety?.executionEnabled) return false;
-          if (policy.accessProfile === "full-computer" && !localAgentSafety.fullComputerEnabled) return false;
-          return policy.approvalMode === "always" ? authorizeAgentTask(task, signal) : true;
-        },
-      }), {
-        localDeviceId: connection.deviceId,
-        agentId: policy.agentId,
-        serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-        trustedRequesterFingerprints: new Map([
-          ...Object.entries(policy.trustedRequesterFingerprints),
-          [connection.deviceId, publicKeyFingerprint(identity.publicKeyPem)],
-        ]),
-        journalPath: paths.agentJournal,
-        onActiveAgents: activeAgents => publishUsage({ activeAgents }),
-        decryptTaskPrompt: decryptEncryptedAgentPrompt,
-        encryptResult: encryptAgentResult,
-        isExecutionAllowed: () => Boolean(localAgentSafety?.executionEnabled
-          && (policy.accessProfile !== "full-computer" || localAgentSafety.fullComputerEnabled)),
-      });
-      localAgentBridge = detachAgent as LocalAgentBridgeHandle;
-      if (!localAgentSafety.executionEnabled) localAgentBridge.emergencyStop(localAgentSafety.reason);
-      emitAgentSafety();
-    }
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
     return async () => {
       connected.removeEventListener("message", listener);
-      await detachAgent?.();
-      localAgentBridge = undefined;
-      localAgentPolicy = undefined;
-      localAgentSafety = undefined;
       if (socket === connected) socket = undefined;
       emit({ source: "session", state: "disconnected", deviceId: connection.deviceId });
     };
@@ -2120,34 +2255,57 @@ export async function runJsonLineSession(
           });
           emit({ source: "control", id: command.id, ok: true, taskId: String(command.taskId) });
         } else if (command.type === "agent.safety.status") {
-          ensureLocalAgentPolicy();
-          emitAgentSafety(command.id);
-          emit({ source: "control", id: command.id, ok: true, safety: localAgentSafety ?? null });
+          if (localAgentPolicies.size === 0) reloadLocalAgentPolicies();
+          if (command.agentId) ensureLocalAgentPolicy(command.agentId);
+          emitAgentSafety(command.id, typeof command.agentId === "string" ? command.agentId : undefined);
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            safety: [...localAgentPolicies.values()].map(policy => ({
+              agentId: policy.agentId,
+              state: localAgentSafeties.get(policy.agentId) ?? null,
+            })),
+          });
         } else if (command.type === "agent.emergency.stop") {
-          ensureLocalAgentPolicy();
-          localAgentSafety = emergencyStopAgent(paths.agentSafety, String(command.reason ?? "Stopped by the local host user."));
-          localAgentBridge?.emergencyStop(localAgentSafety.reason);
-          emitAgentSafety(command.id);
-          emit({ source: "control", id: command.id, ok: true, executionEnabled: false });
+          if (localAgentPolicies.size === 0) reloadLocalAgentPolicies();
+          const targets = command.agentId
+            ? [ensureLocalAgentPolicy(command.agentId)]
+            : [...localAgentPolicies.values()];
+          if (targets.length === 0) throw new Error("No local agent policy is configured");
+          for (const policy of targets) {
+            const runtime = agentRuntimePaths(paths, policy.agentId, localAgentLegacyRuntime.get(policy.agentId) === true);
+            const safety = emergencyStopAgent(runtime.safety, String(command.reason ?? "Stopped by the local host user."));
+            localAgentSafeties.set(policy.agentId, safety);
+            localAgentBridges.get(policy.agentId)?.emergencyStop(safety.reason);
+          }
+          emitAgentSafety(command.id, typeof command.agentId === "string" ? command.agentId : undefined);
+          emit({ source: "control", id: command.id, ok: true, executionEnabled: false, agents: targets.map(policy => policy.agentId) });
         } else if (command.type === "agent.emergency.resume") {
-          const policy = ensureLocalAgentPolicy();
-          localAgentSafety = resumeAgent(paths.agentSafety, policy);
-          localAgentBridge?.resume();
-          emitAgentSafety(command.id);
-          emit({ source: "control", id: command.id, ok: true, executionEnabled: localAgentSafety.executionEnabled });
+          const policy = ensureLocalAgentPolicy(command.agentId);
+          const runtime = agentRuntimePaths(paths, policy.agentId, localAgentLegacyRuntime.get(policy.agentId) === true);
+          const safety = resumeAgent(runtime.safety, policy);
+          localAgentSafeties.set(policy.agentId, safety);
+          localAgentBridges.get(policy.agentId)?.resume();
+          emitAgentSafety(command.id, policy.agentId);
+          emit({ source: "control", id: command.id, ok: true, agentId: policy.agentId, executionEnabled: safety.executionEnabled });
         } else if (command.type === "agent.full-computer.enable") {
           if (command.confirm !== true) throw new Error("Full-computer access requires an explicit local confirmation");
-          const policy = ensureLocalAgentPolicy();
-          localAgentSafety = setFullComputerEnabled(paths.agentSafety, policy, true);
-          localAgentBridge?.resume();
-          emitAgentSafety(command.id);
-          emit({ source: "control", id: command.id, ok: true, fullComputerEnabled: true });
+          const policy = ensureLocalAgentPolicy(command.agentId);
+          const runtime = agentRuntimePaths(paths, policy.agentId, localAgentLegacyRuntime.get(policy.agentId) === true);
+          const safety = setFullComputerEnabled(runtime.safety, policy, true);
+          localAgentSafeties.set(policy.agentId, safety);
+          localAgentBridges.get(policy.agentId)?.resume();
+          emitAgentSafety(command.id, policy.agentId);
+          emit({ source: "control", id: command.id, ok: true, agentId: policy.agentId, fullComputerEnabled: true });
         } else if (command.type === "agent.full-computer.disable") {
-          const policy = ensureLocalAgentPolicy();
-          localAgentSafety = setFullComputerEnabled(paths.agentSafety, policy, false);
-          localAgentBridge?.emergencyStop("Full-computer access disabled locally.");
-          emitAgentSafety(command.id);
-          emit({ source: "control", id: command.id, ok: true, fullComputerEnabled: false });
+          const policy = ensureLocalAgentPolicy(command.agentId);
+          const runtime = agentRuntimePaths(paths, policy.agentId, localAgentLegacyRuntime.get(policy.agentId) === true);
+          const safety = setFullComputerEnabled(runtime.safety, policy, false);
+          localAgentSafeties.set(policy.agentId, safety);
+          localAgentBridges.get(policy.agentId)?.emergencyStop("Full-computer access disabled locally.");
+          emitAgentSafety(command.id, policy.agentId);
+          emit({ source: "control", id: command.id, ok: true, agentId: policy.agentId, fullComputerEnabled: false });
         } else if (command.type === "private.share") {
           const projectId = String(command.projectId);
           const agentId = String(command.agentId).trim();
@@ -2238,7 +2396,9 @@ export async function runJsonLineSession(
     for (const finish of pendingAgentApprovals.values()) finish(false);
     controller.abort();
     socket?.close();
+    for (const workerSocket of localAgentWorkerSockets.values()) workerSocket.close();
     lines.close();
     await session;
+    await Promise.allSettled([...localAgentWorkerRuns.values()]);
   }
 }

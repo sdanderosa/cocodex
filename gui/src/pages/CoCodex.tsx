@@ -18,6 +18,14 @@ interface Status {
   agentWorkspaceMode?: "shared" | "git-worktree";
   agentExecutionEnabled?: boolean;
   agentFullComputerEnabled?: boolean;
+  localAgents: Array<{
+    agentId: string;
+    projectId: string;
+    accessProfile: "project-only" | "full-computer";
+    workspaceMode: "shared" | "git-worktree";
+    executionEnabled: boolean;
+    fullComputerEnabled: boolean;
+  }>;
   latestEventSequence: number;
 }
 
@@ -379,6 +387,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       }
       if (value?.source === "agent-configuration" && value.configured) {
         setNotice(t("cocodex.agent.setup.saved"));
+        setAgentName("");
+        setAgentWorkspace("");
         void loadStatus();
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
@@ -698,9 +708,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const localSafetyCommand = async (type: string, confirm = false) => {
+  const localSafetyCommand = async (type: string, agentId: string, confirm = false) => {
     try {
-      await command({ type, ...(confirm ? { confirm: true } : {}) });
+      await command({ type, agentId, ...(confirm ? { confirm: true } : {}) });
       await loadStatus();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -774,6 +784,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visibleAgents = status?.state === "connected" ? agents : [];
   const visibleTasks = status?.state === "connected" ? tasks : [];
   const visibleArtifacts = status?.state === "connected" ? artifacts : [];
+  const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
 
@@ -869,27 +880,38 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <small>{t("cocodex.device.this")}</small>
               <strong>{status.displayName}</strong>
               <code>{status.deviceId?.slice(0, 12)}</code>
-              <span>{t(status.agentConfigured ? "cocodex.agent.ready" : "cocodex.agent.none")}</span>
-              {status.agentConfigured && <div className="cocodex-agent-safety">
-                <small>{t("cocodex.agent.access", { profile: status.agentAccessProfile ?? "project-only" })}</small>
-                <small>{t(status.agentWorkspaceMode === "git-worktree"
+              <span>{projectLocalAgents.length > 0
+                ? t("cocodex.agent.configuredCount", { count: projectLocalAgents.length })
+                : t("cocodex.agent.none")}</span>
+              {projectLocalAgents.map(localAgent => <div className="cocodex-agent-safety" key={localAgent.agentId}>
+                <strong>{visibleAgents.find(agent => agent.id === localAgent.agentId)?.name ?? localAgent.agentId.slice(0, 12)}</strong>
+                <small>{t("cocodex.agent.access", { profile: localAgent.accessProfile })}</small>
+                <small>{t(localAgent.workspaceMode === "git-worktree"
                   ? "cocodex.agent.workspace.worktree"
                   : "cocodex.agent.workspace.shared")}</small>
-                <small>{t(status.agentExecutionEnabled === false ? "cocodex.agent.execution.stopped" : "cocodex.agent.execution.enabled")}
-                  {status.agentAccessProfile === "full-computer" && status.agentFullComputerEnabled === false ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
+                <small>{t(localAgent.executionEnabled ? "cocodex.agent.execution.enabled" : "cocodex.agent.execution.stopped")}
+                  {localAgent.accessProfile === "full-computer" && !localAgent.fullComputerEnabled
+                    ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
                 <div className="cocodex-agent-safety-actions">
                   <button type="button" className="btn btn-danger btn-ghost" disabled={!status.running}
-                    onClick={() => void localSafetyCommand("agent.emergency.stop")}>{t("cocodex.agent.safety.stop")}</button>
+                    onClick={() => void localSafetyCommand("agent.emergency.stop", localAgent.agentId)}>
+                    {t("cocodex.agent.safety.stop")}
+                  </button>
                   <button type="button" className="btn btn-ghost" disabled={!status.running}
-                    onClick={() => void localSafetyCommand("agent.emergency.resume")}>{t("cocodex.agent.safety.resume")}</button>
-                  {status.agentAccessProfile === "full-computer" && <button type="button" className="btn btn-ghost" disabled={!status.running}
+                    onClick={() => void localSafetyCommand("agent.emergency.resume", localAgent.agentId)}>
+                    {t("cocodex.agent.safety.resume")}
+                  </button>
+                  {localAgent.accessProfile === "full-computer" && <button type="button" className="btn btn-ghost" disabled={!status.running}
                     onClick={() => {
-                      if (status.agentFullComputerEnabled) void localSafetyCommand("agent.full-computer.disable");
-                      else if (window.confirm(t("cocodex.agent.fullComputer.confirm"))) void localSafetyCommand("agent.full-computer.enable", true);
-                    }}>{t(status.agentFullComputerEnabled ? "cocodex.agent.fullComputer.disable" : "cocodex.agent.fullComputer.enable")}</button>}
+                      if (localAgent.fullComputerEnabled) {
+                        void localSafetyCommand("agent.full-computer.disable", localAgent.agentId);
+                      } else if (window.confirm(t("cocodex.agent.fullComputer.confirm"))) {
+                        void localSafetyCommand("agent.full-computer.enable", localAgent.agentId, true);
+                      }
+                    }}>{t(localAgent.fullComputerEnabled ? "cocodex.agent.fullComputer.disable" : "cocodex.agent.fullComputer.enable")}</button>}
                 </div>
-              </div>}
-              {!status.agentConfigured && projectId && <form className="cocodex-agent-setup" onSubmit={configureAgent}>
+              </div>)}
+              {projectId && projectLocalAgents.length < 8 && <form className="cocodex-agent-setup" onSubmit={configureAgent}>
                 <strong>{t("cocodex.agent.setup.title")}</strong>
                 <small>{t("cocodex.agent.setup.subtitle")}</small>
                 <input className="input" value={agentName} onChange={event => setAgentName(event.target.value)}

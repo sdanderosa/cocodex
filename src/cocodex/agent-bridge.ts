@@ -258,6 +258,7 @@ export function attachLocalAgentBridge(
   security: AgentBridgeSecurity,
 ): LocalAgentBridgeHandle {
   const activeTasks = new Set<string>();
+  const candidateTasks = new Set<string>();
   const executionControllers = new Map<string, AbortController>();
   const taskModes = new Map<string, boolean>();
   const pendingCancellations = new Set<string>();
@@ -288,6 +289,9 @@ export function attachLocalAgentBridge(
     const encryptedParsed = encryptedAgentTaskFrameSchema.safeParse(raw);
     const cancellation = agentCancelFrameSchema.safeParse(raw);
     if (cancellation.success) {
+      if (!candidateTasks.has(cancellation.data.taskId)
+        && !activeTasks.has(cancellation.data.taskId)
+        && !taskModes.has(cancellation.data.taskId)) return;
       const knownMode = taskModes.get(cancellation.data.taskId);
       if (knownMode === true) cancelledEncryptedTasks.add(cancellation.data.taskId);
       else if (knownMode === undefined) pendingCancellations.add(cancellation.data.taskId);
@@ -296,8 +300,15 @@ export function attachLocalAgentBridge(
     }
     const wireTask = parsed.success ? parsed.data.task : encryptedParsed.success ? encryptedParsed.data.task : undefined;
     if (!wireTask) return;
+    if (security.agentId !== undefined && wireTask.agentId !== security.agentId) return;
+    candidateTasks.add(wireTask.id);
     void (async () => {
-      const task = await verifyTask(wireTask, security);
+      let task: AgentTask | null;
+      try {
+        task = await verifyTask(wireTask, security);
+      } finally {
+        candidateTasks.delete(wireTask.id);
+      }
       if (!task || activeTasks.has(task.id)) return;
       const encrypted = encryptedParsed.success;
       taskModes.set(task.id, encrypted);

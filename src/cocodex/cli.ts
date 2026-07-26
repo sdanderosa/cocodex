@@ -10,7 +10,14 @@ import {
 } from "./client";
 import { attachLocalAgentBridge, type LocalAgentBridgeHandle } from "./agent-bridge";
 import { CodexAgentAdapter } from "./codex-agent-adapter";
-import { loadLocalAgentPolicy, saveLocalAgentPolicy } from "./agent-policy";
+import {
+  loadLocalAgentPolicies,
+  loadLocalAgentPolicy,
+  loadLocalAgentPolicyStore,
+  saveLocalAgentPolicy,
+  upsertLocalAgentPolicy,
+} from "./agent-policy";
+import { agentRuntimePaths, stageLegacyAgentRuntimeState } from "./agent-runtime-paths";
 import {
   configureAgentSafety,
   emergencyStopAgent,
@@ -101,7 +108,7 @@ async function run(): Promise<void> {
       if (accessProfile === "full-computer" && !fullComputerOptIn) {
         throw new Error("Full-computer access requires --confirm-full-computer");
       }
-      const policy = saveLocalAgentPolicy(paths.agentPolicy, {
+      const policy = {
         version: 1,
         projectId: required("--project"),
         agentId: required("--agent"),
@@ -114,39 +121,73 @@ async function run(): Promise<void> {
         trustedRequesterFingerprints: {
           [trustedDeviceId]: required("--trust-fingerprint"),
         },
-      });
-      configureAgentSafety(paths.agentSafety, policy);
+      } as const;
+      const currentStore = existsSync(paths.agentPolicy) ? loadLocalAgentPolicyStore(paths.agentPolicy) : undefined;
+      const existing = currentStore?.agents.find(candidate => candidate.agentId === policy.agentId);
+      if (currentStore?.version === 1 && !existing) {
+        stageLegacyAgentRuntimeState(paths, currentStore.agents[0].agentId);
+      }
+      const legacyRuntime = !currentStore || (currentStore.version === 1 && Boolean(existing));
+      const runtime = agentRuntimePaths(paths, policy.agentId, legacyRuntime);
+      if (!existing) configureAgentSafety(runtime.safety, policy);
       trustDevice(paths.trustedDevices, trustedDeviceId, required("--trust-fingerprint"));
+      if (!currentStore || (currentStore.version === 1 && existing)) {
+        saveLocalAgentPolicy(paths.agentPolicy, policy);
+      } else {
+        upsertLocalAgentPolicy(paths.agentPolicy, policy);
+      }
       console.log(JSON.stringify({ configured: true, projectId: policy.projectId, agentId: policy.agentId, accessProfile: policy.accessProfile }));
       return;
     }
     case "agent-safety-status": {
-      const policy = loadLocalAgentPolicy(paths.agentPolicy);
+      const policy = loadLocalAgentPolicy(paths.agentPolicy, option("--agent"));
+      const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+      const runtime = agentRuntimePaths(paths, policy.agentId, store.version === 1);
       console.log(JSON.stringify({
         policy: { accessProfile: policy.accessProfile, fullComputerOptIn: policy.fullComputerOptIn },
-        safety: loadAgentSafety(paths.agentSafety, policy),
+        safety: loadAgentSafety(runtime.safety, policy),
       }, null, 2));
       return;
     }
     case "emergency-stop": {
-      loadLocalAgentPolicy(paths.agentPolicy);
-      console.log(JSON.stringify({ stopped: true, safety: emergencyStopAgent(paths.agentSafety, option("--reason") ?? "Stopped by the local host user.") }));
+      const policies = loadLocalAgentPolicies(paths.agentPolicy);
+      const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+      const selected = option("--agent")
+        ? [loadLocalAgentPolicy(paths.agentPolicy, option("--agent"))]
+        : policies;
+      const safety = selected.map(policy => ({
+        agentId: policy.agentId,
+        state: emergencyStopAgent(
+          agentRuntimePaths(paths, policy.agentId, store.version === 1).safety,
+          option("--reason") ?? "Stopped by the local host user.",
+        ),
+      }));
+      console.log(JSON.stringify({ stopped: true, safety }));
       return;
     }
     case "emergency-resume": {
-      const policy = loadLocalAgentPolicy(paths.agentPolicy);
-      console.log(JSON.stringify({ resumed: true, safety: resumeAgent(paths.agentSafety, policy) }));
+      const policy = loadLocalAgentPolicy(paths.agentPolicy, option("--agent"));
+      const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+      console.log(JSON.stringify({ resumed: true, agentId: policy.agentId, safety: resumeAgent(
+        agentRuntimePaths(paths, policy.agentId, store.version === 1).safety, policy,
+      ) }));
       return;
     }
     case "full-computer-enable": {
       if (!Bun.argv.includes("--confirm")) throw new Error("Full-computer access requires --confirm");
-      const policy = loadLocalAgentPolicy(paths.agentPolicy);
-      console.log(JSON.stringify({ enabled: true, safety: setFullComputerEnabled(paths.agentSafety, policy, true) }));
+      const policy = loadLocalAgentPolicy(paths.agentPolicy, option("--agent"));
+      const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+      console.log(JSON.stringify({ enabled: true, agentId: policy.agentId, safety: setFullComputerEnabled(
+        agentRuntimePaths(paths, policy.agentId, store.version === 1).safety, policy, true,
+      ) }));
       return;
     }
     case "full-computer-disable": {
-      const policy = loadLocalAgentPolicy(paths.agentPolicy);
-      console.log(JSON.stringify({ enabled: false, safety: setFullComputerEnabled(paths.agentSafety, policy, false) }));
+      const policy = loadLocalAgentPolicy(paths.agentPolicy, option("--agent"));
+      const store = loadLocalAgentPolicyStore(paths.agentPolicy);
+      console.log(JSON.stringify({ enabled: false, agentId: policy.agentId, safety: setFullComputerEnabled(
+        agentRuntimePaths(paths, policy.agentId, store.version === 1).safety, policy, false,
+      ) }));
       return;
     }
     case "private-send": {
@@ -254,70 +295,75 @@ async function run(): Promise<void> {
         await runJsonLineSession(paths);
         return;
       }
-      if (Bun.argv.includes("--json-lines")) {
-        await runJsonLineSession(paths);
-        return;
-      }
       const connection = loadClientConnection(paths);
-      await maintainAuthenticatedClient(paths, async socket => {
+      const policies = existsSync(paths.agentPolicy) ? loadLocalAgentPolicies(paths.agentPolicy) : [];
+      const storeVersion = existsSync(paths.agentPolicy) ? loadLocalAgentPolicyStore(paths.agentPolicy).version : 2;
+      const control = maintainAuthenticatedClient(paths, async socket => {
         const flushedEvents = await flushDurableOutbox(socket, paths);
-        let detachAgentBridge: LocalAgentBridgeHandle | undefined;
-        let safetyPoll: ReturnType<typeof setInterval> | undefined;
-        if (existsSync(paths.agentPolicy)) {
-          const policy = loadLocalAgentPolicy(paths.agentPolicy);
-          let safety = loadAgentSafety(paths.agentSafety, policy);
-          const executionAllowed = () => {
-            try {
-              safety = loadAgentSafety(paths.agentSafety, policy);
-              return safety.executionEnabled && (policy.accessProfile !== "full-computer" || safety.fullComputerEnabled);
-            } catch {
-              return false;
-            }
-          };
-          const adapter = new CodexAgentAdapter({
-            projectId: policy.projectId,
-            agentId: policy.agentId,
-            workspaceRoot: policy.workspaceRoot,
-            sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
-            accessProfile: policy.accessProfile,
-            fullComputerOptIn: policy.fullComputerOptIn,
-            prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
-              worktreeRoot: paths.taskWorktrees,
-              registryPath: paths.taskWorktreeRegistry,
-            }),
-            onWorkspacePrepared: (task, workspace) =>
-              reportAgentExecution(socket, loadOrCreateClientIdentity(paths), task, workspace),
-            authorizeTask: () => executionAllowed(),
-          });
-          detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
-            localDeviceId: connection.deviceId,
-            serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
-            trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
-            journalPath: paths.agentJournal,
-            isExecutionAllowed: executionAllowed,
-          });
-          if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
-          safetyPoll = setInterval(() => {
-            if (!detachAgentBridge) return;
-            if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
-            else if (detachAgentBridge.isEmergencyStopped()) detachAgentBridge.resume();
-          }, 250);
-        }
         console.log(JSON.stringify({
           connected: true,
           deviceId: connection.deviceId,
-          agentEnabled: Boolean(detachAgentBridge),
+          agentEnabled: policies.length > 0,
+          agentCount: policies.length,
           flushedEvents,
         }));
+      }, {
+        onConnectionError: error => {
+          console.error(JSON.stringify({ connected: false, retrying: true, error: error.message }));
+        },
+      });
+      const workers = policies.map(policy => maintainAuthenticatedClient(paths, async socket => {
+        const runtime = agentRuntimePaths(paths, policy.agentId, storeVersion === 1);
+        let safety = loadAgentSafety(runtime.safety, policy);
+        let detachAgentBridge: LocalAgentBridgeHandle | undefined;
+        let safetyPoll: ReturnType<typeof setInterval> | undefined;
+        const executionAllowed = () => {
+          try {
+            safety = loadAgentSafety(runtime.safety, policy);
+            return safety.executionEnabled && (policy.accessProfile !== "full-computer" || safety.fullComputerEnabled);
+          } catch {
+            return false;
+          }
+        };
+        const adapter = new CodexAgentAdapter({
+          projectId: policy.projectId,
+          agentId: policy.agentId,
+          workspaceRoot: policy.workspaceRoot,
+          sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
+          accessProfile: policy.accessProfile,
+          fullComputerOptIn: policy.fullComputerOptIn,
+          prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
+            worktreeRoot: runtime.worktreeRoot,
+            registryPath: runtime.worktreeRegistry,
+          }),
+          onWorkspacePrepared: (task, workspace) =>
+            reportAgentExecution(socket, loadOrCreateClientIdentity(paths), task, workspace),
+          authorizeTask: () => executionAllowed(),
+        });
+        detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
+          localDeviceId: connection.deviceId,
+          agentId: policy.agentId,
+          serverPublicKeyPem: connection.serverIdentityPublicKeyPem,
+          trustedRequesterFingerprints: new Map(Object.entries(policy.trustedRequesterFingerprints)),
+          journalPath: runtime.journal,
+          isExecutionAllowed: executionAllowed,
+        });
+        if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
+        safetyPoll = setInterval(() => {
+          if (!detachAgentBridge) return;
+          if (!executionAllowed()) detachAgentBridge.emergencyStop("Local safety state is disabled.");
+          else if (detachAgentBridge.isEmergencyStopped()) detachAgentBridge.resume();
+        }, 250);
         return async () => {
           if (safetyPoll) clearInterval(safetyPoll);
           await detachAgentBridge?.();
         };
       }, {
         onConnectionError: error => {
-          console.error(JSON.stringify({ connected: false, retrying: true, error: error.message }));
+          console.error(JSON.stringify({ connected: false, agentId: policy.agentId, retrying: true, error: error.message }));
         },
-      });
+      }));
+      await Promise.all([control, ...workers]);
       return;
     }
     case "trust-device":
@@ -334,11 +380,11 @@ Usage:
   cocodex-client accept-transfer --code-file FILE [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
   cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
-  cocodex-client agent-safety-status [--state-root PATH]
-  cocodex-client emergency-stop [--reason TEXT] [--state-root PATH]
-  cocodex-client emergency-resume [--state-root PATH]
-  cocodex-client full-computer-enable --confirm [--state-root PATH]
-  cocodex-client full-computer-disable [--state-root PATH]
+  cocodex-client agent-safety-status [--agent ID] [--state-root PATH]
+  cocodex-client emergency-stop [--agent ID] [--reason TEXT] [--state-root PATH]
+  cocodex-client emergency-resume [--agent ID] [--state-root PATH]
+  cocodex-client full-computer-enable --confirm [--agent ID] [--state-root PATH]
+  cocodex-client full-computer-disable [--agent ID] [--state-root PATH]
   cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
   cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex-client chat-send --project ID --message TEXT [--state-root PATH]
@@ -347,7 +393,10 @@ Usage:
   }
 }
 
-run().catch(error => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+run().then(
+  () => process.exit(0),
+  error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  },
+);

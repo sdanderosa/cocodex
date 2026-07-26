@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -165,6 +165,15 @@ async function waitForMailbox(path: string, expectedMinimumReceipts: number): Pr
   throw new Error(`Timed out waiting for mailbox ${path}`);
 }
 
+async function waitForPath(path: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
 async function buildArtifacts(serverExe: string, clientExe: string, fixtureExe: string): Promise<void> {
   await run(bun, [
     "build", "./apps/cocodex-server/src/cli.ts", "--compile", "--outfile", serverExe,
@@ -189,13 +198,20 @@ describe("three-process CoCodex private alpha", () => {
     const stephenRoot = join(temp, "stephen");
     const kaiRoot = join(temp, "kai");
     const stephenWorkspace = join(temp, "stephen-workspace");
+    const angelaWorkspace = join(temp, "angela-workspace");
     const kaiWorkspace = join(temp, "kai-workspace");
+    const executionBarrier = join(temp, "execution-barrier");
     const fixtureExe = join(temp, "codex-runtime-fixture.exe");
     const serverExe = join(temp, "cocodex-server.exe");
     const clientExe = join(temp, "cocodex-client.exe");
     const port = 25000 + Math.floor(Math.random() * 10000);
+    const lucasAgentId = randomUUID();
+    const angelaAgentId = randomUUID();
+    const sueAgentId = randomUUID();
     mkdirSync(stephenWorkspace, { recursive: true });
+    mkdirSync(angelaWorkspace, { recursive: true });
     mkdirSync(kaiWorkspace, { recursive: true });
+    mkdirSync(executionBarrier, { recursive: true });
     await buildArtifacts(serverExe, clientExe, fixtureExe);
     if (process.platform === "win32") await Bun.sleep(500);
     traceCheckpoint("artifacts built");
@@ -239,20 +255,29 @@ describe("three-process CoCodex private alpha", () => {
       "--member-device", kaiDevice.id, "--state-root", serverRoot,
     ]);
     await run(serverExe, [
-      "agent-add", "--id", "stephen-agent", "--project", project.id,
-      "--host-device", stephenDevice.id, "--name", "Stephen Codex", "--state-root", serverRoot,
+      "agent-add", "--id", lucasAgentId, "--project", project.id,
+      "--host-device", stephenDevice.id, "--name", "Lucas", "--state-root", serverRoot,
     ]);
     await run(serverExe, [
-      "agent-add", "--id", "kai-agent", "--project", project.id,
-      "--host-device", kaiDevice.id, "--name", "Kai Codex", "--state-root", serverRoot,
+      "agent-add", "--id", angelaAgentId, "--project", project.id,
+      "--host-device", stephenDevice.id, "--name", "Angela", "--state-root", serverRoot,
+    ]);
+    await run(serverExe, [
+      "agent-add", "--id", sueAgentId, "--project", project.id,
+      "--host-device", kaiDevice.id, "--name", "Sue", "--state-root", serverRoot,
     ]);
     await run(clientExe, [
-      "configure-agent", "--project", project.id, "--agent", "stephen-agent",
+      "configure-agent", "--project", project.id, "--agent", lucasAgentId,
       "--workspace", stephenWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", kaiDevice.id,
       "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
     ]);
     await run(clientExe, [
-      "configure-agent", "--project", project.id, "--agent", "kai-agent",
+      "configure-agent", "--project", project.id, "--agent", angelaAgentId,
+      "--workspace", angelaWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", kaiDevice.id,
+      "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
+    ]);
+    await run(clientExe, [
+      "configure-agent", "--project", project.id, "--agent", sueAgentId,
       "--workspace", kaiWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", stephenDevice.id,
       "--trust-fingerprint", stephenDevice.fingerprint, "--state-root", kaiRoot,
     ]);
@@ -260,6 +285,7 @@ describe("three-process CoCodex private alpha", () => {
     const stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "stephen-account",
+      COCODEX_FIXTURE_BARRIER_DIR: executionBarrier,
     });
     const kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
       CODEX_CLI_PATH: fixtureExe,
@@ -270,8 +296,9 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(kai, line => line.source === "session" && line.state === "connected"),
     ]);
     await Promise.all([
-      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted"),
-      waitFor(kai, line => line.frame?.type === "agent.ready.accepted"),
+      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === lucasAgentId),
+      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === angelaAgentId),
+      waitFor(kai, line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === sueAgentId),
     ]);
     traceCheckpoint("clients connected");
     const stephenPid = stephen.process.pid;
@@ -336,30 +363,54 @@ describe("three-process CoCodex private alpha", () => {
     expect(onlineAtKai.frame.event.sequence).toBe(onlineAtStephen.frame.event.sequence);
 
     kai.send({
-      id: "task-stephen",
+      id: "task-lucas",
       type: "agent.request",
       projectId: project.id,
-      agentId: "stephen-agent",
-      prompt: "inspect Stephen workspace",
+      agentId: lucasAgentId,
+      prompt: "inspect Lucas workspace",
     });
-    const stephenApproval = await waitFor(
+    kai.send({
+      id: "task-angela",
+      type: "agent.request",
+      projectId: project.id,
+      agentId: angelaAgentId,
+      prompt: "inspect Angela workspace",
+    });
+    const lucasApproval = await waitFor(
       stephen,
       line => line.source === "agent-approval" && line.approvalState === "pending"
-        && line.task?.agentId === "stephen-agent",
+        && line.task?.agentId === lucasAgentId,
     );
-    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: stephenApproval.task.id, approved: true });
+    const angelaApproval = await waitFor(
+      stephen,
+      line => line.source === "agent-approval" && line.approvalState === "pending"
+        && line.task?.agentId === angelaAgentId,
+    );
+    const resultCheckpoint = kai.lines.length;
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: lucasApproval.task.id, approved: true });
+    stephen.send({ id: randomUUID(), type: "agent.approval", taskId: angelaApproval.task.id, approved: true });
+    const lucasMarker = join(stephenWorkspace, "stephen-account-execution.json");
+    const angelaMarker = join(angelaWorkspace, "stephen-account-execution.json");
+    await Promise.all([waitForPath(lucasMarker), waitForPath(angelaMarker)]);
+    expect(kai.lines.slice(resultCheckpoint).some(line => line.frame?.type === "agent.result" && line.frame.final === true)).toBeFalse();
+    writeFileSync(join(executionBarrier, "release"), "release\n", "utf8");
+    await Promise.all([
+      waitForAfter(kai, resultCheckpoint, line => line.frame?.type === "agent.result"
+        && line.frame.taskId === lucasApproval.task.id && line.frame.final === true),
+      waitForAfter(kai, resultCheckpoint, line => line.frame?.type === "agent.result"
+        && line.frame.taskId === angelaApproval.task.id && line.frame.final === true),
+    ]);
     await waitFor(stephen, line => line.source === "local-usage" && line.deviceId === stephenDevice.id);
-    await waitFor(kai, line => line.frame?.type === "agent.result" && line.frame.final === true
-      && line.frame.event?.content?.includes("stephen-account"));
-    traceCheckpoint("Stephen agent completed");
-    expect(existsSync(join(stephenWorkspace, "stephen-account-execution.json"))).toBeTrue();
+    traceCheckpoint("Lucas and Angela completed concurrently");
+    expect(existsSync(lucasMarker)).toBeTrue();
+    expect(existsSync(angelaMarker)).toBeTrue();
     expect(existsSync(join(kaiWorkspace, "stephen-account-execution.json"))).toBeFalse();
 
     stephen.send({
       id: "task-kai",
       type: "agent.request",
       projectId: project.id,
-      agentId: "kai-agent",
+      agentId: sueAgentId,
       prompt: "inspect Kai workspace",
     });
     await waitFor(
@@ -370,7 +421,7 @@ describe("three-process CoCodex private alpha", () => {
     const kaiApproval = await waitFor(
       kai,
       line => line.source === "agent-approval" && line.approvalState === "pending"
-        && line.task?.agentId === "kai-agent",
+        && line.task?.agentId === sueAgentId,
     );
     kai.send({ id: randomUUID(), type: "agent.approval", taskId: kaiApproval.task.id, approved: true });
     await waitFor(kai, line => line.source === "local-usage" && line.deviceId === kaiDevice.id);
@@ -426,7 +477,7 @@ describe("three-process CoCodex private alpha", () => {
       id: sharedPrivateRequest,
       type: "private.share",
       projectId: project.id,
-      agentId: "stephen-agent",
+      agentId: lucasAgentId,
       messageId: privateMessageId,
     });
     const sharedPrivateControl = await waitFor(stephen, line => line.source === "control"
@@ -464,7 +515,7 @@ describe("three-process CoCodex private alpha", () => {
       id: encryptedStephenRequest,
       type: "agent.request",
       projectId: project.id,
-      agentId: "stephen-agent",
+      agentId: lucasAgentId,
       prompt: encryptedStephenPrompt,
       inputArtifactIds: [artifactId],
     });
@@ -486,7 +537,7 @@ describe("three-process CoCodex private alpha", () => {
       id: encryptedKaiRequest,
       type: "agent.request",
       projectId: project.id,
-      agentId: "kai-agent",
+      agentId: sueAgentId,
       prompt: encryptedKaiPrompt,
     });
     const encryptedKaiControl = await waitFor(stephen, line => line.source === "control"
@@ -532,7 +583,7 @@ describe("three-process CoCodex private alpha", () => {
     const usageReportsS = usageS.frame.reports as any[];
     const usageReportsK = usageK.frame.reports as any[];
     expect(usageReportsS).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 3 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 4 }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
     expect(usageReportsK).toEqual(expect.arrayContaining([
@@ -579,11 +630,21 @@ describe("three-process CoCodex private alpha", () => {
     ]);
 
     traceCheckpoint("offline queues accepted");
+    const workerReconnectCheckpointS = stephen.lines.length;
+    const workerReconnectCheckpointK = kai.lines.length;
     server = startServer();
     await waitFor(server, line => line.ready === true);
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "connected" && line.flushedEvents >= 1),
       waitFor(kai, line => line.source === "session" && line.state === "connected" && line.flushedEvents >= 1),
+    ]);
+    await Promise.all([
+      waitForAfter(stephen, workerReconnectCheckpointS,
+        line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === lucasAgentId),
+      waitForAfter(stephen, workerReconnectCheckpointS,
+        line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === angelaAgentId),
+      waitForAfter(kai, workerReconnectCheckpointK,
+        line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === sueAgentId),
     ]);
     await Promise.all([
       waitFor(stephen, line => line.source === "private" && line.message?.text === offlinePrivateS),
@@ -638,7 +699,7 @@ describe("three-process CoCodex private alpha", () => {
       line => line.frame?.type === "usage.result" && line.frame.requestId === recoveredUsageRequest,
     );
     expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
-      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 3 }) }),
+      expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 4 }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 2 }) }),
     ]));
 

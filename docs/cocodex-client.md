@@ -120,9 +120,11 @@ acceptance, commits the local policy, and reconnects as ready. The Server never
 receives the workspace path, sandbox, or access profile. The composer selects
 agents from the verified roster instead of accepting a typed internal ID.
 
-This setup currently supports one enabled local agent per project. It does not
-yet provide the multi-policy runtime store needed to host Lucas and Angela
-concurrently from one Client. See ADR 0025.
+The same Client can host up to eight local agents for one project. It keeps one
+shared collaboration connection and a separate authenticated worker
+connection, safety record, execution journal, and worktree registry for each
+agent. Version-1 single-agent policies migrate into the bounded version-2 store
+when another agent is added. See ADR 0026.
 
 The client also subscribes to `agent.task.list`. Its activity cards show the
 server-derived task status, dependency count, event count, and whether the

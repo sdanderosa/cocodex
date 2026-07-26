@@ -89,8 +89,8 @@ export function createAgentForHost(
       SELECT COUNT(*) AS count FROM agents
       WHERE project_id = ? AND host_device_id = ? AND enabled = 1
     `).get(agent.projectId, agent.hostDeviceId) as { count: number };
-    if (Number(hostCount.count) >= 1) {
-      throw new Error("This client currently supports one enabled agent per project");
+    if (Number(hostCount.count) >= 8) {
+      throw new Error("This device has reached the eight-agent project limit");
     }
     const projectCount = db.query(`
       SELECT COUNT(*) AS count FROM agents WHERE project_id = ?

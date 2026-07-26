@@ -38,11 +38,11 @@ full-computer fields. Server input therefore cannot widen local authority.
 Full-computer access remains disabled after setup and requires its separate
 local enable action.
 
-The current local policy format supports one enabled hosted agent per
-device/project. The Server enforces that honest limit and the protocol caps a
-project roster at 128 entries. Supporting Lucas and Angela concurrently on one
-device requires a later multi-policy/runtime-session store; this slice does
-not disguise the single-policy Client as multi-agent capable.
+ADR 0026 extends this setup with a bounded version-2 local policy store and one
+agent-scoped worker connection per local agent. One device/project can now host
+up to eight agents concurrently; the project roster remains capped at 128.
+Version-1 policies continue to load and migrate without overwriting the first
+agent.
 
 ## Security properties
 

@@ -19,7 +19,7 @@ import { enrollClient } from "../src/cocodex/client";
 import { loadOrCreateClientIdentity } from "../src/cocodex/identity";
 import { clientPaths } from "../src/cocodex/paths";
 import { runJsonLineSession } from "../src/cocodex/session";
-import { loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
+import { loadLocalAgentPolicies, loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
 import { trustDevice } from "../src/cocodex/trusted-devices";
 
 const roots: string[] = [];
@@ -404,7 +404,7 @@ describe("CoCodex encrypted project context session", () => {
     await Promise.all([stephenRun, kaiRun]);
   }, 30_000);
 
-  test("configures a signed self-hosted agent and reconnects it as ready", async () => {
+  test("configures two signed self-hosted agents with independent ready workers", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-server-"));
     const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-client-"));
     const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-trusted-"));
@@ -479,24 +479,52 @@ describe("CoCodex encrypted project context session", () => {
       workspaceMode: "git-worktree",
       accessProfile: "project-only",
     });
-    await stephen.waitFor(event => event.source === "server"
+    await stephen.waitFor(event => event.source === "agent-worker"
+      && event.agentId === configured.agentId
       && (event.frame as Record<string, unknown> | undefined)?.type === "agent.ready.accepted", 25_000);
+    const angelaConfigureId = crypto.randomUUID();
+    stephen.send({
+      id: angelaConfigureId,
+      type: "agent.configure",
+      projectId: project.id,
+      name: "Angela",
+      workspaceRoot: repository,
+      workspaceMode: "git-worktree",
+      trustedRequesterDeviceId: kaiConnection.deviceId,
+      trustedRequesterFingerprint: publicKeyFingerprint(kaiIdentity.publicKeyPem),
+    });
+    const angelaConfigured = await stephen.waitFor(event =>
+      event.source === "agent-configuration" && event.id === angelaConfigureId && event.configured === true, 25_000);
+    await stephen.waitFor(event => event.source === "agent-worker"
+      && event.agentId === angelaConfigured.agentId
+      && (event.frame as Record<string, unknown> | undefined)?.type === "agent.ready.accepted", 25_000);
+    expect(loadLocalAgentPolicies(stephenPaths.agentPolicy).map(item => item.agentId)).toEqual([
+      configured.agentId,
+      angelaConfigured.agentId,
+    ]);
     const rosterRequest = crypto.randomUUID();
     stephen.send({ id: rosterRequest, type: "agent.list", projectId: project.id });
     const roster = await stephen.waitFor(event => event.source === "server"
       && (event.frame as Record<string, unknown> | undefined)?.type === "agent.list.result"
       && (event.frame as Record<string, unknown> | undefined)?.requestId === rosterRequest);
     const rosterAgents = (roster.frame as Record<string, unknown>).agents as unknown[];
-    expect(rosterAgents).toEqual([
+    expect(rosterAgents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: configured.agentId,
         name: "Lucas",
         hostDeviceId: stephenConnection.deviceId,
         status: "available",
       }),
-    ]);
+      expect.objectContaining({
+        id: angelaConfigured.agentId,
+        name: "Angela",
+        hostDeviceId: stephenConnection.deviceId,
+        status: "available",
+      }),
+    ]));
+    expect(rosterAgents).toHaveLength(2);
     expect(db.query("SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'agent.created'").get())
-      .toEqual({ count: 1 });
+      .toEqual({ count: 2 });
 
     stephen.close();
     await stephenRun;

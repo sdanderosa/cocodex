@@ -94,7 +94,7 @@ describe("authoritative agent dependencies", () => {
       }, now))
         .toThrow("different definition");
       const secondId = randomUUID();
-      expect(() => createAgentForHost(db, {
+      expect(createAgentForHost(db, {
         id: secondId,
         projectId: project.id,
         hostDeviceId: stephen.id,
@@ -105,7 +105,36 @@ describe("authoritative agent dependencies", () => {
           name: "Angela",
           hostDeviceId: stephen.id,
         }), stephen.privateKey).toString("base64url"),
-      }, now)).toThrow("one enabled agent");
+      }, now).created).toBeTrue();
+      for (let index = 3; index <= 8; index += 1) {
+        const candidateId = randomUUID();
+        const candidate = {
+          projectId: project.id,
+          agentId: candidateId,
+          name: `Agent ${index}`,
+          hostDeviceId: stephen.id,
+        };
+        expect(createAgentForHost(db, {
+          id: candidateId,
+          projectId: project.id,
+          hostDeviceId: stephen.id,
+          name: candidate.name,
+          signature: sign(null, agentDefinitionSigningTranscript(candidate), stephen.privateKey).toString("base64url"),
+        }, now).created).toBeTrue();
+      }
+      const ninthId = randomUUID();
+      expect(() => createAgentForHost(db, {
+        id: ninthId,
+        projectId: project.id,
+        hostDeviceId: stephen.id,
+        name: "Agent 9",
+        signature: sign(null, agentDefinitionSigningTranscript({
+          projectId: project.id,
+          agentId: ninthId,
+          name: "Agent 9",
+          hostDeviceId: stephen.id,
+        }), stephen.privateKey).toString("base64url"),
+      }, now)).toThrow("eight-agent");
       expect(() => createAgentForHost(db, {
         ...input,
         id: randomUUID(),

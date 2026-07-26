@@ -18,9 +18,10 @@ export type LocalAgentSafetyState = z.infer<typeof safetySchema>;
 function defaultSafety(policy: LocalAgentPolicy): LocalAgentSafetyState {
   return {
     version: 1,
-    executionEnabled: true,
-    fullComputerEnabled: policy.accessProfile === "full-computer" && policy.fullComputerOptIn,
+    executionEnabled: false,
+    fullComputerEnabled: false,
     updatedAt: new Date().toISOString(),
+    reason: `Safety state is missing for agent ${policy.agentId}; execution is disabled.`,
   };
 }
 
@@ -59,7 +60,10 @@ export function saveAgentSafety(path: string, state: Omit<LocalAgentSafetyState,
 export function configureAgentSafety(path: string, policy: LocalAgentPolicy): LocalAgentSafetyState {
   return saveAgentSafety(path, {
     executionEnabled: true,
-    fullComputerEnabled: policy.accessProfile === "full-computer" && policy.fullComputerOptIn,
+    fullComputerEnabled: false,
+    reason: policy.accessProfile === "full-computer"
+      ? "Full-computer access requires a separate local enable action."
+      : undefined,
   });
 }
 

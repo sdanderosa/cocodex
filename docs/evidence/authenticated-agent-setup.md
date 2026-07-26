@@ -2,7 +2,8 @@
 
 - Date: 2026-07-26
 - Branch: `feat/cocodex-foundation`
-- Status: connected slice complete; multi-agent local policy and crash-atomic setup remain follow-ups
+- Status: connected slice complete; multi-agent local policy is implemented in
+  ADR 0026, while crash-atomic cross-process setup remains a follow-up
 
 ## Focused integration gate
 
@@ -63,7 +64,9 @@ privacy:scan          exit 0
 git diff --check      exit 0
 ```
 
-The real three-process private-alpha scenario remains green inside that run:
-`1 pass`, `0 fail`, `69 expect() calls`. The earlier checkpoint's complete
+The real three-process private-alpha scenario remained green in that historical
+run. ADR 0026 and `docs/evidence/concurrent-local-agents.md` supersede the
+single-agent count with a two-worker run (`1 pass`, `0 fail`, `71 expect()`
+calls). The earlier checkpoint's complete
 upstream OpenCodex chunk audit remains the latest full upstream baseline; this
 slice changes only CoCodex modules, GUI code, documentation, and CoCodex tests.

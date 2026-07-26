@@ -41,11 +41,18 @@ describe("CoCodex agent safety CLI", () => {
       expect(JSON.parse(configured.stdout)).toMatchObject({ configured: true, accessProfile: "full-computer" });
 
       const initial = await runClient(cli, ["agent-safety-status", "--state-root", root]);
-      expect(JSON.parse(initial.stdout).safety).toMatchObject({ executionEnabled: true, fullComputerEnabled: true });
+      expect(JSON.parse(initial.stdout).safety).toMatchObject({ executionEnabled: true, fullComputerEnabled: false });
 
       const stopped = await runClient(cli, ["emergency-stop", "--reason", "CLI incident", "--state-root", root]);
       expect(stopped.exitCode).toBe(0);
-      expect(JSON.parse(stopped.stdout).safety).toMatchObject({ executionEnabled: false, fullComputerEnabled: false, reason: "CLI incident" });
+      expect(JSON.parse(stopped.stdout).safety).toEqual([{
+        agentId: "local-codex",
+        state: expect.objectContaining({
+          executionEnabled: false,
+          fullComputerEnabled: false,
+          reason: "CLI incident",
+        }),
+      }]);
 
       const unconfirmed = await runClient(cli, ["full-computer-enable", "--state-root", root]);
       expect(unconfirmed.exitCode).not.toBe(0);

@@ -109,10 +109,15 @@ reviewed again before release.
   See ADR 0021. Elevated Windows helpers, browser control, and remote desktop
   remain separate requirements rather than metadata pretending to implement
   them.
-- **Agent roster:** adapt MeshCentral's authoritative server/device boundary.
-  `agent.list.result` is server-derived from approved host readiness and task
-  rows; the client renders discovery only, while every dispatch still passes
-  signed server authorization and local execution policy. See ADR 0018.
+  - **Agent roster:** adapt MeshCentral's authoritative server/device boundary.
+    `agent.list.result` is server-derived from approved host readiness and task
+    rows; the client renders discovery only, while every dispatch still passes
+    signed server authorization and local execution policy. See ADR 0018.
+  - **Multiple local agents:** keep the MeshCentral-style endpoint boundary but
+    isolate each hosted agent behind its own authenticated worker lease,
+    execution journal, safety record, and worktree registry. OpenHands informs
+    runtime-session separation only; no reference source is copied. See ADR
+    0026.
 - **Revocation-safe key rotation:** retain Syncthing-style cryptographic device
   identity and explicit trust, then add a CoCodex-specific server epoch gate
   for member removal. No reference source code is copied; the transaction,

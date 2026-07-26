@@ -99,6 +99,7 @@ export const ko: Record<TKey, string> = {
   "cocodex.server.none": "No server",
   "cocodex.device.this": "This device",
   "cocodex.agent.ready": "Local agent ready",
+  "cocodex.agent.configuredCount": "{count} local agents configured",
   "cocodex.agent.none": "No local agent policy",
   "cocodex.agent.access": "로컬 액세스: {profile}",
   "cocodex.agent.execution.enabled": "실행 활성화",
