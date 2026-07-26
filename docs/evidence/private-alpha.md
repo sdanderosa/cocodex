@@ -1054,6 +1054,88 @@ Exit status: `0`; relevant output: `1 pass`, `0 fail`, `12 expect()` calls in
 `2.84s`; the complete collaboration-server file also passed (`4 pass`, `0
 fail`, `86 expect()` calls).
 
+## Current recovery verification (2026-07-26)
+
+This section records the latest durable working-tree checkpoint. It does not
+replace the historical commit list above or claim that the pending worktree
+delta has been published yet. The base branch head before the pending delta is
+`50d7e3ba0cd5c85676bb25d91bc6795eddb0d6a4`.
+
+Commands were run from the Windows checkout using the repository-local Bun
+binary and the verified PortableGit runtime for subprocess tests:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-opencodex-import.test.ts `
+  .\tests\cocodex-opencodex-import-security.test.ts --timeout 60000
+.\node_modules\.bin\bun.exe run test:cocodex
+.\node_modules\.bin\bun.exe run test:batched
+cd gui; ..\node_modules\.bin\bun.exe test
+cd gui; ..\node_modules\.bin\bun.exe run lint
+cd gui; ..\node_modules\.bin\bun.exe run build
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+```
+
+Results:
+
+- `typecheck:cocodex`: exit `0`.
+- OpenCodex import flow and adversarial boundaries: `10 pass`, `0 fail`,
+  `33 expect()` calls.
+- `test:cocodex`: `119 pass`, `0 fail`, `1,118 expect()` calls across 30
+  files, including the real three-process restart/offline harness and the
+  live server-transfer process.
+- `test:batched`: `341/341` files completed across 14 fresh workers, `4,171`
+  passed, `0` failed, `20,736` assertions.
+- GUI tests: `112 pass`, `0 fail`, `550 expect()` calls.
+- GUI lint: exit `0`, zero errors, one existing hook warning.
+- GUI build, separate Client build, and separate Server build: exit `0`.
+- Privacy scan: exit `0`, `Privacy scan passed`.
+
+The pending import-flow delta is limited to the client-local preview/apply/
+rollback implementation, its ADR and documentation, and focused tests. It
+never sends provider configuration or authentication material to the Server.
+No CoCodex-named process or listener remained after the verification runs.
+
+## Final import hardening verification (2026-07-26)
+
+The final client-local OpenCodex compatibility import delta was verified after
+closing the adversarial review findings. Commands ran from the Windows checkout
+with the repository-local Bun binary:
+
+```powershell
+.\node_modules\bun\bin\bun.exe run typecheck:cocodex
+.\node_modules\bun\bin\bun.exe test tests\cocodex-opencodex-import.test.ts tests\cocodex-opencodex-import-security.test.ts --timeout 30000
+.\node_modules\bun\bin\bun.exe run privacy:scan
+.\node_modules\bun\bin\bun.exe run test:cocodex
+.\node_modules\bun\bin\bun.exe test tests\release-helper.test.ts
+$env:OCX_TEST_WORKER_SIZE='341'; .\node_modules\bun\bin\bun.exe run test:batched
+```
+
+Evidence:
+
+- Typecheck: exit `0`.
+- Focused import/security tests: `20 pass`, `0 fail`, `81 expect()` calls, including
+  vendor-header, access-key, password/passphrase, manifest-phase, journal-integrity,
+  backup-integrity, and target-overlap adversarial cases.
+- Privacy scan: exit `0`; output `Privacy scan passed`.
+- CLI open-only smoke: exit `0`; preview/apply/rollback passed with `available: 1`,
+  `excluded: 10`, `missing: 5`; source secrets were not printed, the source stayed
+  unchanged, and the disposable smoke directory was removed.
+- Private-alpha suite: `119 pass`, `0 fail`, `1,118 expect()` calls across 30
+  files, including the real three-process restart/recovery harness.
+- Isolated release-helper test: `5 pass`, `0 fail`, `18 expect()` calls.
+- Serial inherited suite: exit `0`; output `PASS: all 341 files completed across
+  1 fresh workers`.
+
+The default 14-worker batched invocation was also run and exited `1` only in
+`tests/release-helper.test.ts`: Windows resolved the real checkout Git instead
+of that test's fake Git shim, so the branch guard reported
+`feat/cocodex-foundation`. The same test passes in isolation and the serial
+batched run is the authoritative inherited-suite result for this checkout.
+
 ## Explicit private-message sharing into an agent
 
 Implementation commit: `3790c771`

@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   acceptServerAuthorityTransfer,
   connectAuthenticatedClient,
@@ -28,6 +30,7 @@ import {
   setFullComputerEnabled,
 } from "./agent-safety";
 import { clientPaths } from "./paths";
+import { resolveCodexHomeDir } from "../codex/home";
 import { createDeviceKeyCertificate, loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
@@ -35,6 +38,13 @@ import { runJsonLineSession } from "./session";
 import { reportAgentExecution } from "./agent-execution-client";
 import { prepareTaskWorkspace } from "./task-worktree";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
+import {
+  applyOpenCodexImport,
+  createOpenCodexImportPlan,
+  listOpenCodexImportBackups,
+  rollbackOpenCodexImport,
+  summarizeOpenCodexImportPlan,
+} from "./opencodex-import";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -68,6 +78,56 @@ function nextFrame(socket: WebSocket, type: string): Promise<Record<string, unkn
 async function run(): Promise<void> {
   const paths = clientPaths(option("--state-root"));
   switch (Bun.argv[2] ?? "help") {
+    case "import-opencodex": {
+      const sourceRoot = option("--source") ?? option("--source-opencodex") ?? process.env.OPENCODEX_HOME ?? join(homedir(), ".opencodex");
+      const targetRoot = option("--target") ?? join(paths.root, "opencodex");
+      const detectedCodexHome = resolveCodexHomeDir();
+      const sourceCodexHome = option("--source-codex") ?? (existsSync(detectedCodexHome) ? detectedCodexHome : undefined);
+      const targetCodexHome = option("--target-codex") ?? join(paths.root, "codex");
+      const rollbackId = option("--rollback");
+      const actions = [
+        Bun.argv.includes("--preview"),
+        Bun.argv.includes("--apply"),
+        rollbackId !== undefined,
+        Bun.argv.includes("--list"),
+        Bun.argv.includes("--status"),
+      ].filter(Boolean).length;
+      if (actions !== 1) {
+        throw new Error("Choose exactly one of --preview, --apply, --rollback ID, --list, or --status");
+      }
+      if (Bun.argv.includes("--preview")) {
+        const plan = createOpenCodexImportPlan({
+          sourceOpenCodexHome: sourceRoot,
+          targetOpenCodexHome: targetRoot,
+          sourceCodexHome,
+          targetCodexHome,
+          includeSecrets: Bun.argv.includes("--include-secrets"),
+        });
+        console.log(JSON.stringify({ mode: "preview", summary: summarizeOpenCodexImportPlan(plan), plan }, null, 2));
+        return;
+      }
+      if (Bun.argv.includes("--apply")) {
+        const plan = createOpenCodexImportPlan({
+          sourceOpenCodexHome: sourceRoot,
+          targetOpenCodexHome: targetRoot,
+          sourceCodexHome,
+          targetCodexHome,
+          includeSecrets: Bun.argv.includes("--include-secrets"),
+        });
+        console.log(JSON.stringify({ mode: "apply", result: applyOpenCodexImport(plan) }, null, 2));
+        return;
+      }
+      if (rollbackId !== undefined) {
+        console.log(JSON.stringify({ mode: "rollback", result: rollbackOpenCodexImport(rollbackId, targetRoot, targetCodexHome) }, null, 2));
+        return;
+      }
+      const backups = listOpenCodexImportBackups(targetRoot);
+      const mode = Bun.argv.includes("--list") ? "list" : "status";
+      console.log(JSON.stringify(mode === "list"
+        ? { mode, backups }
+        : { mode, latest: backups.at(-1) ?? null, active: backups.filter(backup => backup.state !== "rolled-back"), backups }, null, 2));
+      return;
+    }
     case "enroll": {
       const connection = await enrollClient(required("--invite"), required("--name"), paths);
       console.log(JSON.stringify({
@@ -407,6 +467,10 @@ async function run(): Promise<void> {
 
 Usage:
   cocodex enroll --invite CODE --name NAME [--state-root PATH]
+  cocodex import-opencodex --preview [--source PATH] [--target PATH] [--include-secrets]
+  cocodex import-opencodex --apply [--source PATH] [--target PATH] [--include-secrets]
+  cocodex import-opencodex --rollback BACKUP_DIRECTORY [--target PATH] [--target-codex PATH]
+  cocodex import-opencodex --list|--status [--target PATH]
   cocodex status [--state-root PATH]
   cocodex accept-transfer --code CODE [--state-root PATH]
   cocodex accept-transfer --code-file FILE [--state-root PATH]

@@ -37,6 +37,8 @@ export interface HardenResult {
 
 export interface HardenOptions {
   required: boolean;
+  /** Re-run ACL hardening even when this path was already hardened in-process. */
+  force?: boolean;
 }
 
 /**
@@ -276,7 +278,7 @@ function hardenEntry(
 ): HardenResult {
   if (!existsSync(targetPath)) return { ok: true };
   if (effectivePlatform() !== "win32") return { ok: true };
-  if (cache.has(targetPath)) return { ok: true };
+  if (cache.has(targetPath) && !opts.force) return { ok: true };
   if (timedOutPaths.has(targetPath)) {
     return { ok: false, diagnostics: "ACL hardening skipped — previous attempt timed out" };
   }

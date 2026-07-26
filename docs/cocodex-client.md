@@ -37,6 +37,51 @@ Client state defaults to `%USERPROFILE%\.cocodex` (or `COCODEX_HOME`). It is
 separate from `.opencodex` and `.codex`; no import or migration overwrites
 those directories.
 
+## Importing an existing OpenCodex installation
+
+The Client has an explicit, local-only import flow for an existing
+`OPENCODEX_HOME`. Preview before applying it:
+
+```powershell
+cocodex import-opencodex --preview --source "$env:USERPROFILE\.opencodex" --target "$env:USERPROFILE\.cocodex\opencodex" --include-secrets
+cocodex import-opencodex --apply --source "$env:USERPROFILE\.opencodex" --target "$env:USERPROFILE\.cocodex\opencodex" --include-secrets
+```
+
+The preview reports source/destination paths, sizes, sensitivities, collisions,
+and excluded files without printing file contents. Source files are read through
+a bounded, identity-checked descriptor. Apply stages every selected file, writes
+a prepared journal, then atomically renames each file into the separate local
+target. Existing target files are moved into a timestamped backup directory first
+and protected with the same fail-closed ACL policy. The target directory is
+hardened before any sensitive rename, and required ACL calls can be forced even
+when an earlier write used the same pathname. `--list` and `--status` show local
+backup manifests; `--rollback BACKUP_DIRECTORY` validates the journal phase/schema,
+rechecks imported and collision-backup hashes immediately before mutation, restores
+previous target files, and removes only files created by that import. Edited
+destinations, edited backups, symlink ancestors, forged plans, stale source
+metadata, and target roots that overlap generated backup metadata are rejected. If
+a crash leaves a prepared journal with
+ambiguous destination ownership, recovery refuses to delete it and leaves staging
+for explicit manual cleanup.
+
+The allowlist covers provider configuration (`config.json`), Codex configuration
+(`config.toml` and `opencodex.config.toml`), recognized catalog/cache files, and
+non-sensitive usage data. JSON/TOML configuration is scrubbed for private-key,
+token, certificate, authorization, password/passphrase, access-key, vendor-header, and nested secret fields. JSON arrays are
+walked as well, so PEM and Bearer values cannot hide inside primitive array
+members. Bare TOML dotted keys are scrubbed by their final segment; quoted-key,
+inline-table, and multiline-array forms that the redactor cannot prove safe are
+rejected instead of copied. Explicit provider `apiKey`/`apiKeyPool` values are
+preserved only with `--include-secrets`.
+API-key fields outside provider objects or tables are scrubbed even with --include-secrets.
+Diagnostic/request logs are always excluded because they can contain credentials or
+prompts. Authentication stores and account refresh grants are always excluded.
+Runtime locks, PID files, sockets, symlinks, and unknown files are also excluded.
+The source `.opencodex` and `.codex` directories are never modified. Imported
+configuration remains inside the protected Client-local target; this command never
+opens a server connection and the Server protocol has no route for imported files
+or provider secrets.
+
 ## Enroll and connect
 
 1. The server owner creates a one-time invite with `cocodex-server invite`.
