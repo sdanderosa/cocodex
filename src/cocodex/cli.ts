@@ -23,6 +23,8 @@ import { createDeviceKeyCertificate, loadOrCreateClientIdentity, verifyDeviceKey
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import { runJsonLineSession } from "./session";
+import { reportAgentExecution } from "./agent-execution-client";
+import { prepareTaskWorkspace } from "./task-worktree";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 
 function option(name: string): string | undefined {
@@ -87,6 +89,10 @@ async function run(): Promise<void> {
       if (approvalMode !== "trusted-device" && approvalMode !== "always") {
         throw new Error("--approval must be trusted-device or always");
       }
+      const workspaceMode = option("--workspace-mode") ?? "git-worktree";
+      if (workspaceMode !== "shared" && workspaceMode !== "git-worktree") {
+        throw new Error("--workspace-mode must be shared or git-worktree");
+      }
       const accessProfile = option("--access") ?? "project-only";
       if (accessProfile !== "project-only" && accessProfile !== "full-computer") {
         throw new Error("--access must be project-only or full-computer");
@@ -100,6 +106,7 @@ async function run(): Promise<void> {
         projectId: required("--project"),
         agentId: required("--agent"),
         workspaceRoot: required("--workspace"),
+        workspaceMode,
         sandbox: option("--sandbox") === "read-only" ? "read-only" : "workspace-write",
         accessProfile,
         fullComputerOptIn,
@@ -274,6 +281,12 @@ async function run(): Promise<void> {
             sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
             accessProfile: policy.accessProfile,
             fullComputerOptIn: policy.fullComputerOptIn,
+            prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
+              worktreeRoot: paths.taskWorktrees,
+              registryPath: paths.taskWorktreeRegistry,
+            }),
+            onWorkspacePrepared: (task, workspace) =>
+              reportAgentExecution(socket, loadOrCreateClientIdentity(paths), task, workspace),
             authorizeTask: () => executionAllowed(),
           });
           detachAgentBridge = attachLocalAgentBridge(socket, adapter, {
@@ -320,7 +333,7 @@ Usage:
   cocodex-client accept-transfer --code CODE [--state-root PATH]
   cocodex-client accept-transfer --code-file FILE [--state-root PATH]
   cocodex-client identity-card [--state-root PATH]
-  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
+  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
   cocodex-client agent-safety-status [--state-root PATH]
   cocodex-client emergency-stop [--reason TEXT] [--state-root PATH]
   cocodex-client emergency-resume [--state-root PATH]

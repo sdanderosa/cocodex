@@ -120,10 +120,13 @@ export function listAgentTasks(
       a.name AS agentName, t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.status,
       t.dependencies_json AS dependenciesJson, t.input_artifact_ids_json AS inputArtifactIdsJson,
+      t.workspace_mode AS workspaceMode, t.workspace_ref AS workspaceRef,
+      t.worktree_branch AS branch, t.base_commit AS baseCommit,
+      t.merge_target AS mergeTarget,
       t.accepted_at AS acceptedAt,
       t.completed_at AS completedAt,
       CASE WHEN t.prompt_envelope_json IS NOT NULL THEN 1 ELSE 0 END AS encrypted,
-      COALESCE((SELECT MIN(c.accepted_at)
+      COALESCE(t.execution_started_at, (SELECT MIN(c.accepted_at)
         FROM agent_task_events e JOIN chat_events c ON c.sequence = e.chat_sequence
         WHERE e.task_id = t.id AND e.status = 'running'),
         (SELECT MIN(c.accepted_at)
@@ -153,6 +156,11 @@ export function listAgentTasks(
     status: AgentTaskView["status"];
     dependenciesJson: string;
     inputArtifactIdsJson: string;
+    workspaceMode: AgentTaskView["workspaceMode"];
+    workspaceRef: string | null;
+    branch: string | null;
+    baseCommit: string | null;
+    mergeTarget: string | null;
     acceptedAt: string;
     startedAt: string | null;
     completedAt: string | null;
@@ -170,6 +178,11 @@ export function listAgentTasks(
     status: row.status,
     dependencies: parseDependencies(row.dependenciesJson),
     inputArtifactIds: parseDependencies(row.inputArtifactIdsJson),
+    workspaceMode: row.workspaceMode,
+    workspaceRef: row.workspaceRef,
+    branch: row.branch,
+    baseCommit: row.baseCommit,
+    mergeTarget: row.mergeTarget,
     acceptedAt: row.acceptedAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,

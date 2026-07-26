@@ -89,12 +89,19 @@ reviewed again before release.
   a graph walk that rejects cycles, and included in both plaintext and
   encrypted dispatch verification. A host never executes a task whose signed
   dependency proof does not validate.
+- **Task Git isolation:** use Git's maintained worktree interface directly,
+  not OpenHands source or a second runtime. New code-agent policies create a
+  locked, task-owned branch/worktree from a clean named base; legacy policies
+  retain explicit shared-directory behavior. The host signs sanitized branch,
+  base, merge-target, and workspace-reference metadata, and official Codex
+  starts only after the Server acknowledges it. CoCodex never force-resets,
+  stashes, removes, or automatically cleans up user worktrees. See ADR 0024.
 - **Artifact handoffs:** adapt MeshCentral's authoritative route/local
   execution boundary and OpenHands' typed tool-result concept without copying
   code. A task names a bounded explicit set of same-project artifact IDs; the
   server signs and routes their opaque envelopes, while only the trusted local
   Client verifies, decrypts, and supplies ready artifacts to Codex. Yjs and
-  Automerge are not used for immutable handoff records. See ADR 0022.
+  Automerge are not used for immutable handoff records. See ADR 0023.
 - **Local access profiles:** reuse the installed official Codex runtime's
   supported `--sandbox danger-full-access` mode only after an explicit local
   policy opt-in. The Client owns the policy and emergency stop; the Server

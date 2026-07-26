@@ -4,6 +4,7 @@ import type { AgentTask } from "@cocodex/protocol";
 import { codexExecInvocation } from "../codex/exec-invocation";
 import { resolveCodexRuntime } from "../codex/runtime";
 import type { LocalAgentAdapter } from "./agent-bridge";
+import type { TaskWorkspace } from "./task-worktree";
 
 const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
@@ -40,6 +41,8 @@ export interface CodexAgentAdapterOptions {
   fullComputerOptIn?: boolean;
   timeoutMs?: number;
   onUsage?: (usage: CodexUsage) => void;
+  prepareWorkspace?: (task: AgentTask) => TaskWorkspace | Promise<TaskWorkspace>;
+  onWorkspacePrepared?: (task: AgentTask, workspace: TaskWorkspace) => void | Promise<void>;
   authorizeTask?: (task: AgentTask, signal?: AbortSignal) => boolean | Promise<boolean>;
   resolveRuntime?: typeof resolveCodexRuntime;
   spawnProcess?: (
@@ -81,12 +84,27 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       && (this.options.accessProfile !== "full-computer" || this.options.fullComputerOptIn !== true)) {
       throw new Error("Full-computer Codex execution requires an explicit local opt-in");
     }
+    const workspace = this.options.prepareWorkspace
+      ? await this.options.prepareWorkspace(task)
+      : {
+          mode: "shared" as const,
+          workingDirectory: this.options.workspaceRoot,
+          workspaceRef: "configured-workspace",
+          branch: null,
+          baseCommit: null,
+          mergeTarget: null,
+        };
+    if (!statSync(workspace.workingDirectory).isDirectory()) {
+      throw new Error("Prepared agent workspace is not a directory");
+    }
+    await this.options.onWorkspacePrepared?.(task, workspace);
+    if (signal?.aborted) throw new Error("Local agent execution was cancelled");
     const runtime = (this.options.resolveRuntime ?? resolveCodexRuntime)({
       discoverAlternatives: false,
     }).runtime;
     const invocation = codexExecInvocation(runtime.command, [
       "-C",
-      this.options.workspaceRoot,
+      workspace.workingDirectory,
       "exec",
       "--json",
       "--ephemeral",
@@ -98,7 +116,7 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       invocation.file,
       invocation.args,
       {
-        cwd: this.options.workspaceRoot,
+        cwd: workspace.workingDirectory,
         env: codexEnvironment(process.env),
         shell: false,
         windowsHide: true,

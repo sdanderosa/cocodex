@@ -129,6 +129,21 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("agent.execution.report"),
+    requestId,
+    taskId: z.uuid(),
+    projectId,
+    agentId: z.string().trim().min(1).max(120),
+    workspaceMode: z.enum(["shared", "git-worktree"]),
+    workspaceRef: z.string().trim().min(1).max(500),
+    branch: z.string().trim().min(1).max(500).nullable(),
+    baseCommit: z.string().regex(/^[0-9a-f]{40,64}$/).nullable(),
+    mergeTarget: z.string().trim().min(1).max(500).nullable(),
+    startedAt: z.iso.datetime(),
+    signature: z.string().min(64).max(256),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("chat.subscribe"),
     requestId,
     projectId,
@@ -424,12 +439,25 @@ export const agentTaskViewSchema = z.object({
   status: agentTaskStatusSchema,
   dependencies: z.array(z.uuid()).max(16),
   inputArtifactIds: z.array(z.uuid()).max(16),
+  workspaceMode: z.enum(["shared", "git-worktree"]).nullable(),
+  workspaceRef: z.string().min(1).max(500).nullable(),
+  branch: z.string().min(1).max(500).nullable(),
+  baseCommit: z.string().regex(/^[0-9a-f]{40,64}$/).nullable(),
+  mergeTarget: z.string().min(1).max(500).nullable(),
   acceptedAt: z.iso.datetime(),
   startedAt: z.iso.datetime().nullable(),
   completedAt: z.iso.datetime().nullable(),
   lastActivityAt: z.iso.datetime(),
   eventCount: z.number().int().nonnegative().max(256),
   encrypted: z.boolean(),
+}).strict();
+
+export const agentExecutionAcceptedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("agent.execution.accepted"),
+  requestId,
+  taskId: z.uuid(),
+  startedAt: z.iso.datetime(),
 }).strict();
 
 export const agentTaskListFrameSchema = z.object({
@@ -536,6 +564,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectMemberRemovedFrameSchema,
   agentListFrameSchema,
   agentTaskListFrameSchema,
+  agentExecutionAcceptedFrameSchema,
   projectContextResultFrameSchema,
   projectContextUpdatedFrameSchema,
   projectContextChangedFrameSchema,
@@ -589,6 +618,7 @@ export type AgentListFrame = z.infer<typeof agentListFrameSchema>;
 export type AgentTaskStatus = z.infer<typeof agentTaskStatusSchema>;
 export type AgentTaskView = z.infer<typeof agentTaskViewSchema>;
 export type AgentTaskListFrame = z.infer<typeof agentTaskListFrameSchema>;
+export type AgentExecutionAcceptedFrame = z.infer<typeof agentExecutionAcceptedFrameSchema>;
 export type ProjectContextResultFrame = z.infer<typeof projectContextResultFrameSchema>;
 export type ProjectContextUpdatedFrame = z.infer<typeof projectContextUpdatedFrameSchema>;
 export type ProjectContextChangedFrame = z.infer<typeof projectContextChangedFrameSchema>;

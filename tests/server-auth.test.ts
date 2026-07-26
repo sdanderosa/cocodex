@@ -34,7 +34,7 @@ import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isol
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalGlobalFetch = globalThis.fetch;
-const TEST_DIR = join(import.meta.dir, ".tmp-server-auth-test");
+const TEST_DIR = join(import.meta.dir, `.tmp-server-auth-${process.pid}`);
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 
 function config(hostname?: string): OcxConfig {

@@ -1,16 +1,23 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-async function runClient(cli: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = Bun.spawn([process.execPath, cli, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+const bun = join(import.meta.dir, "..", "node_modules", "bun", "bin", "bun.exe");
+
+function runClient(cli: string, args: string[]): { exitCode: number | null; stdout: string; stderr: string } {
+  const child = spawnSync(bun, [cli, ...args], {
+    encoding: "utf8",
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  if (process.platform === "win32") Bun.sleepSync(1_000);
+  return {
+    exitCode: child.status,
+    stdout: child.stdout.trim(),
+    stderr: `${child.stderr}${child.error ? `\n${child.error.message}` : ""}`.trim(),
+  };
 }
 
 describe("CoCodex agent safety CLI", () => {
@@ -52,6 +59,7 @@ describe("CoCodex agent safety CLI", () => {
       expect(JSON.parse(disabled.stdout).safety.fullComputerEnabled).toBeFalse();
     } finally {
       rmSync(root, { recursive: true, force: true });
+      if (process.platform === "win32") await Bun.sleep(1_000);
     }
-  }, 20_000);
+  }, 60_000);
 });

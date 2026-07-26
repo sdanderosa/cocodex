@@ -57,6 +57,58 @@ function fakeProcess(
 }
 
 describe("official Codex local agent adapter", () => {
+  test("acknowledges the prepared task workspace before spawning Codex inside it", async () => {
+    const configured = mkdtempSync(join(tmpdir(), "cocodex-agent-configured-"));
+    const prepared = mkdtempSync(join(tmpdir(), "cocodex-agent-prepared-"));
+    const order: string[] = [];
+    try {
+      let invoked: { args: string[]; options: any } | undefined;
+      const adapter = new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: configured,
+        authorizeTask: () => true,
+        prepareWorkspace: () => {
+          order.push("prepare");
+          return {
+            mode: "git-worktree",
+            workingDirectory: prepared,
+            workspaceRef: `worktrees/${task.projectId}/${task.agentId}/${task.id}`,
+            branch: `cocodex/${task.projectId.slice(0, 8)}/${task.agentId}/${task.id}`,
+            baseCommit: "a".repeat(40),
+            mergeTarget: "main",
+          };
+        },
+        onWorkspacePrepared: () => {
+          order.push("acknowledge");
+        },
+        resolveRuntime: () => ({
+          runtime: { command: "codex", version: "1.2.3", source: "path" },
+          failures: [],
+        }),
+        spawnProcess: (file, args, options) => {
+          order.push("spawn");
+          invoked = { args, options };
+          return fakeProcess(() => {}, [
+            '{"type":"item.completed","item":{"type":"agent_message","text":"Isolated."}}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n',
+          ]);
+        },
+      });
+      const output: string[] = [];
+      for await (const chunk of adapter.execute(task)) output.push(chunk);
+      expect(order).toEqual(["prepare", "acknowledge", "spawn"]);
+      expect(output).toEqual(["Isolated."]);
+      expect(invoked?.options.cwd).toBe(prepared);
+      const directoryIndex = invoked?.args.indexOf("-C") ?? -1;
+      expect(directoryIndex).toBeGreaterThanOrEqual(0);
+      expect(invoked?.args[directoryIndex + 1]).toBe(prepared);
+    } finally {
+      rmSync(configured, { recursive: true, force: true });
+      rmSync(prepared, { recursive: true, force: true });
+    }
+  });
+
   test("uses shell-free codex exec JSONL, local workspace, local auth, and reports usage", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "cocodex-agent-workspace-"));
     try {

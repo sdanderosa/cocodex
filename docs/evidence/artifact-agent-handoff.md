@@ -99,4 +99,4 @@ Primary files:
 - `src/cocodex/session.ts`
 - `src/cocodex/agent-bridge.ts`
 - `gui/src/pages/CoCodex.tsx`
-- `docs/adr/0022-cocodex-explicit-encrypted-artifact-inputs.md`
+- `docs/adr/0023-cocodex-explicit-encrypted-artifact-inputs.md`

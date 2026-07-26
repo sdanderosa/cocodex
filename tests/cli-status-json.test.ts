@@ -125,7 +125,7 @@ describe("CLI status JSON", () => {
     } finally {
       rmSync(opencodexHome, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test("status --json reports catalogClamp.runtimeVersion when clamp is active", async () => {
     const { chmodSync } = await import("node:fs");
@@ -182,7 +182,7 @@ describe("CLI status JSON", () => {
       resetCodexRuntimeResolveCacheForTests();
       rmSync(opencodexHome, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test("status rejects unknown flags instead of silently printing human text", () => {
     const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-json-"));

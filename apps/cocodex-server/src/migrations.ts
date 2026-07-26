@@ -329,4 +329,16 @@ CREATE INDEX agent_tasks_private_share ON agent_tasks(private_share_message_id);
     sql: `
 ALTER TABLE agent_tasks ADD COLUMN input_artifact_ids_json TEXT NOT NULL DEFAULT '[]';`,
   },
+  {
+    version: 21,
+    sql: `
+ALTER TABLE agent_tasks ADD COLUMN workspace_mode TEXT
+  CHECK (workspace_mode IN ('shared', 'git-worktree'));
+ALTER TABLE agent_tasks ADD COLUMN workspace_ref TEXT;
+ALTER TABLE agent_tasks ADD COLUMN worktree_branch TEXT;
+ALTER TABLE agent_tasks ADD COLUMN base_commit TEXT;
+ALTER TABLE agent_tasks ADD COLUMN merge_target TEXT;
+ALTER TABLE agent_tasks ADD COLUMN execution_started_at TEXT;
+ALTER TABLE agent_tasks ADD COLUMN execution_signature TEXT;`,
+  },
 ];

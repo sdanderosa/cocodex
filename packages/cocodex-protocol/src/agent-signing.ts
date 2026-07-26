@@ -42,6 +42,18 @@ export interface AgentEncryptedDispatchTranscriptInput {
   envelopeSignature: string;
 }
 
+export interface AgentExecutionTranscriptInput {
+  taskId: string;
+  projectId: string;
+  agentId: string;
+  workspaceMode: "shared" | "git-worktree";
+  workspaceRef: string;
+  branch: string | null;
+  baseCommit: string | null;
+  mergeTarget: string | null;
+  startedAt: string;
+}
+
 function lengthPrefix(value: string): Buffer {
   const data = Buffer.from(value, "utf8");
   const length = Buffer.allocUnsafe(4);
@@ -119,5 +131,21 @@ export function agentEncryptedDispatchSigningTranscript(input: AgentEncryptedDis
     input.envelopeSenderDeviceId,
     createHash("sha256").update(input.envelopeSenderPublicKeyPem, "utf8").digest("base64url"),
     input.envelopeSignature,
+  ]);
+}
+
+/** Host-device proof for the local workspace selected before execution. */
+export function agentExecutionSigningTranscript(input: AgentExecutionTranscriptInput): Buffer {
+  return transcript("COCODEX-AGENT-EXECUTION", [
+    "1",
+    input.taskId,
+    input.projectId,
+    input.agentId.trim(),
+    input.workspaceMode,
+    input.workspaceRef,
+    input.branch ?? "",
+    input.baseCommit ?? "",
+    input.mergeTarget ?? "",
+    input.startedAt,
   ]);
 }

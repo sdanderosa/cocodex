@@ -96,8 +96,16 @@ describe("CLI subcommand help", () => {
 
   test("status prints diagnostics without starting the proxy", () => {
     const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-status-"));
+    const runtimeDir = mkdtempSync(join(tmpdir(), "ocx-status-runtime-"));
     try {
       const configPath = join(opencodexHome, "config.json");
+      const fakeCodex = join(runtimeDir, process.platform === "win32" ? "codex.cmd" : "codex");
+      if (process.platform === "win32") {
+        writeFileSync(fakeCodex, "@echo off\r\necho codex-cli 0.133.0\r\n", "utf8");
+      } else {
+        writeFileSync(fakeCodex, "#!/bin/sh\necho 'codex-cli 0.133.0'\n", "utf8");
+        chmodSync(fakeCodex, 0o755);
+      }
       writeFileSync(configPath, JSON.stringify({
         port: 9,
         providers: {
@@ -113,7 +121,11 @@ describe("CLI subcommand help", () => {
 
       const result = spawnSync(process.execPath, [cliPath, "status"], {
         cwd: repoRoot,
-        env: { ...process.env, OPENCODEX_HOME: opencodexHome },
+        env: {
+          ...process.env,
+          CODEX_CLI_PATH: fakeCodex,
+          OPENCODEX_HOME: opencodexHome,
+        },
         encoding: "utf8",
       });
 
@@ -132,8 +144,9 @@ describe("CLI subcommand help", () => {
       expect(result.stdout).toContain("Codex autostart shim");
     } finally {
       rmSync(opencodexHome, { recursive: true, force: true });
+      rmSync(runtimeDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test("restore --help prints usage without mutating Codex config", () => {
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-help-"));

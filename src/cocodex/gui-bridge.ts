@@ -65,6 +65,7 @@ export interface CoCodexGuiStatus {
   server?: { host: string; port: number };
   agentConfigured: boolean;
   agentAccessProfile?: "project-only" | "full-computer";
+  agentWorkspaceMode?: "shared" | "git-worktree";
   agentExecutionEnabled?: boolean;
   agentFullComputerEnabled?: boolean;
   latestEventSequence: number;
@@ -128,12 +129,14 @@ export class CoCodexGuiBridge {
       }
     }
     let agentAccessProfile: CoCodexGuiStatus["agentAccessProfile"];
+    let agentWorkspaceMode: CoCodexGuiStatus["agentWorkspaceMode"];
     let agentExecutionEnabled: boolean | undefined;
     let agentFullComputerEnabled: boolean | undefined;
     if (existsSync(this.paths.agentPolicy)) {
       try {
         const policy = loadLocalAgentPolicy(this.paths.agentPolicy);
         agentAccessProfile = policy.accessProfile;
+        agentWorkspaceMode = policy.workspaceMode;
         const safety = loadAgentSafety(this.paths.agentSafety, policy);
         agentExecutionEnabled = safety.executionEnabled;
         agentFullComputerEnabled = safety.fullComputerEnabled;
@@ -152,6 +155,7 @@ export class CoCodexGuiBridge {
       } : {}),
       agentConfigured: existsSync(this.paths.agentPolicy),
       agentAccessProfile,
+      agentWorkspaceMode,
       agentExecutionEnabled,
       agentFullComputerEnabled,
       latestEventSequence: this.sequence,

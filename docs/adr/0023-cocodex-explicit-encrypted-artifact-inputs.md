@@ -1,4 +1,4 @@
-# ADR 0022: Explicit encrypted artifact inputs for agent handoffs
+# ADR 0023: Explicit encrypted artifact inputs for agent handoffs
 
 - **Status:** Accepted
 - **Date:** 2026-07-25
@@ -78,4 +78,3 @@ for each agent request.
   routes it to Stephen's locally approved agent, and proves the local Codex
   fixture receives the artifact canary before the normal restart/recovery
   checks complete.
-

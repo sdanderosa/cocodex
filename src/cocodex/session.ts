@@ -23,10 +23,12 @@ import {
   type LocalAgentSafetyState,
 } from "./agent-safety";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
+import { reportAgentExecution } from "./agent-execution-client";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
 import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identity";
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
+import { prepareTaskWorkspace } from "./task-worktree";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import {
   deferPrivateMailboxMessage,
@@ -1436,6 +1438,12 @@ export async function runJsonLineSession(
         accessProfile: policy.accessProfile,
         fullComputerOptIn: policy.fullComputerOptIn,
         onUsage,
+        prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
+          worktreeRoot: paths.taskWorktrees,
+          registryPath: paths.taskWorktreeRegistry,
+        }),
+        onWorkspacePrepared: (task, workspace) =>
+          reportAgentExecution(connected, identity, task, workspace),
         authorizeTask: async (task, signal) => {
           if (!localAgentSafety?.executionEnabled) return false;
           if (policy.accessProfile === "full-computer" && !localAgentSafety.fullComputerEnabled) return false;

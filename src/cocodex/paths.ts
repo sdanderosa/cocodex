@@ -14,6 +14,8 @@ export interface ClientPaths {
   agentPolicy: string;
   agentSafety: string;
   agentJournal: string;
+  taskWorktrees: string;
+  taskWorktreeRegistry: string;
   trustedDevices: string;
   privateMailbox: string;
   outbox: string;
@@ -39,6 +41,8 @@ export function clientPaths(root = defaultClientStateRoot()): ClientPaths {
     agentPolicy: resolve(absoluteRoot, "local-agent-policy.json"),
     agentSafety: resolve(absoluteRoot, "local-agent-safety.json"),
     agentJournal: resolve(absoluteRoot, "agent-execution-journal.json"),
+    taskWorktrees: resolve(absoluteRoot, "worktrees"),
+    taskWorktreeRegistry: resolve(absoluteRoot, "task-worktrees.json"),
     trustedDevices: resolve(absoluteRoot, "trusted-devices.json"),
     privateMailbox: resolve(absoluteRoot, "private-mailbox.json"),
     outbox: resolve(absoluteRoot, "outbox.json"),

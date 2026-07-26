@@ -38,6 +38,7 @@ afterEach(async () => {
       }
     }
   }
+  if (process.platform === "win32") await Bun.sleep(1_000);
 });
 
 async function run(command: string, args: string[], env: Record<string, string | undefined> = {}) {
@@ -54,6 +55,7 @@ async function run(command: string, args: string[], env: Record<string, string |
     child.exited,
   ]);
   if (exitCode !== 0) throw new Error(`${command} ${args.join(" ")} failed (${exitCode}): ${stderr || stdout}`);
+  if (process.platform === "win32") await Bun.sleep(100);
   return stdout.trim();
 }
 
@@ -195,6 +197,7 @@ describe("three-process CoCodex private alpha", () => {
     mkdirSync(stephenWorkspace, { recursive: true });
     mkdirSync(kaiWorkspace, { recursive: true });
     await buildArtifacts(serverExe, clientExe, fixtureExe);
+    if (process.platform === "win32") await Bun.sleep(500);
     traceCheckpoint("artifacts built");
     await run(serverExe, [
       "init", "--public-host", "127.0.0.1", "--port", String(port), "--state-root", serverRoot,
@@ -245,12 +248,12 @@ describe("three-process CoCodex private alpha", () => {
     ]);
     await run(clientExe, [
       "configure-agent", "--project", project.id, "--agent", "stephen-agent",
-      "--workspace", stephenWorkspace, "--approval", "always", "--trust-device", kaiDevice.id,
+      "--workspace", stephenWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", kaiDevice.id,
       "--trust-fingerprint", kaiDevice.fingerprint, "--state-root", stephenRoot,
     ]);
     await run(clientExe, [
       "configure-agent", "--project", project.id, "--agent", "kai-agent",
-      "--workspace", kaiWorkspace, "--approval", "always", "--trust-device", stephenDevice.id,
+      "--workspace", kaiWorkspace, "--workspace-mode", "shared", "--approval", "always", "--trust-device", stephenDevice.id,
       "--trust-fingerprint", stephenDevice.fingerprint, "--state-root", kaiRoot,
     ]);
 
@@ -265,6 +268,10 @@ describe("three-process CoCodex private alpha", () => {
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "connected"),
       waitFor(kai, line => line.source === "session" && line.state === "connected"),
+    ]);
+    await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "agent.ready.accepted"),
+      waitFor(kai, line => line.frame?.type === "agent.ready.accepted"),
     ]);
     traceCheckpoint("clients connected");
     const stephenPid = stephen.process.pid;
@@ -355,6 +362,11 @@ describe("three-process CoCodex private alpha", () => {
       agentId: "kai-agent",
       prompt: "inspect Kai workspace",
     });
+    await waitFor(
+      stephen,
+      line => line.source === "control" && line.id === "task-kai"
+        && line.ok === true && line.taskId,
+    );
     const kaiApproval = await waitFor(
       kai,
       line => line.source === "agent-approval" && line.approvalState === "pending"
@@ -486,6 +498,28 @@ describe("three-process CoCodex private alpha", () => {
       && line.frame.final === true && line.frame.event?.content?.includes(encryptedKaiPrompt));
     expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8")).toContain(encryptedKaiPrompt);
     traceCheckpoint("encrypted agents completed");
+
+    const taskEvidenceRequest = randomUUID();
+    stephen.send({ id: taskEvidenceRequest, type: "agent.task.list", projectId: project.id });
+    const taskEvidence = await waitFor(stephen, line => line.frame?.type === "agent.task.list.result"
+      && line.frame.requestId === taskEvidenceRequest);
+    expect(taskEvidence.frame.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: encryptedStephenControl.taskId,
+        workspaceMode: "shared",
+        workspaceRef: "configured-workspace",
+        branch: null,
+        baseCommit: null,
+        mergeTarget: null,
+        startedAt: expect.any(String),
+      }),
+      expect.objectContaining({
+        id: encryptedKaiControl.taskId,
+        workspaceMode: "shared",
+        workspaceRef: "configured-workspace",
+        startedAt: expect.any(String),
+      }),
+    ]));
 
     const usageGetS = randomUUID();
     const usageGetK = randomUUID();

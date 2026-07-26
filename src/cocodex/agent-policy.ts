@@ -8,6 +8,7 @@ const policySchema = z.object({
   projectId: z.uuid(),
   agentId: z.string().trim().min(1).max(120),
   workspaceRoot: z.string().min(1),
+  workspaceMode: z.enum(["shared", "git-worktree"]).default("shared"),
   sandbox: z.enum(["read-only", "workspace-write"]),
   /**
    * `project-only` is the safe default. `full-computer` is an explicit local

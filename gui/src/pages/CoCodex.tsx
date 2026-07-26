@@ -15,6 +15,7 @@ interface Status {
   server?: { host: string; port: number };
   agentConfigured: boolean;
   agentAccessProfile?: "project-only" | "full-computer";
+  agentWorkspaceMode?: "shared" | "git-worktree";
   agentExecutionEnabled?: boolean;
   agentFullComputerEnabled?: boolean;
   latestEventSequence: number;
@@ -78,6 +79,11 @@ interface AgentTaskView {
   status: AgentTaskStatus;
   dependencies: string[];
   inputArtifactIds: string[];
+  workspaceMode: "shared" | "git-worktree" | null;
+  workspaceRef: string | null;
+  branch: string | null;
+  baseCommit: string | null;
+  mergeTarget: string | null;
   acceptedAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -157,6 +163,7 @@ interface SessionValue {
   executionEnabled?: boolean;
   fullComputerEnabled?: boolean;
   accessProfile?: "project-only" | "full-computer";
+  workspaceMode?: "shared" | "git-worktree";
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
@@ -829,6 +836,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <span>{t(status.agentConfigured ? "cocodex.agent.ready" : "cocodex.agent.none")}</span>
               {status.agentConfigured && <div className="cocodex-agent-safety">
                 <small>{t("cocodex.agent.access", { profile: status.agentAccessProfile ?? "project-only" })}</small>
+                <small>{t(status.agentWorkspaceMode === "git-worktree"
+                  ? "cocodex.agent.workspace.worktree"
+                  : "cocodex.agent.workspace.shared")}</small>
                 <small>{t(status.agentExecutionEnabled === false ? "cocodex.agent.execution.stopped" : "cocodex.agent.execution.enabled")}
                   {status.agentAccessProfile === "full-computer" && status.agentFullComputerEnabled === false ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
                 <div className="cocodex-agent-safety-actions">
@@ -1011,6 +1021,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                         {task.encrypted ? ` · ${t("cocodex.tasks.encrypted")}` : ""}</small>
                       {task.dependencies.length > 0 && <small>{t("cocodex.tasks.dependencies", { count: task.dependencies.length })}</small>}
                       {task.inputArtifactIds.length > 0 && <small>{t("cocodex.tasks.artifacts", { count: task.inputArtifactIds.length })}</small>}
+                      {task.workspaceMode === "shared"
+                        && <small>{t("cocodex.tasks.workspace.shared")}</small>}
+                      {task.workspaceMode === "git-worktree" && <small>
+                        {t("cocodex.tasks.workspace.worktree", {
+                          branch: task.branch ?? task.workspaceRef ?? "",
+                          commit: task.baseCommit?.slice(0, 8) ?? "",
+                        })}
+                      </small>}
                     </article>
                   );
                 })}

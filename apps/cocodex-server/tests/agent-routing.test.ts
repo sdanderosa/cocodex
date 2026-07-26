@@ -3,8 +3,9 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
-import { createAgentTask, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
+import { agentExecutionSigningTranscript, agentRequestSigningTranscript, decodeInvitation, enrollmentSigningTranscript, projectContentSigningTranscript, projectKeyEnvelopeSigningTranscript } from "@cocodex/protocol";
+import { createAgentTask, listAgentTasks, listAgents, pendingAgentTasks, registerAgent, appendAgentResult } from "../src/agent-routing";
+import { acceptAgentExecutionReport } from "../src/agent-execution";
 import { appendEncryptedAgentResult, cancelEncryptedAgentTask, createEncryptedAgentTask, pendingEncryptedAgentTasks } from "../src/encrypted-agent-routing";
 import { openDatabase } from "../src/database";
 import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
@@ -55,6 +56,133 @@ function contentEnvelope(projectId: string, sender: ReturnType<typeof device>, r
 }
 
 describe("authoritative agent dependencies", () => {
+  test("accepts only the assigned host's signed and immutable workspace report", () => {
+    const db = openDatabase(":memory:");
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-execution-"));
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = device(db, "Stephen", now);
+      const kai = device(db, "Kai", now);
+      const identity = createServerIdentity(serverPaths(root));
+      const project = createProject(db, "Execution evidence", stephen.id, now);
+      addProjectMember(db, project.id, stephen.id, kai.id, now);
+      registerAgent(db, {
+        id: "kai-agent",
+        projectId: project.id,
+        hostDeviceId: kai.id,
+        name: "Kai",
+      }, now);
+      const taskId = "8661361f-ce2f-4bec-88fd-c4fb32f49704";
+      const issuedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + 60_000).toISOString();
+      const nonce = "E".repeat(32);
+      const prompt = "Prepare the isolated change";
+      const requesterSignature = sign(null, agentRequestSigningTranscript({
+        taskId,
+        projectId: project.id,
+        agentId: "kai-agent",
+        prompt,
+        nonce,
+        issuedAt,
+        expiresAt,
+        dependencies: [],
+        inputArtifactIds: [],
+      }), stephen.privateKey).toString("base64url");
+      createAgentTask(db, identity, {
+        id: taskId,
+        projectId: project.id,
+        requesterDeviceId: stephen.id,
+        agentId: "kai-agent",
+        prompt,
+        nonce,
+        issuedAt,
+        expiresAt,
+        dependencies: [],
+        inputArtifactIds: [],
+        requesterSignature,
+      }, now);
+      const unsigned = {
+        taskId,
+        projectId: project.id,
+        agentId: "kai-agent",
+        workspaceMode: "git-worktree" as const,
+        workspaceRef: `worktrees/${project.id}/kai-agent/${taskId}`,
+        branch: `cocodex/${project.id.slice(0, 8)}/kai-agent/${taskId}`,
+        baseCommit: "a".repeat(40),
+        mergeTarget: "main",
+        startedAt: new Date(now.getTime() + 1_000).toISOString(),
+      };
+      const report = {
+        ...unsigned,
+        signature: sign(
+          null,
+          agentExecutionSigningTranscript(unsigned),
+          kai.privateKey,
+        ).toString("base64url"),
+      };
+      expect(() => acceptAgentExecutionReport(db, stephen.id, report, now))
+        .toThrow("cannot report");
+      expect(() => acceptAgentExecutionReport(db, kai.id, {
+        ...report,
+        signature: sign(
+          null,
+          agentExecutionSigningTranscript(unsigned),
+          stephen.privateKey,
+        ).toString("base64url"),
+      }, now)).toThrow("signature");
+      expect(acceptAgentExecutionReport(db, kai.id, report, now)).toEqual({
+        taskId,
+        startedAt: unsigned.startedAt,
+        created: true,
+      });
+      expect(acceptAgentExecutionReport(db, kai.id, report, now)).toEqual({
+        taskId,
+        startedAt: unsigned.startedAt,
+        created: false,
+      });
+      expect(() => acceptAgentExecutionReport(db, kai.id, {
+        ...report,
+        workspaceRef: `worktrees/${project.id}/other/${taskId}`,
+      }, now)).toThrow();
+      const spoofedComponent = {
+        ...unsigned,
+        workspaceRef: `worktrees/${project.id}/other/${taskId}`,
+        branch: `cocodex/${project.id.slice(0, 8)}/other/${taskId}`,
+      };
+      expect(() => acceptAgentExecutionReport(db, kai.id, {
+        ...spoofedComponent,
+        signature: sign(
+          null,
+          agentExecutionSigningTranscript(spoofedComponent),
+          kai.privateKey,
+        ).toString("base64url"),
+      }, now)).toThrow("metadata");
+      expect(listAgentTasks(db, project.id, stephen.id)).toEqual([
+        expect.objectContaining({
+          id: taskId,
+          status: "running",
+          workspaceMode: "git-worktree",
+          workspaceRef: unsigned.workspaceRef,
+          branch: unsigned.branch,
+          baseCommit: unsigned.baseCommit,
+          mergeTarget: "main",
+          startedAt: unsigned.startedAt,
+        }),
+      ]);
+      const stored = db.query(`
+        SELECT execution_signature AS signature FROM agent_tasks WHERE id = ?
+      `).get(taskId) as { signature: string };
+      expect(stored.signature).toBe(report.signature);
+      expect(db.query(`
+        SELECT details_json AS detailsJson FROM audit_events
+        WHERE event_type = 'agent.execution.started' AND subject_id = ?
+      `).get(taskId)).not.toBeNull();
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("lists only project agents with server-derived host and task status", () => {
     const db = openDatabase(":memory:");
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-list-"));

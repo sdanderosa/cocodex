@@ -7,6 +7,7 @@ import {
   decodeInvitation,
   enrollmentClaimSchema,
   agentListFrameSchema,
+  agentExecutionAcceptedFrameSchema,
   agentTaskListFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   privateAcceptedFrameSchema,
@@ -19,6 +20,7 @@ import {
   websocketAuthTranscript,
 } from "@cocodex/protocol";
 import { appendAgentResult, cancelAgentTask, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks } from "./agent-routing";
+import { acceptAgentExecutionReport } from "./agent-execution";
 import {
   appendEncryptedAgentResult,
   cancelEncryptedAgentTask,
@@ -686,6 +688,31 @@ export function startCoCodexServer(
               requestId,
               projectId: message.projectId,
               tasks,
+            })));
+            return;
+          }
+          if (message.type === "agent.execution.report") {
+            if (!socket.data.agentReady || socket.data.agentId !== message.agentId) {
+              throw new Error("Agent execution report requires a matching ready local agent");
+            }
+            const accepted = acceptAgentExecutionReport(db, deviceId, {
+              taskId: message.taskId,
+              projectId: message.projectId,
+              agentId: message.agentId,
+              workspaceMode: message.workspaceMode,
+              workspaceRef: message.workspaceRef,
+              branch: message.branch,
+              baseCommit: message.baseCommit,
+              mergeTarget: message.mergeTarget,
+              startedAt: message.startedAt,
+              signature: message.signature,
+            });
+            socket.send(JSON.stringify(agentExecutionAcceptedFrameSchema.parse({
+              version: 1,
+              type: "agent.execution.accepted",
+              requestId,
+              taskId: accepted.taskId,
+              startedAt: accepted.startedAt,
             })));
             return;
           }

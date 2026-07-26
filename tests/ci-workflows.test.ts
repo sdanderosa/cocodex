@@ -255,7 +255,9 @@ describe("GitHub Actions hardening", () => {
     expect(rootPkg).toContain('"doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts"');
     expect(rootPkg).toContain('"lint:gui": "cd gui && bun run lint"');
     // Gating steps (typecheck, eslint, tests, privacy) run before advisory React Doctor.
-    expect(rootPkg).toContain("bun run typecheck && bun run lint:gui && bun run test");
+    expect(rootPkg).toContain(
+      "bun run typecheck && bun run typecheck:cocodex && bun run lint:gui && bun run test",
+    );
     expect(rootPkg).toContain("bun run privacy:scan && bun run doctor:gui:if-changed");
   });
 });
@@ -273,13 +275,13 @@ describe("doctor-gui-if-changed", () => {
   });
 
   test("DRY_RUN prints the run/skip decision without spawning the doctor", () => {
-    const run = Bun.spawnSync(["bun", doctorGuiIfChangedScript], {
+    const run = Bun.spawnSync([process.execPath, doctorGuiIfChangedScript], {
       env: { ...process.env, DOCTOR_DRY_RUN: "1", DOCTOR_FILES: "gui/src/App.tsx\nscripts/x.ts" },
     });
     expect(run.exitCode).toBe(0);
     expect(run.stdout.toString()).toContain("doctor:run");
 
-    const skip = Bun.spawnSync(["bun", doctorGuiIfChangedScript], {
+    const skip = Bun.spawnSync([process.execPath, doctorGuiIfChangedScript], {
       env: { ...process.env, DOCTOR_DRY_RUN: "1", DOCTOR_FILES: "scripts/x.ts\nREADME.md" },
     });
     expect(skip.exitCode).toBe(0);
@@ -287,7 +289,7 @@ describe("doctor-gui-if-changed", () => {
   });
 
   test("degrades gracefully when the doctor engine is unavailable (offline prepush)", () => {
-    const run = Bun.spawnSync(["bun", doctorGuiIfChangedScript], {
+    const run = Bun.spawnSync([process.execPath, doctorGuiIfChangedScript], {
       env: {
         ...process.env,
         DOCTOR_FILES: "gui/src/App.tsx",

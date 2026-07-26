@@ -9,6 +9,7 @@ setDefaultTimeout(30_000);
 
 const root = new URL("../", import.meta.url);
 const repoRoot = fileURLToPath(root);
+const nodeExecutable = process.env.OCX_TEST_NODE_EXE || "node";
 
 async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
@@ -42,7 +43,7 @@ describe("install scripts", () => {
   });
 
   test("Node can import the package main without executing the CLI", () => {
-    const result = spawnSync("node", [
+    const result = spawnSync(nodeExecutable, [
       "-e",
       "import('./bin/package-main.mjs').then(m => { if (m.cliCommand !== 'ocx') process.exit(2); })",
     ], {

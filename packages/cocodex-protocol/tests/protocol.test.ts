@@ -603,6 +603,11 @@ describe("CoCodex protocol", () => {
       status: "running" as const,
       dependencies: [],
       inputArtifactIds: [],
+      workspaceMode: "git-worktree" as const,
+      workspaceRef: `worktrees/${projectId}/lucas/${crypto.randomUUID()}`,
+      branch: `cocodex/${projectId.slice(0, 8)}/lucas/task`,
+      baseCommit: "a".repeat(40),
+      mergeTarget: "main",
       acceptedAt: "2030-01-01T00:00:00.000Z",
       startedAt: "2030-01-01T00:00:01.000Z",
       completedAt: null,
@@ -622,6 +627,29 @@ describe("CoCodex protocol", () => {
     expect(clientFrameSchema.parse({
       version: 1, type: "agent.task.list", requestId: crypto.randomUUID(), projectId,
     })).toMatchObject({ type: "agent.task.list", projectId });
+    const executionReport = {
+      version: 1 as const,
+      type: "agent.execution.report" as const,
+      requestId: crypto.randomUUID(),
+      taskId: task.id,
+      projectId,
+      agentId: task.agentId,
+      workspaceMode: task.workspaceMode,
+      workspaceRef: task.workspaceRef,
+      branch: task.branch,
+      baseCommit: task.baseCommit,
+      mergeTarget: task.mergeTarget,
+      startedAt: task.startedAt,
+      signature: "s".repeat(64),
+    };
+    expect(clientFrameSchema.parse(executionReport)).toEqual(executionReport);
+    expect(projectServerFrameSchema.parse({
+      version: 1,
+      type: "agent.execution.accepted",
+      requestId: executionReport.requestId,
+      taskId: task.id,
+      startedAt: task.startedAt,
+    })).toMatchObject({ type: "agent.execution.accepted", taskId: task.id });
     expect(() => agentTaskListFrameSchema.parse({ ...frame, tasks: [{ ...task, prompt: "secret" }] })).toThrow();
   });
   test("strictly validates key-rotation-required notices", () => {
