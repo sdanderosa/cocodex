@@ -24,6 +24,7 @@ describe("install scripts", () => {
       devDependencies?: Record<string, string>;
       scripts?: Record<string, string>;
       files?: string[];
+      bin?: Record<string, string>;
     };
 
     expect(pkg.main).toBe("./bin/package-main.mjs");
@@ -40,6 +41,37 @@ describe("install scripts", () => {
     expect(pkg.files).toContain("assets/banner.png");
     expect(pkg.files).toContain("assets/architecture.png");
     expect(pkg.files).toContain("assets/codex-app-picker.png");
+    expect(pkg.files).toContain("apps/cocodex-server/src");
+    expect(pkg.files).toContain("packages/cocodex-protocol/src");
+    expect(pkg.files).not.toContain("apps/cocodex-server");
+    expect(pkg.files).not.toContain("packages/cocodex-protocol");
+    expect(pkg.bin).toMatchObject({
+      cocodex: "./bin/ccx.mjs",
+      ccx: "./bin/ccx.mjs",
+      opencodex: "./bin/ocx.mjs",
+      ocx: "./bin/ocx.mjs",
+    });
+  });
+
+  test("CoCodex client launcher uses the installed Bun dependency and public command", async () => {
+    const launcher = await readText("bin/ccx.mjs");
+    expect(launcher).toContain('join(here, "..", "src", "cocodex", "cli.ts")');
+    expect(launcher).toContain('require.resolve("bun/package.json")');
+    expect(launcher).toContain("REAL_BUN_MIN_BYTES");
+    expect(launcher).not.toContain("spawnSync");
+    expect(launcher).not.toContain("install.js");
+    expect(launcher).toContain('child.kill("SIGKILL")');
+
+    const result = spawnSync(nodeExecutable, ["bin/ccx.mjs", "--help"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("CoCodex Client");
+    expect(result.stdout).toContain("cocodex enroll");
+    expect(result.stdout).toContain("Short alias: ccx");
+    expect(result.stderr).toBe("");
   });
 
   test("Node can import the package main without executing the CLI", () => {

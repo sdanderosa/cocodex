@@ -5,7 +5,7 @@ import {
   projectContentEnvelopeSchema,
   projectContentSigningTranscript,
   type ProjectContentEnvelope,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { PROJECT_CONTEXT_MAX_BYTES } from "@cocodex/protocol";
+import { PROJECT_CONTEXT_MAX_BYTES } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 
 const MAX_GOAL_LENGTH = 32_768;

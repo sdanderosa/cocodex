@@ -10,7 +10,7 @@ import {
   type AgentTask,
   type EncryptedAgentTask,
   type ProjectContentEnvelope,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import {
   acknowledgeAgentResult,
   appendAgentResult,

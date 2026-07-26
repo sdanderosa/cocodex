@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
-import { PROJECT_KEY_BYTES, PROJECT_KEY_EPOCH_MAX, projectKeyEnvelopeSchema, type ProjectKeyEnvelope } from "@cocodex/protocol";
+import { PROJECT_KEY_BYTES, PROJECT_KEY_EPOCH_MAX, projectKeyEnvelopeSchema, type ProjectKeyEnvelope } from "../../packages/cocodex-protocol/src/index.ts";
 
 const STORE_VERSION = 1 as const;
 

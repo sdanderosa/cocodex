@@ -15,6 +15,20 @@ bun run build:cocodex-client
 dist\cocodex-client.exe --help
 ```
 
+For an npm installation of this repository, the public client commands are:
+
+```powershell
+cocodex --help
+ccx --help
+```
+
+Both commands launch the same CoCodex Client through the `bun` runtime installed
+as a pinned package dependency. A normal npm installation must allow Bun's
+package lifecycle script and optional platform dependency; the launcher never
+downloads or repairs a runtime on first launch and fails closed if installation
+policy omitted it. The existing `opencodex` and `ocx` commands remain
+compatibility surfaces for the inherited local proxy.
+
 The GUI remains the normal OpenCodex GUI. Open the **CoCodex** page to enroll
 the device, start the resident collaboration session, select a shared project,
 edit the Yjs prompt, and set the server-authoritative **Final Goal**.
@@ -29,14 +43,14 @@ those directories.
 2. Paste the complete invite into the GUI, or run:
 
    ```powershell
-   cocodex-client enroll --invite CODE --name Kai
+   cocodex enroll --invite CODE --name Kai
    ```
 
 3. The owner approves the displayed device fingerprint.
 4. Start the client session from the GUI, or run:
 
    ```powershell
-   cocodex-client connect --json-lines
+   cocodex connect --json-lines
    ```
 
 The invite pins the server certificate fingerprint. Each installation proves
@@ -51,8 +65,8 @@ the source prints a signed `ccx-transfer1.` certificate. Paste it into the
 resident client before reconnecting to the new endpoint:
 
 ```powershell
-cocodex-client accept-transfer --code 'ccx-transfer1....'
-cocodex-client connect --json-lines
+cocodex accept-transfer --code 'ccx-transfer1....'
+cocodex connect --json-lines
 ```
 
 The client verifies the source identity it already trusts, the destination
@@ -212,7 +226,7 @@ Agent policies default to `project-only`, preserving the configured Codex
 official Codex `danger-full-access` mode with:
 
 ```powershell
-cocodex-client configure-agent --project PROJECT_ID --agent AGENT_ID `
+cocodex configure-agent --project PROJECT_ID --agent AGENT_ID `
   --workspace PATH --trust-device DEVICE_ID --trust-fingerprint FINGERPRINT `
   --access full-computer --confirm-full-computer
 ```

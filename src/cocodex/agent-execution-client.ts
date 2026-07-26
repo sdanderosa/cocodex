@@ -2,7 +2,7 @@ import { randomUUID, sign } from "node:crypto";
 import {
   agentExecutionSigningTranscript,
   type AgentTask,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import type { ClientIdentity } from "./identity";
 import type { TaskWorkspace } from "./task-worktree";
 

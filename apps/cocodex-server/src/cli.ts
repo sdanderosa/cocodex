@@ -21,7 +21,7 @@ import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
 import { initializeServerAuthority, prepareServerAuthority, requireActiveServerAuthority, serverAuthorityStatus } from "./server-state";
-import { encodeServerAuthorityCertificate, serverTransferTargetSchema, type ServerTransferTarget } from "@cocodex/protocol";
+import { encodeServerAuthorityCertificate, serverTransferTargetSchema, type ServerTransferTarget } from "../../../packages/cocodex-protocol/src/index.ts";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);

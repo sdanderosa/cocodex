@@ -4,7 +4,7 @@ import {
   usageReportSchema,
   usageReportSigningTranscript,
   type UsageReport,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import type { ClientIdentity } from "./identity";
 import { hardenSecretPath } from "../lib/windows-secret-acl";
 

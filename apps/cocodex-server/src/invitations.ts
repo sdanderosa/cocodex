@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { decodeInvitation, encodeInvitation } from "@cocodex/protocol";
+import { decodeInvitation, encodeInvitation } from "../../../packages/cocodex-protocol/src/index.ts";
 
 export { decodeInvitation };
 import { randomToken } from "./identity";

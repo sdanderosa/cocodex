@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
-import { publicKeyFingerprint } from "@cocodex/protocol";
+import { publicKeyFingerprint } from "../../packages/cocodex-protocol/src/index.ts";
 import type * as Sodium from "libsodium-wrappers-sumo";
 
 // The package's ESM wrapper is not initialized correctly by Bun 1.3.x; its

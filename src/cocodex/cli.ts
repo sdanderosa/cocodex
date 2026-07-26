@@ -406,22 +406,24 @@ async function run(): Promise<void> {
       console.log(`CoCodex Client
 
 Usage:
-  cocodex-client enroll --invite CODE --name NAME [--state-root PATH]
-  cocodex-client status [--state-root PATH]
-  cocodex-client accept-transfer --code CODE [--state-root PATH]
-  cocodex-client accept-transfer --code-file FILE [--state-root PATH]
-  cocodex-client identity-card [--state-root PATH]
-  cocodex-client configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--model ID] [--effort minimal|low|medium|high|xhigh|max] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
-  cocodex-client agent-safety-status [--agent ID] [--state-root PATH]
-  cocodex-client emergency-stop [--agent ID] [--reason TEXT] [--state-root PATH]
-  cocodex-client emergency-resume [--agent ID] [--state-root PATH]
-  cocodex-client full-computer-enable --confirm [--agent ID] [--state-root PATH]
-  cocodex-client full-computer-disable [--agent ID] [--state-root PATH]
-  cocodex-client private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
-  cocodex-client private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
-  cocodex-client chat-send --project ID --message TEXT [--state-root PATH]
-  cocodex-client request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
-  cocodex-client connect [--json-lines] [--state-root PATH]`);
+  cocodex enroll --invite CODE --name NAME [--state-root PATH]
+  cocodex status [--state-root PATH]
+  cocodex accept-transfer --code CODE [--state-root PATH]
+  cocodex accept-transfer --code-file FILE [--state-root PATH]
+  cocodex identity-card [--state-root PATH]
+  cocodex configure-agent --project ID --agent ID --workspace PATH --trust-device ID --trust-fingerprint FP [--model ID] [--effort minimal|low|medium|high|xhigh|max] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--workspace-mode git-worktree|shared] [--sandbox read-only|workspace-write] [--approval trusted-device|always] [--access project-only|full-computer --confirm-full-computer] [--state-root PATH]
+  cocodex agent-safety-status [--agent ID] [--state-root PATH]
+  cocodex emergency-stop [--agent ID] [--reason TEXT] [--state-root PATH]
+  cocodex emergency-resume [--agent ID] [--state-root PATH]
+  cocodex full-computer-enable --confirm [--agent ID] [--state-root PATH]
+  cocodex full-computer-disable [--agent ID] [--state-root PATH]
+  cocodex private-send --recipient-device ID --recipient-card JSON_PATH --message TEXT [--state-root PATH]
+  cocodex private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
+  cocodex chat-send --project ID --message TEXT [--state-root PATH]
+  cocodex request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
+  cocodex connect [--json-lines] [--state-root PATH]
+
+Short alias: ccx`);
   }
 }
 

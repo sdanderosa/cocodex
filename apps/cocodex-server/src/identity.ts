@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { publicKeyFingerprint } from "@cocodex/protocol";
+import { publicKeyFingerprint } from "../../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import type { ServerPaths } from "./paths";
 

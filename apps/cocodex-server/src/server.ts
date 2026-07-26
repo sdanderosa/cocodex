@@ -19,7 +19,7 @@ import {
   presenceSnapshotFrameSchema,
   presenceUpdateFrameSchema,
   websocketAuthTranscript,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { appendAgentResult, cancelAgentTask, createAgentForHost, createAgentTask, expireQueuedAgentTasks, listAgentTasks, listAgents, pendingAgentTasks, requireAgentReadyRuntime } from "./agent-routing";
 import { acceptAgentExecutionReport } from "./agent-execution";
 import {

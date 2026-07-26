@@ -23,9 +23,9 @@ import {
   type EncryptedServerAuthorityTransfer,
   type ServerAuthorityCertificate,
   type ServerTransferTarget,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { openDatabase } from "./database";
-import { canonicalEd25519PublicKey, publicKeyFingerprint } from "@cocodex/protocol";
+import { canonicalEd25519PublicKey, publicKeyFingerprint } from "../../../packages/cocodex-protocol/src/index.ts";
 
 const BACKUP_VERSION = 1 as const;
 const TRANSFER_VERSION = 1 as const;

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { Artifact, ArtifactStatus, ArtifactType } from "@cocodex/protocol";
+import type { Artifact, ArtifactStatus, ArtifactType } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 
 export interface PublishArtifactInput {

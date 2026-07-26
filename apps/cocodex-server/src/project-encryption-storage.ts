@@ -8,7 +8,7 @@ import {
   projectKeyEnvelopeSigningTranscript,
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { removeProjectMember as removeMembership, requireProjectMembership } from "./shared-state";
 
 interface DeviceSigningKeyRow {

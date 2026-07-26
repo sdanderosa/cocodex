@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { projectContentEnvelopeSchema, type ProjectContentEnvelope } from "@cocodex/protocol";
+import { projectContentEnvelopeSchema, type ProjectContentEnvelope } from "../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 
 const resultSchema = z.object({

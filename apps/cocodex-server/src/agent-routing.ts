@@ -9,7 +9,7 @@ import {
   type AgentView,
   type AgentTask,
   type ChatEvent,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import type { ServerIdentity } from "./identity";
 import { appendChatEventResult, requireProjectMembership } from "./shared-state";
 

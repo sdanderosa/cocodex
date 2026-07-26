@@ -11,7 +11,7 @@ import {
   publicKeyFingerprint,
   serverAuthorityCertificateSigningTranscript,
   type InvitationPayload,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import { loadOrCreateClientIdentity } from "./identity";
 import { clientPaths, type ClientPaths } from "./paths";
 import { readAndVerifyServerCertificate } from "./tls-pin";

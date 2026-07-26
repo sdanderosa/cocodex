@@ -10,7 +10,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { dirname, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import type { AgentTask } from "@cocodex/protocol";
+import type { AgentTask } from "../../packages/cocodex-protocol/src/index.ts";
 import type { LocalAgentPolicy } from "./agent-policy";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 

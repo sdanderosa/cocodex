@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { statSync } from "node:fs";
-import type { AgentTask } from "@cocodex/protocol";
+import type { AgentTask } from "../../packages/cocodex-protocol/src/index.ts";
 import { codexExecInvocation } from "../codex/exec-invocation";
 import { resolveCodexRuntime } from "../codex/runtime";
 import type { LocalAgentAdapter } from "./agent-bridge";

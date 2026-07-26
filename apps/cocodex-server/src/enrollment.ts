@@ -5,7 +5,7 @@ import {
   enrollmentSigningTranscript,
   publicKeyFingerprint,
   type InvitationPayload,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { consumeInvitation, invitationIsUsable } from "./invitations";
 
 export interface EnrollmentChallenge {

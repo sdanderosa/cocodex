@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import type { PrivateMessageEnvelope } from "@cocodex/protocol";
+import type { PrivateMessageEnvelope } from "../../../packages/cocodex-protocol/src/index.ts";
 
 interface DeviceStatusRow {
   status: "pending" | "approved" | "revoked";

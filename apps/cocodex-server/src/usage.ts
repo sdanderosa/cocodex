@@ -5,7 +5,7 @@ import {
   usageReportSigningTranscript,
   type UsageReport,
   type UsageReportView,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 
 interface DeviceRow {

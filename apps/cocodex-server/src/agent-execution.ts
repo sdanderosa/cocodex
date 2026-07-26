@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   agentExecutionSigningTranscript,
   type AgentExecutionTranscriptInput,
-} from "@cocodex/protocol";
+} from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 
 const worktreeRefPattern =

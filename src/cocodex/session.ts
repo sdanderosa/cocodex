@@ -12,7 +12,7 @@ import {
   type AgentTask,
   type EncryptedAgentTask,
   type ChatEvent,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
 import { createInterface } from "node:readline";

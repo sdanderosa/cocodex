@@ -15,7 +15,7 @@ import {
   PROJECT_CONTENT_MAX_BYTES,
   PROJECT_ENCRYPTION_VERSION,
   PROJECT_KEY_BYTES,
-} from "@cocodex/protocol";
+} from "../../packages/cocodex-protocol/src/index.ts";
 import type * as Sodium from "libsodium-wrappers-sumo";
 
 // The package's ESM wrapper is not initialized correctly by Bun 1.3.x; use

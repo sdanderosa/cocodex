@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { clientFrameSchema, type ClientFrame } from "@cocodex/protocol";
+import { clientFrameSchema, type ClientFrame } from "../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
