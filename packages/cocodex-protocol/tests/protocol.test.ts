@@ -9,6 +9,8 @@ import {
   decodeInvitation,
   encodeInvitation,
   enrollmentSigningTranscript,
+  encryptedFileReferenceSchema,
+  fileReferencePlaintextSchema,
   PROJECT_CONTEXT_MAX_BYTES,
   projectContextResultFrameSchema,
   projectKeyEnvelopeSchema,
@@ -98,6 +100,77 @@ describe("CoCodex protocol", () => {
     };
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
     expect(() => clientFrameSchema.parse({ ...frame, targetDeviceId: crypto.randomUUID() })).toThrow();
+  });
+
+  test("strictly validates encrypted file-reference metadata and frames", () => {
+    const projectId = crypto.randomUUID();
+    const referenceId = crypto.randomUUID();
+    const artifactId = crypto.randomUUID();
+    const deviceId = crypto.randomUUID();
+    const envelope = {
+      version: 1 as const,
+      projectId,
+      keyEpoch: 1,
+      recordType: "file-reference" as const,
+      recordId: referenceId,
+      nonce: "A".repeat(32),
+      ciphertext: "B".repeat(64),
+      senderDeviceId: deviceId,
+      senderPublicKeyPem: "P".repeat(64),
+      signature: Buffer.alloc(64, 7).toString("base64url"),
+    };
+    const publish = {
+      version: 1 as const,
+      type: "project.file-reference.publish" as const,
+      requestId: crypto.randomUUID(),
+      referenceId,
+      projectId,
+      artifactId,
+      envelope,
+    };
+    expect(clientFrameSchema.parse(publish)).toEqual(publish);
+    expect(() => clientFrameSchema.parse({ ...publish, relativePath: "secret.txt" })).toThrow();
+    expect(() => clientFrameSchema.parse({
+      ...publish,
+      envelope: { ...envelope, recordType: "artifact" },
+    })).toThrow();
+    const wrapper = {
+      referenceId,
+      projectId,
+      artifactId,
+      hostDeviceId: deviceId,
+      authorDeviceId: deviceId,
+      envelope,
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(encryptedFileReferenceSchema.parse(wrapper)).toEqual(wrapper);
+    expect(projectServerFrameSchema.parse({
+      version: 1,
+      type: "project.file-reference.list.result",
+      requestId: crypto.randomUUID(),
+      projectId,
+      references: [wrapper],
+    })).toBeTruthy();
+    const plaintext = {
+      version: 1 as const,
+      referenceId,
+      projectId,
+      artifactId,
+      hostDeviceId: deviceId,
+      relativePath: "reports/result.txt",
+      workspaceMode: "shared" as const,
+      workspaceRef: "main",
+      branch: null,
+      commitSha: null,
+      sha256: "a".repeat(64),
+      sizeBytes: 12,
+      mediaType: "text/plain",
+    };
+    expect(fileReferencePlaintextSchema.parse(plaintext)).toEqual(plaintext);
+    for (const relativePath of ["/secret", "../secret", "a/../secret", "C:/secret", "\\\\server\\share", "a\\b", "https:secret"]) {
+      expect(() => fileReferencePlaintextSchema.parse({ ...plaintext, relativePath })).toThrow();
+    }
   });
   test("accepts revisioned project-context updates and rejects invalid revisions", () => {
     const frame = {

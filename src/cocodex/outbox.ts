@@ -4,7 +4,7 @@ import { clientFrameSchema, type ClientFrame } from "../../packages/cocodex-prot
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "context.update" | "project.context.update" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" }>;
 
 interface OutboxFile {
   version: 1;
@@ -20,7 +20,7 @@ function parseOutbox(path: string): OutboxFile {
     const frame = clientFrameSchema.parse(event);
     if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
-      && frame.type !== "project.context.update") {
+      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update") {
       throw new Error("Unsupported durable CoCodex event");
     }
     return frame;
@@ -59,7 +59,7 @@ export function enqueueDurableEvent(paths: ClientPaths, value: unknown): Durable
   const frame = clientFrameSchema.parse(value);
   if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
-      && frame.type !== "project.context.update") {
+      && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update") {
     throw new Error("Only chat, encrypted chat, private-message, agent, prompt, encrypted prompt, artifact, encrypted artifact, and project-context updates can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
@@ -121,6 +121,14 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
           // the first accepted envelope is authoritative and this retry is
           // terminal rather than an outbox head-of-line blocker.
           discardQueuedEvent(paths.outbox, frame.requestId);
+        } else if (frame.type === "project.file-reference.publish"
+          && (message.includes("file-reference artifact")
+            || message.includes("artifact host")
+            || message.includes("file-reference ID")
+            || message.includes("file-reference record ID")
+            || message.includes("file-reference project limit")
+            || message.includes("file-reference envelope must use the current"))) {
+          discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (message.includes("Project requires encrypted content frames")
           || message.includes("Project key rotation is required")) {
           // A legacy queued event cannot be safely replayed after a project
@@ -133,7 +141,7 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
       else if (response.type === "chat.accepted" || response.type === "project.chat.accepted" || response.type === "private.accepted"
         || response.type === "agent.accepted" || response.type === "project.agent.accepted" || response.type === "prompt.accepted" || response.type === "project.prompt.accepted"
         || response.type === "artifact.accepted" || response.type === "project.artifact.accepted" || response.type === "context.updated"
-        || response.type === "project.context.updated") finish();
+        || response.type === "project.context.updated" || response.type === "project.file-reference.accepted") finish();
     };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose, { once: true });

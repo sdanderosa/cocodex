@@ -219,6 +219,16 @@ metadata and cannot fabricate a host result during encrypted cancellation.
 Projects without a key retain the legacy `agent.*` route. Private-message
 ciphertext and file references are never added to agent context implicitly.
 
+Keyed projects can publish immutable local file-reference metadata with
+`project.file-reference.publish`. The client contains the path beneath the
+declared workspace, rejects symbolic links/junctions and non-regular files,
+hashes the file, and seals its relative path, workspace coordinates, digest,
+size, and media type with the project key. Other members decrypt that metadata
+locally; the server sees only routing UUIDs and ciphertext. The file bytes
+remain on the host client and are not uploaded or made remotely accessible by
+this feature. Publish retries use the protected outbox, and reference lists are
+restored after reconnect.
+
 ## Local access profiles and emergency stop
 
 Agent policies default to `project-only`, preserving the configured Codex
@@ -242,9 +252,10 @@ requires a second explicit confirmation after an emergency stop. The access
 profile does not claim an elevated Windows helper, browser automation, or
 remote desktop implementation; those are later, separately reviewed slices.
 
-This is still not a claim that every project record is encrypted yet. File
-references and the full multi-device/forward-secret messaging lifecycle remain
-on the explicitly documented follow-up path.
+This is still not a claim that every project record is encrypted yet. Legacy
+no-key routes, encrypted file-content transfer, and the full
+multi-device/forward-secret messaging lifecycle remain on the explicitly
+documented follow-up path.
 
 ## Usage sharing
 

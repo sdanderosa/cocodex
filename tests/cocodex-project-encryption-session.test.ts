@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -316,6 +316,63 @@ describe("CoCodex encrypted project context session", () => {
     expect(storedArtifact.envelopeJson).not.toContain(artifactContent);
     expect(storedArtifact.envelopeJson).toContain("ciphertext");
 
+    const referenceListStephen = crypto.randomUUID();
+    const referenceListKai = crypto.randomUUID();
+    stephen.send({ id: referenceListStephen, type: "project.file-reference.list", projectId: project.id });
+    kai.send({ id: referenceListKai, type: "project.file-reference.list", projectId: project.id });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === referenceListStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === referenceListKai),
+    ]);
+    const workspaceRoot = join(stephenRoot, "workspace");
+    const privateRelativePath = "reports/private-result.txt";
+    const privateFileBytes = "FILE_BYTES_CANARY_does_not_leave_Stephen";
+    mkdirSync(join(workspaceRoot, "reports"), { recursive: true });
+    writeFileSync(join(workspaceRoot, ...privateRelativePath.split("/")), privateFileBytes, "utf8");
+    const referenceId = crypto.randomUUID();
+    stephen.send({
+      id: crypto.randomUUID(),
+      type: "project.file-reference.publish",
+      projectId: project.id,
+      referenceId,
+      artifactId,
+      workspaceRoot,
+      path: privateRelativePath,
+      workspaceMode: "shared",
+      workspaceRef: "main",
+      mediaType: "text/plain",
+    });
+    const [referenceAtStephen, referenceAtKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.accepted"
+        && ((event.frame as Record<string, any>).reference as Record<string, unknown> | undefined)?.referenceId === referenceId),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.published"
+        && ((event.frame as Record<string, any>).reference as Record<string, unknown> | undefined)?.referenceId === referenceId),
+    ]);
+    for (const event of [referenceAtStephen, referenceAtKai]) {
+      expect((event.frame as Record<string, any>).reference).toMatchObject({
+        referenceId,
+        projectId: project.id,
+        artifactId,
+        hostDeviceId: stephenConnection.deviceId,
+        relativePath: privateRelativePath,
+        sizeBytes: Buffer.byteLength(privateFileBytes),
+        mediaType: "text/plain",
+      });
+    }
+    const storedReference = db.query(
+      "SELECT envelope_json AS envelopeJson FROM project_file_references WHERE id = ?",
+    ).get(referenceId) as { envelopeJson: string };
+    expect(storedReference.envelopeJson).not.toContain(workspaceRoot);
+    expect(storedReference.envelopeJson).not.toContain(privateRelativePath);
+    expect(storedReference.envelopeJson).not.toContain(privateFileBytes);
+    expect(storedReference.envelopeJson).toContain("ciphertext");
+
     const stephenDisconnected = stephen.waitFor(event => event.source === "session" && event.state === "disconnected");
     const kaiDisconnected = kai.waitFor(event => event.source === "session" && event.state === "disconnected");
     const serverIndex = servers.indexOf(server);
@@ -396,6 +453,24 @@ describe("CoCodex encrypted project context session", () => {
     for (const snapshot of [artifactSnapshotStephen, artifactSnapshotKai]) {
       expect((snapshot.frame as Record<string, unknown>).artifacts).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: artifactId, content: artifactContent }),
+      ]));
+    }
+
+    const recoveredReferenceStephen = crypto.randomUUID();
+    const recoveredReferenceKai = crypto.randomUUID();
+    stephen.send({ id: recoveredReferenceStephen, type: "project.file-reference.list", projectId: project.id });
+    kai.send({ id: recoveredReferenceKai, type: "project.file-reference.list", projectId: project.id });
+    const [referenceSnapshotStephen, referenceSnapshotKai] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredReferenceStephen),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "file-reference.list.result"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === recoveredReferenceKai),
+    ]);
+    for (const snapshot of [referenceSnapshotStephen, referenceSnapshotKai]) {
+      expect((snapshot.frame as Record<string, unknown>).references).toEqual(expect.arrayContaining([
+        expect.objectContaining({ referenceId, relativePath: privateRelativePath, artifactId }),
       ]));
     }
 

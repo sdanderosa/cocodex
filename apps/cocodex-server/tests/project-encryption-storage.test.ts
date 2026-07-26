@@ -22,6 +22,7 @@ import {
   updateEncryptedProjectContext,
 } from "../src/project-encryption-storage";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "../src/encrypted-artifacts";
+import { listEncryptedFileReferences, publishEncryptedFileReference } from "../src/encrypted-file-references";
 import { addProjectMember, createProject } from "../src/shared-state";
 
 interface TestDevice {
@@ -130,6 +131,29 @@ function artifactEnvelope(
     recordId: artifactId,
     nonce: randomBytes(24).toString("base64url"),
     ciphertext,
+    senderDeviceId: sender.id,
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectContentSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
+function fileReferenceEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  referenceId: string,
+  keyEpoch = 1,
+): ProjectContentEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch,
+    recordType: "file-reference" as const,
+    recordId: referenceId,
+    nonce: randomBytes(24).toString("base64url"),
+    ciphertext: randomBytes(96).toString("base64url"),
     senderDeviceId: sender.id,
     senderPublicKeyPem: sender.publicKey,
   };
@@ -431,6 +455,85 @@ describe("opaque project-encryption server storage", () => {
         authorDeviceId: owner.id,
         envelope: { ...envelope, signature: badSignature.toString("base64url") },
       })).toThrow("signature is invalid");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("stores immutable ciphertext-only file references bound to the artifact host", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const owner = approvedDevice(db, "Stephen");
+      const member = approvedDevice(db, "Kai");
+      const project = createProject(db, "Encrypted references", owner.id);
+      addProjectMember(db, project.id, owner.id, member.id);
+      shareProjectKeyEnvelope(db, project.id, owner.id, keyEnvelope(project.id, owner, owner.id));
+      const artifactId = randomUUID();
+      publishEncryptedArtifact(db, {
+        artifactId,
+        projectId: project.id,
+        taskId: null,
+        authorDeviceId: owner.id,
+        envelope: artifactEnvelope(project.id, owner, artifactId),
+      });
+      const referenceId = randomUUID();
+      const envelope = fileReferenceEnvelope(project.id, owner, referenceId);
+      const first = publishEncryptedFileReference(db, {
+        referenceId,
+        projectId: project.id,
+        artifactId,
+        authorDeviceId: owner.id,
+        envelope,
+      });
+      expect(first.created).toBeTrue();
+      expect(publishEncryptedFileReference(db, {
+        referenceId,
+        projectId: project.id,
+        artifactId,
+        authorDeviceId: owner.id,
+        envelope,
+      }).created).toBeFalse();
+      expect(listEncryptedFileReferences(db, project.id, member.id)).toEqual([first.reference]);
+      expect(() => publishEncryptedFileReference(db, {
+        referenceId: randomUUID(),
+        projectId: project.id,
+        artifactId,
+        authorDeviceId: member.id,
+        envelope: fileReferenceEnvelope(project.id, member, randomUUID()),
+      })).toThrow("Only the artifact host");
+      expect(() => publishEncryptedFileReference(db, {
+        referenceId,
+        projectId: project.id,
+        artifactId,
+        authorDeviceId: owner.id,
+        envelope: fileReferenceEnvelope(project.id, owner, referenceId),
+      })).toThrow("already used");
+      const columns = (db.query("PRAGMA table_info(project_file_references)").all() as Array<{ name: string }>)
+        .map(column => column.name);
+      expect(columns).not.toContain("relative_path");
+      expect(columns).not.toContain("sha256");
+      expect(columns).not.toContain("media_type");
+      const stored = db.query("SELECT envelope_json AS envelopeJson FROM project_file_references WHERE id = ?")
+        .get(referenceId) as { envelopeJson: string };
+      expect(stored.envelopeJson).toContain(envelope.ciphertext);
+      expect(stored.envelopeJson).not.toContain("C:\\Users\\Stephen\\secret.txt");
+      const insert = db.query(`
+        INSERT INTO project_file_references
+          (id, project_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (let index = 1; index < 500; index += 1) {
+        insert.run(randomUUID(), project.id, artifactId, owner.id, owner.id, stored.envelopeJson,
+          new Date(1_800_000_000_000 + index).toISOString(), new Date(1_800_000_000_000 + index).toISOString());
+      }
+      const overflowId = randomUUID();
+      expect(() => publishEncryptedFileReference(db, {
+        referenceId: overflowId,
+        projectId: project.id,
+        artifactId,
+        authorDeviceId: owner.id,
+        envelope: fileReferenceEnvelope(project.id, owner, overflowId),
+      })).toThrow("limit of 500");
     } finally {
       db.close();
     }

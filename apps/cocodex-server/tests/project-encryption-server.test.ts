@@ -22,6 +22,7 @@ import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { startCoCodexServer } from "../src/server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
+import { publishEncryptedArtifact } from "../src/encrypted-artifacts";
 
 const roots: string[] = [];
 const servers: Array<{ stop(force?: boolean): Promise<void> }> = [];
@@ -209,6 +210,29 @@ function promptEnvelope(projectId: string, sender: TestDevice, updateId: string)
     recordId: updateId,
     nonce: randomBytes(24).toString("base64url"),
     ciphertext: randomBytes(32).toString("base64url"),
+    senderDeviceId: sender.id,
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectContentSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
+function typedContentEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  recordType: "artifact" | "file-reference",
+  recordId: string,
+): ProjectContentEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch: 1,
+    recordType,
+    recordId,
+    nonce: randomBytes(24).toString("base64url"),
+    ciphertext: randomBytes(96).toString("base64url"),
     senderDeviceId: sender.id,
     senderPublicKeyPem: sender.publicKey,
   };
@@ -541,5 +565,86 @@ describe("encrypted project WSS routing", () => {
       clientCreatedAt: new Date().toISOString(),
     }));
     expect(await error).toMatchObject({ error: expect.stringContaining("signature") });
+  }, 15_000);
+
+  test("publishes and lists opaque file references over authenticated WSS", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-wss-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const owner = approvedDevice(db, fingerprint, "Stephen");
+    const member = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Encrypted file references", owner.id);
+    addProjectMember(db, project.id, owner.id, member.id);
+    const serverConfig = createDefaultConfig(paths, "127.0.0.1", 443);
+    serverConfig.hostname = "127.0.0.1";
+    serverConfig.port = 0;
+    const server = startCoCodexServer(serverConfig, db, identity);
+    servers.push(server);
+    const ownerSocket = await connect(server.port, owner, fingerprint);
+    const memberSocket = await connect(server.port, member, fingerprint);
+    const keyAccepted = nextFrame(ownerSocket, "project.key.accepted");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.share",
+      requestId: randomUUID(),
+      projectId: project.id,
+      envelope: keyEnvelope(project.id, owner, member.id),
+    }));
+    await keyAccepted;
+    const artifactId = randomUUID();
+    publishEncryptedArtifact(db, {
+      artifactId,
+      projectId: project.id,
+      taskId: null,
+      authorDeviceId: owner.id,
+      envelope: typedContentEnvelope(project.id, owner, "artifact", artifactId),
+    });
+    const ownerList = nextFrame(ownerSocket, "project.file-reference.list.result");
+    const memberList = nextFrame(memberSocket, "project.file-reference.list.result");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.file-reference.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.file-reference.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await ownerList).references).toEqual([]);
+    expect((await memberList).references).toEqual([]);
+    const referenceId = randomUUID();
+    const envelope = typedContentEnvelope(project.id, owner, "file-reference", referenceId);
+    const accepted = nextFrame(ownerSocket, "project.file-reference.accepted");
+    const ownerPublished = nextFrame(ownerSocket, "project.file-reference.published");
+    const memberPublished = nextFrame(memberSocket, "project.file-reference.published");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.file-reference.publish",
+      requestId: randomUUID(),
+      referenceId,
+      projectId: project.id,
+      artifactId,
+      envelope,
+    }));
+    expect(await accepted).toMatchObject({
+      reference: { referenceId, projectId: project.id, artifactId, hostDeviceId: owner.id, envelope },
+    });
+    expect((await ownerPublished).reference).toEqual((await memberPublished).reference);
+    const recovery = nextFrame(memberSocket, "project.file-reference.list.result");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.file-reference.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await recovery).references).toHaveLength(1);
   }, 15_000);
 });

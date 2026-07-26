@@ -48,6 +48,8 @@ const ALLOWED_COMMANDS = new Set([
   "artifact.list",
   "project.artifact.publish",
   "project.artifact.list",
+  "project.file-reference.publish",
+  "project.file-reference.list",
 ]);
 
 type SessionRunner = (paths: ClientPaths, options: JsonLineSessionOptions) => Promise<void>;

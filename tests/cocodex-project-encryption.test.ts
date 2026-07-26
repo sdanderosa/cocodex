@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,6 +39,7 @@ import {
   stageProjectKeyInitialization,
   storeProjectKey,
 } from "../src/cocodex/project-key-store";
+import { inspectLocalFileReference } from "../src/cocodex/file-reference";
 
 function signingIdentity() {
   return generateKeyPairSync("ed25519", {
@@ -63,6 +64,41 @@ function device() {
 }
 
 describe("CoCodex project encryption foundation", () => {
+  test("contains and hashes local file-reference metadata before encryption", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-"));
+    try {
+      const workspace = join(root, "workspace");
+      mkdirSync(join(workspace, "reports"), { recursive: true });
+      writeFileSync(join(workspace, "reports", "result.txt"), "private file bytes", "utf8");
+      writeFileSync(join(root, "outside.txt"), "outside", "utf8");
+      const identifiers = {
+        referenceId: randomUUID(),
+        projectId: randomUUID(),
+        artifactId: randomUUID(),
+        hostDeviceId: randomUUID(),
+      };
+      const result = await inspectLocalFileReference({
+        ...identifiers,
+        workspaceRoot: workspace,
+        path: "reports/result.txt",
+        workspaceMode: "shared",
+        workspaceRef: "main",
+        mediaType: "text/plain",
+      });
+      expect(result.relativePath).toBe("reports/result.txt");
+      expect(result.sizeBytes).toBe(Buffer.byteLength("private file bytes"));
+      expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+      await expect(inspectLocalFileReference({
+        ...identifiers,
+        workspaceRoot: workspace,
+        path: "../outside.txt",
+        workspaceMode: "shared",
+        workspaceRef: "main",
+      })).rejects.toThrow("inside the workspace");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   test("binds encrypted task routing metadata to requester plaintext", () => {
     const dependencyId = randomUUID();
     const artifactId = randomUUID();

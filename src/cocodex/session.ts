@@ -6,12 +6,14 @@ import {
   projectServerFrameSchema,
   privateServerFrameSchema,
   projectContentEnvelopeSchema,
+  fileReferencePlaintextSchema,
   projectKeyEnvelopeSchema,
   publicKeyFingerprint,
   type Artifact,
   type AgentTask,
   type EncryptedAgentTask,
   type ChatEvent,
+  type FileReferencePlaintext,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
@@ -41,6 +43,7 @@ import { loadOrCreateClientIdentity, verifyDeviceKeyCertificate } from "./identi
 import { enqueueDurableEvent, flushDurableOutbox } from "./outbox";
 import type { ClientPaths } from "./paths";
 import { prepareTaskWorkspace } from "./task-worktree";
+import { inspectLocalFileReference } from "./file-reference";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import {
   deferPrivateMailboxMessage,
@@ -183,8 +186,14 @@ export async function runJsonLineSession(
   const encryptedPromptCursors = new Map<string, number>();
   const encryptedPromptSubscriptions = new Set<string>();
   const encryptedArtifactSubscriptions = new Set<string>();
+  const encryptedFileReferenceSubscriptions = new Set<string>();
   const encryptedTaskProjects = new Map<string, string>();
   const decryptedProjectArtifacts = new Map<string, Artifact>();
+  const decryptedProjectFileReferences = new Map<string, FileReferencePlaintext & {
+    authorDeviceId: string;
+    createdAt: string;
+    updatedAt: string;
+  }>();
   const contextSubscriptions = new Set<string>();
   const encryptedContextSubscriptions = new Set<string>();
   const projectKeySubscriptions = new Set<string>();
@@ -486,6 +495,56 @@ export async function runJsonLineSession(
       artifactId,
       projectId,
       taskId,
+      envelope,
+    };
+  };
+  const encryptedFileReferenceFrame = async (
+    projectId: string,
+    referenceId: string,
+    artifactId: string,
+    command: ControlCommand,
+    requestId: string,
+  ) => {
+    const artifact = decryptedProjectArtifacts.get(artifactId);
+    if (!artifact || artifact.projectId !== projectId) {
+      throw new Error("The encrypted artifact must be loaded before attaching a file reference");
+    }
+    if (artifact.authorDeviceId !== connection.deviceId) {
+      throw new Error("Only this device's artifact can reference its local file");
+    }
+    const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+    if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
+    const plaintext = await inspectLocalFileReference({
+      referenceId,
+      projectId,
+      artifactId,
+      hostDeviceId: connection.deviceId,
+      workspaceRoot: String(command.workspaceRoot),
+      path: String(command.path),
+      workspaceMode: command.workspaceMode === "git-worktree" ? "git-worktree" : "shared",
+      workspaceRef: String(command.workspaceRef),
+      branch: command.branch === null || command.branch === undefined ? null : String(command.branch),
+      commitSha: command.commitSha === null || command.commitSha === undefined ? null : String(command.commitSha),
+      mediaType: command.mediaType === null || command.mediaType === undefined ? null : String(command.mediaType),
+    });
+    const envelope = await sealProjectContent({
+      projectId,
+      keyEpoch: stored.keyEpoch,
+      recordType: "file-reference",
+      recordId: referenceId,
+      plaintext: JSON.stringify(plaintext),
+      projectKey: stored.projectKey,
+      senderDeviceId: connection.deviceId,
+      senderPrivateKeyPem: identity.privateKeyPem,
+      senderPublicKeyPem: identity.publicKeyPem,
+    });
+    return {
+      version: 1 as const,
+      type: "project.file-reference.publish" as const,
+      requestId,
+      referenceId,
+      projectId,
+      artifactId,
       envelope,
     };
   };
@@ -1142,6 +1201,86 @@ export async function runJsonLineSession(
     }
   };
 
+  const openEncryptedFileReference = async (rawReference: Record<string, any>) => {
+    const projectId = String(rawReference.projectId);
+    const referenceId = String(rawReference.referenceId);
+    const envelope = projectContentEnvelopeSchema.parse(rawReference.envelope);
+    const key = loadProjectKey(paths.projectKeys, projectId, envelope.keyEpoch);
+    if (!key) throw new Error(`No project key is available for ${projectId} epoch ${envelope.keyEpoch}`);
+    const senderPublicKeyPem = trustedProjectSenderKey(envelope.senderDeviceId, envelope.senderPublicKeyPem);
+    const plaintext = await openProjectContent({
+      envelope,
+      projectKey: key.projectKey,
+      expectedProjectId: projectId,
+      expectedKeyEpoch: key.keyEpoch,
+      expectedRecordType: "file-reference",
+      expectedRecordId: referenceId,
+      expectedSenderDeviceId: envelope.senderDeviceId,
+      expectedSenderPublicKeyPem: senderPublicKeyPem,
+    });
+    const decoded = fileReferencePlaintextSchema.parse(JSON.parse(plaintext.toString("utf8")));
+    if (decoded.referenceId !== referenceId || decoded.projectId !== projectId
+      || decoded.artifactId !== rawReference.artifactId
+      || decoded.hostDeviceId !== rawReference.hostDeviceId
+      || rawReference.authorDeviceId !== rawReference.hostDeviceId
+      || envelope.senderDeviceId !== rawReference.authorDeviceId) {
+      throw new Error("Encrypted file-reference metadata does not match its envelope");
+    }
+    return {
+      ...decoded,
+      authorDeviceId: String(rawReference.authorDeviceId),
+      createdAt: String(rawReference.createdAt),
+      updatedAt: String(rawReference.updatedAt),
+    };
+  };
+
+  const openEncryptedFileReferenceFrame = async (frame: Record<string, any>): Promise<void> => {
+    const projectId = String(frame.projectId ?? frame.reference?.projectId);
+    if (frame.type === "project.file-reference.list.result") {
+      const references = [];
+      for (const rawReference of Array.isArray(frame.references) ? frame.references : []) {
+        try {
+          const reference = await openEncryptedFileReference(rawReference);
+          decryptedProjectFileReferences.set(reference.referenceId, reference);
+          references.push(reference);
+        } catch (error) {
+          emitError({
+            source: "project-encryption",
+            referenceId: String(rawReference?.referenceId ?? ""),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      emit({ source: "server", frame: {
+        version: 1,
+        type: "file-reference.list.result",
+        ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        projectId,
+        references,
+      } });
+      return;
+    }
+    try {
+      const reference = await openEncryptedFileReference(frame.reference);
+      decryptedProjectFileReferences.set(reference.referenceId, reference);
+      emit({ source: "server", frame: {
+        version: 1,
+        type: frame.type === "project.file-reference.accepted"
+          ? "file-reference.accepted"
+          : "file-reference.published",
+        ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        projectId,
+        reference,
+      } });
+    } catch (error) {
+      emitError({
+        source: "project-encryption",
+        referenceId: String(frame.reference?.referenceId ?? ""),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const openProjectKeyEnvelopeFromServer = (envelope: Record<string, any>): void => {
     if (envelope.recipientDeviceId !== connection.deviceId) return;
     if (!identity.projectWrapPrivateKeyPem || !identity.projectWrapPublicKeyPem) {
@@ -1483,6 +1622,11 @@ export async function runJsonLineSession(
         void openEncryptedArtifactFrame(frame);
         return;
       }
+      if (frame.type === "project.file-reference.accepted" || frame.type === "project.file-reference.published"
+        || frame.type === "project.file-reference.list.result") {
+        void openEncryptedFileReferenceFrame(frame);
+        return;
+      }
       if (frame.type === "chat.snapshot") {
         if (loadProjectKeyForEncryption(paths.projectKeys, String(frame.projectId))) return;
         const events = Array.isArray(frame.events) ? frame.events : [];
@@ -1720,6 +1864,9 @@ export async function runJsonLineSession(
     }
     for (const projectId of encryptedArtifactSubscriptions) {
       send({ version: 1, type: "project.artifact.list", requestId: randomUUID(), projectId });
+    }
+    for (const projectId of encryptedFileReferenceSubscriptions) {
+      send({ version: 1, type: "project.file-reference.list", requestId: randomUUID(), projectId });
     }
     for (const projectId of promptSubscriptions) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
@@ -2324,6 +2471,37 @@ export async function runJsonLineSession(
             assertLegacyProjectFallbackAllowed(projectId);
             send({ version: 1, type: "artifact.list", requestId: controlRequestId(command.id), projectId });
           }
+        } else if (command.type === "project.file-reference.publish") {
+          const projectId = String(command.projectId);
+          const referenceId = String(command.referenceId ?? randomUUID());
+          const artifactId = String(command.artifactId);
+          const frame = await encryptedFileReferenceFrame(
+            projectId,
+            referenceId,
+            artifactId,
+            command,
+            controlRequestId(command.id),
+          );
+          encryptedFileReferenceSubscriptions.add(projectId);
+          enqueueDurableEvent(paths, frame);
+          const delivered = await flush();
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            queued: delivered === 0,
+            referenceId,
+            encrypted: true,
+          });
+        } else if (command.type === "project.file-reference.list") {
+          const projectId = String(command.projectId);
+          encryptedFileReferenceSubscriptions.add(projectId);
+          send({
+            version: 1,
+            type: "project.file-reference.list",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
         } else if (command.type === "agent.request") {
           const request = createAgentRequest(
             String(command.projectId),

@@ -47,7 +47,8 @@ The server is blind to keyed artifact content and can still authorize,
 deduplicate, list, and broadcast records. The legacy table remains for older
 fixtures and must not be used to claim whole-project E2EE. Keyed agent task
 prompts and results now use the same envelope boundary through ADR 0016;
-file references, automatic key rotation after membership removal, and a
+encrypted local file-reference metadata is now defined by ADR 0030. Encrypted
+file-content transfer, automatic key rotation after membership removal, and a
 complete artifact UI are still later work.
 
 ## Evidence

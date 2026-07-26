@@ -152,6 +152,22 @@ export {
   type EncryptedArtifactListResultFrame,
 } from "./project-artifact";
 export {
+  encryptedFileReferenceSchema,
+  fileReferencePlaintextSchema,
+  encryptedFileReferencePublishFrameSchema,
+  encryptedFileReferenceListFrameSchema,
+  encryptedFileReferenceAcceptedFrameSchema,
+  encryptedFileReferencePublishedFrameSchema,
+  encryptedFileReferenceListResultFrameSchema,
+  type EncryptedFileReference,
+  type FileReferencePlaintext,
+  type EncryptedFileReferencePublishFrame,
+  type EncryptedFileReferenceListFrame,
+  type EncryptedFileReferenceAcceptedFrame,
+  type EncryptedFileReferencePublishedFrame,
+  type EncryptedFileReferenceListResultFrame,
+} from "./project-file-reference";
+export {
   encryptedAgentRequestFrameSchema,
   encryptedAgentResultSendFrameSchema,
   encryptedAgentResultChangedFrameSchema,

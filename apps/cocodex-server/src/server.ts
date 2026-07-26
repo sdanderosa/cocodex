@@ -43,6 +43,7 @@ import { appendPrivateMessage, privateMessagesAfter } from "./private-messages";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
+import { listEncryptedFileReferences, publishEncryptedFileReference } from "./encrypted-file-references";
 import { applySharedPromptUpdate, sharedPromptSnapshot } from "./shared-prompts";
 import { initializeServerAuthority, requireActiveServerAuthority, serverEpoch, serverIdentityFingerprint } from "./server-state";
 import { listArtifacts, publishArtifact } from "./artifacts";
@@ -83,6 +84,7 @@ interface SocketData {
   subscribedPresenceProjects: Set<string>;
   subscribedEncryptedPrompts: Set<string>;
   subscribedEncryptedArtifacts: Set<string>;
+  subscribedEncryptedFileReferences: Set<string>;
   subscribedPrompts: Set<string>;
   subscribedContexts: Set<string>;
   subscribedEncryptedContexts: Set<string>;
@@ -289,6 +291,25 @@ export function startCoCodexServer(
         socket.send(encoded);
       } catch {
         socket.data.subscribedEncryptedArtifacts.delete(projectId);
+      }
+    }
+  }
+
+  function sendToEncryptedFileReference(projectId: string, frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId || !socket.data.subscribedEncryptedFileReferences.has(projectId)) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (!device || device.status !== "approved") {
+        socket.close(1008, "Device authorization was revoked");
+        continue;
+      }
+      try {
+        requireProjectMembership(db, projectId, deviceId);
+        socket.send(encoded);
+      } catch {
+        socket.data.subscribedEncryptedFileReferences.delete(projectId);
       }
     }
   }
@@ -536,6 +557,7 @@ export function startCoCodexServer(
           subscribedPresenceProjects: new Set(),
           subscribedEncryptedPrompts: new Set(),
           subscribedEncryptedArtifacts: new Set(),
+          subscribedEncryptedFileReferences: new Set(),
           subscribedPrompts: new Set(),
           subscribedContexts: new Set(),
           subscribedEncryptedContexts: new Set(),
@@ -858,6 +880,42 @@ export function startCoCodexServer(
               requestId,
               projectId: message.projectId,
               artifacts: listEncryptedArtifacts(db, message.projectId, deviceId),
+            }));
+            return;
+          }
+          if (message.type === "project.file-reference.publish") {
+            const published = publishEncryptedFileReference(db, {
+              referenceId: message.referenceId,
+              projectId: message.projectId,
+              artifactId: message.artifactId,
+              authorDeviceId: deviceId,
+              envelope: message.envelope,
+            });
+            socket.data.subscribedEncryptedFileReferences.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.file-reference.accepted",
+              requestId,
+              projectId: message.projectId,
+              reference: published.reference,
+            }));
+            if (published.created) {
+              sendToEncryptedFileReference(message.projectId, {
+                version: 1,
+                type: "project.file-reference.published",
+                reference: published.reference,
+              });
+            }
+            return;
+          }
+          if (message.type === "project.file-reference.list") {
+            socket.data.subscribedEncryptedFileReferences.add(message.projectId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.file-reference.list.result",
+              requestId,
+              projectId: message.projectId,
+              references: listEncryptedFileReferences(db, message.projectId, deviceId),
             }));
             return;
           }

@@ -27,6 +27,13 @@ import {
   encryptedArtifactPublishedFrameSchema,
 } from "./project-artifact";
 import {
+  encryptedFileReferenceAcceptedFrameSchema,
+  encryptedFileReferenceListFrameSchema,
+  encryptedFileReferenceListResultFrameSchema,
+  encryptedFileReferencePublishFrameSchema,
+  encryptedFileReferencePublishedFrameSchema,
+} from "./project-file-reference";
+import {
   encryptedAgentRequestFrameSchema,
   encryptedAgentResultSendFrameSchema,
   encryptedAgentResultChangedFrameSchema,
@@ -299,6 +306,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   encryptedPromptUpdateFrameSchema,
   encryptedArtifactPublishFrameSchema,
   encryptedArtifactListFrameSchema,
+  encryptedFileReferencePublishFrameSchema,
+  encryptedFileReferenceListFrameSchema,
   encryptedAgentRequestFrameSchema,
   encryptedAgentResultSendFrameSchema,
   z.object({
@@ -636,6 +645,9 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   encryptedArtifactAcceptedFrameSchema,
   encryptedArtifactPublishedFrameSchema,
   encryptedArtifactListResultFrameSchema,
+  encryptedFileReferenceAcceptedFrameSchema,
+  encryptedFileReferencePublishedFrameSchema,
+  encryptedFileReferenceListResultFrameSchema,
   encryptedAgentTaskFrameSchema,
   encryptedAgentResultChangedFrameSchema,
   projectKeyResultFrameSchema,

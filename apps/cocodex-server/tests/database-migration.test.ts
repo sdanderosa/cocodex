@@ -58,7 +58,7 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }]);
       expect(migrated.query(`
         SELECT primary_model AS primaryModel, primary_effort AS primaryEffort,
           coagent_model AS coAgentModel, coagent_effort AS coAgentEffort,
@@ -74,8 +74,8 @@ describe("CoCodex database migrations", () => {
           "max_concurrent_coagents",
         ]));
       expect(migrated.query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('project_key_envelopes', 'encrypted_project_context', 'project_key_epochs', 'project_chat_events', 'project_prompt_updates', 'project_artifacts') ORDER BY name",
-      ).all()).toEqual([{ name: "encrypted_project_context" }, { name: "project_artifacts" }, { name: "project_chat_events" }, { name: "project_key_envelopes" }, { name: "project_key_epochs" }, { name: "project_prompt_updates" }]);
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('project_key_envelopes', 'encrypted_project_context', 'project_key_epochs', 'project_chat_events', 'project_prompt_updates', 'project_artifacts', 'project_file_references') ORDER BY name",
+      ).all()).toEqual([{ name: "encrypted_project_context" }, { name: "project_artifacts" }, { name: "project_chat_events" }, { name: "project_file_references" }, { name: "project_key_envelopes" }, { name: "project_key_epochs" }, { name: "project_prompt_updates" }]);
       expect((migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>).map(column => column.name))
         .toContain("prompt_envelope_json");
       expect((migrated.query("PRAGMA table_info(agent_tasks)").all() as Array<{ name: string }>).map(column => column.name))

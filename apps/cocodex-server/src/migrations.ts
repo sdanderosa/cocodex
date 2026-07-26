@@ -373,4 +373,22 @@ BEGIN
   SELECT RAISE(ABORT, 'inconsistent agent runtime definition');
 END;`,
   },
+  {
+    version: 23,
+    sql: `
+CREATE TABLE project_file_references (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  artifact_id TEXT NOT NULL REFERENCES project_artifacts(id) ON DELETE CASCADE,
+  host_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  author_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX project_file_references_project_created
+  ON project_file_references(project_id, created_at, id);
+CREATE INDEX project_file_references_artifact_created
+  ON project_file_references(artifact_id, created_at, id);`,
+  },
 ];

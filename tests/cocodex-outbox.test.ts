@@ -111,6 +111,43 @@ describe("CoCodex durable offline outbox", () => {
     }
   });
 
+  test("persists only the sealed file-reference envelope while offline", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-outbox-"));
+    const paths = clientPaths(root);
+    const projectId = randomUUID();
+    const referenceId = randomUUID();
+    const deviceId = randomUUID();
+    const frame = {
+      version: 1 as const,
+      type: "project.file-reference.publish" as const,
+      requestId: randomUUID(),
+      referenceId,
+      projectId,
+      artifactId: randomUUID(),
+      envelope: {
+        version: 1 as const,
+        projectId,
+        keyEpoch: 1,
+        recordType: "file-reference" as const,
+        recordId: referenceId,
+        nonce: Buffer.alloc(24, 1).toString("base64url"),
+        ciphertext: Buffer.alloc(64, 2).toString("base64url"),
+        senderDeviceId: deviceId,
+        senderPublicKeyPem: "P".repeat(64),
+        signature: Buffer.alloc(64, 3).toString("base64url"),
+      },
+    };
+    try {
+      expect(enqueueDurableEvent(paths, frame)).toEqual(frame);
+      const serialized = JSON.stringify(queuedEvents(clientPaths(root)));
+      expect(serialized).toContain(frame.envelope.ciphertext);
+      expect(serialized).not.toContain("C:\\Users\\Stephen\\private.txt");
+      expect(serialized).not.toContain("private file bytes");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("does not let a stale project-context update block future outbox work", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-context-conflict-"));
     const paths = clientPaths(root);

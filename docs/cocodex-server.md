@@ -188,12 +188,14 @@ Project-content encryption is enabled for the explicit `project.key.*`,
 verifies owner-signed key envelopes, approved membership, signatures,
 replay/idempotency, context revisions, and monotonic key epochs, then stores
 only opaque envelope JSON in `project_key_envelopes`,
-`encrypted_project_context`, `project_chat_events`, and
-`project_prompt_updates`, and `project_artifacts`. Keyed agent tasks store an
+`encrypted_project_context`, `project_chat_events`, `project_prompt_updates`,
+`project_artifacts`, and `project_file_references`. Keyed agent tasks store an
 `[encrypted]` prompt placeholder and an opaque prompt envelope; streamed
 results use the same opaque envelope table with task/final/status routing
-metadata. It never receives the project key or opens the
-Final Goal/context/chat/prompt/artifact/task/result ciphertext. For
+metadata. Encrypted file-reference rows expose only project/artifact/device
+routing IDs and timestamps; paths, workspace metadata, hashes, sizes, and media
+types remain inside ciphertext. It never receives the project key or opens the
+Final Goal/context/chat/prompt/artifact/file-reference/task/result ciphertext. For
 encrypted prompts it orders and deduplicates Yjs updates without applying them;
 the clients perform the Yjs state transition after local decryption. Encrypted
 artifact rows expose only project/task/author routing metadata and timestamps.
@@ -209,8 +211,9 @@ offline during the original broadcast. A failed batch leaves no partial key
 envelopes and does not enable encrypted mode.
 
 This is not yet a whole-project E2EE claim. Legacy `context.*`, `agent.*`, and
-file-reference paths remain server-readable for projects without a key, and
-file references still need an encrypted transport. Legacy `prompt.*` and
+file-reference paths remain server-readable for projects without a key.
+Keyed projects now use encrypted metadata-only local file references; actual
+file-content transfer is not implemented. Legacy `prompt.*` and
 `artifact.*` remain for projects without a project key. Key rotation and
 project-member removal are implemented for the project-key lifecycle, but a
 release still needs automatic rotation orchestration and UI before claiming
