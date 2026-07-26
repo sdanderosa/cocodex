@@ -93,7 +93,9 @@ Usage:
   cocodex-server revoke --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
   cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
-  cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--model ID] [--effort LEVEL] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--state-root PATH]`);
+  cocodex-server agent-add --id ID --project ID --host-device ID --name NAME [--model ID] [--effort LEVEL] [--co-agent-model ID --co-agent-effort LEVEL --max-co-agents 1..8] [--state-root PATH]
+
+Short alias: ccx-server`);
 }
 
 async function run(): Promise<void> {

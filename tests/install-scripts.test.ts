@@ -31,6 +31,7 @@ describe("install scripts", () => {
     expect(pkg.exports?.["."]?.bun).toBe("./src/index.ts");
     expect(pkg.exports?.["."]?.default).toBe("./bin/package-main.mjs");
     expect(pkg.dependencies?.zod).toBe("4.4.3");
+    expect(pkg.dependencies?.selfsigned).toBe("5.5.0");
     expect(pkg.devDependencies?.typescript).toBe("5.9.3");
     expect(pkg.devDependencies?.["@types/bun"]).toBe("1.3.14");
     expect(pkg.scripts?.dev).toBe("bun run src/cli/index.ts start");
@@ -48,9 +49,32 @@ describe("install scripts", () => {
     expect(pkg.bin).toMatchObject({
       cocodex: "./bin/ccx.mjs",
       ccx: "./bin/ccx.mjs",
+      "cocodex-server": "./bin/ccx-server.mjs",
+      "ccx-server": "./bin/ccx-server.mjs",
       opencodex: "./bin/ocx.mjs",
       ocx: "./bin/ocx.mjs",
     });
+  });
+
+  test("CoCodex server launcher uses only the separate headless entrypoint", async () => {
+    const launcher = await readText("bin/ccx-server.mjs");
+    expect(launcher).toContain('join(here, "..", "apps", "cocodex-server", "src", "cli.ts")');
+    expect(launcher).toContain('require.resolve("bun/package.json")');
+    expect(launcher).toContain("REAL_BUN_MIN_BYTES");
+    expect(launcher).not.toContain("spawnSync");
+    expect(launcher).not.toContain("install.js");
+    expect(launcher).toContain('child.kill("SIGKILL")');
+
+    const result = spawnSync(nodeExecutable, ["bin/ccx-server.mjs", "--help"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("CoCodex Server");
+    expect(result.stdout).toContain("cocodex-server init");
+    expect(result.stdout).toContain("Short alias: ccx-server");
+    expect(result.stderr).toBe("");
   });
 
   test("CoCodex client launcher uses the installed Bun dependency and public command", async () => {

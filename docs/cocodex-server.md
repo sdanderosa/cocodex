@@ -13,6 +13,19 @@ bun run build:cocodex-server
 dist\cocodex-server.exe --help
 ```
 
+For an npm installation of this repository, the public server commands are:
+
+```powershell
+cocodex-server --help
+ccx-server --help
+```
+
+Both commands launch only the separate headless Server entrypoint. They use the
+`bun` runtime installed as a pinned package dependency, never the CoCodex Client
+or inherited OpenCodex proxy. The launcher performs no first-run download and
+fails closed if package-install policy omitted Bun's lifecycle build or
+optional platform dependency.
+
 The default state directory is `%USERPROFILE%\.cocodex-server` (or
 `COCODEX_SERVER_HOME`). It contains the SQLite database, TLS certificate,
 server Ed25519 identity, configuration, and PID file. Keep it separate from
