@@ -61,12 +61,12 @@ export function updateSharedProjectContext(
     const revision = current.revision + 1;
     const updatedAt = now.toISOString();
     db.query(`INSERT INTO shared_project_context
-      (project_id, final_goal, context_json, revision, updated_by_device_id, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET final_goal = excluded.final_goal,
+      (project_id, chat_id, final_goal, context_json, revision, updated_by_device_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, chat_id) DO UPDATE SET final_goal = excluded.final_goal,
       context_json = excluded.context_json, revision = excluded.revision,
       updated_by_device_id = excluded.updated_by_device_id, updated_at = excluded.updated_at`)
-      .run(projectId, finalGoal, contextJson, revision, deviceId, updatedAt);
+      .run(projectId, projectId, finalGoal, contextJson, revision, deviceId, updatedAt);
     return { projectId, finalGoal, context, revision, updatedByDeviceId: deviceId, updatedAt };
   }).immediate();
 }

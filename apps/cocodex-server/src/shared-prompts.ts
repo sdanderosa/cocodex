@@ -58,11 +58,11 @@ export function applySharedPromptUpdate(
     const state = Y.encodeStateAsUpdate(document);
     if (state.byteLength > MAX_PROMPT_STATE_BYTES) throw new Error("Shared prompt state is too large");
     db.query(`INSERT INTO shared_prompt_updates
-      (update_id, project_id, sender_device_id, update_blob, accepted_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(updateId, projectId, deviceId, update, now.toISOString());
-    db.query(`INSERT INTO shared_prompt_documents (project_id, yjs_state, updated_at)
-      VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET yjs_state = excluded.yjs_state,
-      updated_at = excluded.updated_at`).run(projectId, state, now.toISOString());
+      (update_id, project_id, chat_id, sender_device_id, update_blob, accepted_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(updateId, projectId, projectId, deviceId, update, now.toISOString());
+    db.query(`INSERT INTO shared_prompt_documents (project_id, chat_id, yjs_state, updated_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(project_id, chat_id) DO UPDATE SET yjs_state = excluded.yjs_state,
+      updated_at = excluded.updated_at`).run(projectId, projectId, state, now.toISOString());
     return { update: encodedUpdate, created: true };
   }).immediate();
 }

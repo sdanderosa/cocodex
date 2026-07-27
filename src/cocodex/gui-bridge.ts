@@ -13,6 +13,9 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "project.list.result",
   "project.created",
   "project.changed",
+  "project.chat.list.result",
+  "project.chat.created",
+  "project.chat.changed",
   "project.member.list.result",
   "project.member.removed",
   "prompt.snapshot",
@@ -52,7 +55,8 @@ const SENSITIVE_RENDERER_KEYS = new Set([
   "envelopes",
 ]);
 const RENDERER_FRAME_FIELDS = new Set([
-  "version", "type", "requestId", "projectId",
+  "version", "type", "requestId", "projectId", "chatId",
+  "chats", "chat", "defaultChat", "creatorDeviceId", "createdByDeviceId", "state",
   "projects", "project", "members", "events", "event", "updates", "update",
   "context", "reports", "report", "agents", "tasks", "artifacts", "artifact",
   "references", "reference",
@@ -94,6 +98,8 @@ const ALLOWED_COMMANDS = new Set([
   "chat.send",
   "project.chat.subscribe",
   "project.chat.send",
+  "project.chat.list",
+  "project.chat.create",
   "prompt.subscribe",
   "prompt.update",
   "project.prompt.subscribe",

@@ -33,6 +33,12 @@ export function createProject(
       INSERT INTO project_members (project_id, device_id, role, joined_at)
       VALUES (?, ?, 'owner', ?)
     `).run(project.id, ownerDeviceId, now.toISOString());
+    db.query(`
+      INSERT INTO shared_chats (
+        id, project_id, title, created_by_device_id, state,
+        creation_nonce, created_at, updated_at
+      ) VALUES (?, ?, 'General', ?, 'active', NULL, ?, ?)
+    `).run(project.id, project.id, ownerDeviceId, now.toISOString(), now.toISOString());
   }).immediate();
   return project;
 }
@@ -183,9 +189,10 @@ export function appendChatEventResult(
   }
   const result = db.query(`
     INSERT INTO chat_events (
-      project_id, event_id, sender_device_id, content, client_created_at, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      project_id, chat_id, event_id, sender_device_id, content, client_created_at, accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
+    input.projectId,
     input.projectId,
     input.eventId,
     input.senderDeviceId,

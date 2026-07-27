@@ -131,6 +131,7 @@ describe("CoCodex protocol", () => {
       requestId: crypto.randomUUID(),
       referenceId,
       projectId,
+      chatId: projectId,
       artifactId,
       envelope,
     };
@@ -143,6 +144,7 @@ describe("CoCodex protocol", () => {
     const wrapper = {
       referenceId,
       projectId,
+      chatId: projectId,
       artifactId,
       hostDeviceId: deviceId,
       authorDeviceId: deviceId,
@@ -156,12 +158,14 @@ describe("CoCodex protocol", () => {
       type: "project.file-reference.list.result",
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       references: [wrapper],
     })).toBeTruthy();
     const plaintext = {
       version: 1 as const,
       referenceId,
       projectId,
+      chatId: projectId,
       artifactId,
       hostDeviceId: deviceId,
       relativePath: "reports/result.txt",
@@ -237,6 +241,7 @@ describe("CoCodex protocol", () => {
       type: "project.context.update" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       expectedRevision: 0,
       envelope: contentEnvelope,
     };
@@ -347,6 +352,7 @@ describe("CoCodex protocol", () => {
       type: "project.context.result" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       envelope: contentEnvelope,
       revision: 1,
       updatedAt: "2030-01-01T00:00:00.000Z",
@@ -416,6 +422,15 @@ describe("CoCodex protocol", () => {
       type: "project.created",
       requestId: createProject.requestId,
       project: projectList.projects[0],
+      defaultChat: {
+        id: projectId,
+        projectId,
+        title: "General",
+        createdByDeviceId: senderDeviceId,
+        state: "active",
+        createdAt: "2030-01-01T00:00:00.000Z",
+        updatedAt: "2030-01-01T00:00:00.000Z",
+      },
       keyEpoch: 1,
       envelopes: [keyEnvelope],
       created: true,
@@ -453,6 +468,7 @@ describe("CoCodex protocol", () => {
       type: "project.chat.send" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       eventId,
       envelope,
       clientCreatedAt: "2030-01-01T00:00:00.000Z",
@@ -461,6 +477,7 @@ describe("CoCodex protocol", () => {
     const event = {
       sequence: 1,
       projectId,
+      chatId: projectId,
       eventId,
       senderDeviceId,
       envelope,
@@ -472,6 +489,7 @@ describe("CoCodex protocol", () => {
       type: "project.chat.snapshot" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       events: [event],
     })).toMatchObject({ type: "project.chat.snapshot", events: [event] });
     expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.chat.event" as const, event }))
@@ -503,6 +521,7 @@ describe("CoCodex protocol", () => {
       type: "project.prompt.update" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       updateId,
       envelope,
     };
@@ -510,6 +529,7 @@ describe("CoCodex protocol", () => {
     const routed = {
       sequence: 1,
       projectId,
+      chatId: projectId,
       updateId,
       senderDeviceId,
       envelope,
@@ -520,6 +540,7 @@ describe("CoCodex protocol", () => {
       type: "project.prompt.snapshot" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       updates: [routed],
     })).toMatchObject({ type: "project.prompt.snapshot", updates: [routed] });
     expect(projectServerFrameSchema.parse({ version: 1 as const, type: "project.prompt.changed" as const, update: routed }))
@@ -550,6 +571,7 @@ describe("CoCodex protocol", () => {
       type: "project.artifact.publish" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       artifactId,
       taskId: null,
       envelope,
@@ -558,6 +580,7 @@ describe("CoCodex protocol", () => {
     const artifact = {
       artifactId,
       projectId,
+      chatId: projectId,
       taskId: null,
       authorDeviceId: senderDeviceId,
       envelope,
@@ -574,6 +597,7 @@ describe("CoCodex protocol", () => {
       type: "project.artifact.list.result" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       artifacts: [artifact],
     })).toMatchObject({ type: "project.artifact.list.result", artifacts: [artifact] });
     expect(() => clientFrameSchema.parse({ ...publish, envelope: { ...envelope, extra: true } })).toThrow();
@@ -606,6 +630,7 @@ describe("CoCodex protocol", () => {
       requestId: crypto.randomUUID(),
       taskId,
       projectId,
+      chatId: projectId,
       agentId: "kai-agent",
       nonce: "N".repeat(43),
       issuedAt: "2030-01-01T00:00:00.000Z",
@@ -620,6 +645,7 @@ describe("CoCodex protocol", () => {
     const task = {
       id: taskId,
       projectId,
+      chatId: projectId,
       requesterDeviceId,
       targetDeviceId,
       agentId: request.agentId,
@@ -653,6 +679,7 @@ describe("CoCodex protocol", () => {
       type: "project.agent.result" as const,
       requestId: crypto.randomUUID(),
       taskId,
+      chatId: projectId,
       eventId,
       envelope: resultEnvelope,
       final: true,
@@ -662,6 +689,7 @@ describe("CoCodex protocol", () => {
     const event = {
       sequence: 7,
       projectId,
+      chatId: projectId,
       taskId,
       eventId,
       senderDeviceId: targetDeviceId,
@@ -675,6 +703,7 @@ describe("CoCodex protocol", () => {
       version: 1 as const,
       type: "project.agent.result" as const,
       taskId,
+      chatId: projectId,
       final: true,
       status: "completed" as const,
       event,
@@ -683,6 +712,7 @@ describe("CoCodex protocol", () => {
       version: 1 as const,
       type: "project.agent.result" as const,
       taskId,
+      chatId: projectId,
       final: true,
       status: "completed" as const,
       event: { ...event, content: "plaintext must not be present" },
@@ -694,6 +724,7 @@ describe("CoCodex protocol", () => {
       type: "presence.update" as const,
       requestId: crypto.randomUUID(),
       projectId: crypto.randomUUID(),
+      chatId: null,
       cursor: { x: 0.25, y: 0.75 },
       caret: { anchor: 3, head: 8 },
       typing: true,
@@ -935,6 +966,7 @@ describe("CoCodex protocol", () => {
     const task = {
       id: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       agentId: "lucas",
       agentName: "Lucas",
       requesterDeviceId: crypto.randomUUID(),
@@ -959,12 +991,13 @@ describe("CoCodex protocol", () => {
       type: "agent.task.list.result" as const,
       requestId: crypto.randomUUID(),
       projectId,
+      chatId: projectId,
       tasks: [task],
     };
     expect(agentTaskListFrameSchema.parse(frame)).toEqual(frame);
     expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
     expect(clientFrameSchema.parse({
-      version: 1, type: "agent.task.list", requestId: crypto.randomUUID(), projectId,
+      version: 1, type: "agent.task.list", requestId: crypto.randomUUID(), projectId, chatId: projectId,
     })).toMatchObject({ type: "agent.task.list", projectId });
     const executionReport = {
       version: 1 as const,
@@ -972,6 +1005,7 @@ describe("CoCodex protocol", () => {
       requestId: crypto.randomUUID(),
       taskId: task.id,
       projectId,
+      chatId: projectId,
       agentId: task.agentId,
       workspaceMode: task.workspaceMode,
       workspaceRef: task.workspaceRef,
@@ -1011,22 +1045,23 @@ describe("CoCodex protocol", () => {
     const member = {
       deviceId,
       displayName: "Kai",
+      chatId: projectId,
       cursor: null,
       caret: { anchor: 2, head: 7 },
       typing: true,
       updatedAt,
     };
     expect(presenceSnapshotFrameSchema.parse({
-      version: 1, type: "presence.snapshot", projectId, members: [member],
+      version: 1, type: "presence.snapshot", projectId, chatId: projectId, members: [member],
     })).toMatchObject({ members: [member] });
     expect(presenceUpdateFrameSchema.parse({
       version: 1, type: "presence.update", projectId, ...member,
     })).toMatchObject(member);
     expect(presenceLeaveFrameSchema.parse({
-      version: 1, type: "presence.leave", projectId, deviceId,
-    })).toEqual({ version: 1, type: "presence.leave", projectId, deviceId });
+      version: 1, type: "presence.leave", projectId, chatId: projectId, deviceId,
+    })).toEqual({ version: 1, type: "presence.leave", projectId, chatId: projectId, deviceId });
     expect(presenceAcceptedFrameSchema.parse({
-      version: 1, type: "presence.accepted", requestId: crypto.randomUUID(), projectId,
+      version: 1, type: "presence.accepted", requestId: crypto.randomUUID(), projectId, chatId: projectId,
     })).toBeTruthy();
     expect(() => projectServerFrameSchema.parse({
       version: 1, type: "presence.update", projectId, ...member, extra: true,

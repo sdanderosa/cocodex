@@ -13,6 +13,7 @@ import {
   projectInvitationDecisionTranscript,
   projectInvitationSigningTranscript,
   projectKeyEnvelopeSigningTranscript,
+  sharedChatCreationSigningTranscript,
   websocketAuthTranscript,
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
@@ -192,8 +193,9 @@ function keyEnvelope(
 
 function contextEnvelope(projectId: string, sender: TestDevice, recordId = randomUUID()): ProjectContentEnvelope {
   const unsigned = {
-    version: 1 as const,
+    version: 2 as const,
     projectId,
+    chatId: projectId,
     keyEpoch: 1,
     recordType: "shared-context" as const,
     recordId,
@@ -208,10 +210,17 @@ function contextEnvelope(projectId: string, sender: TestDevice, recordId = rando
   };
 }
 
-function chatEnvelope(projectId: string, sender: TestDevice, eventId: string, text: string): ProjectContentEnvelope {
+function chatEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  eventId: string,
+  text: string,
+  chatId = projectId,
+): ProjectContentEnvelope {
   const unsigned = {
-    version: 1 as const,
+    version: 2 as const,
     projectId,
+    chatId,
     keyEpoch: 1,
     recordType: "chat" as const,
     recordId: eventId,
@@ -228,8 +237,9 @@ function chatEnvelope(projectId: string, sender: TestDevice, eventId: string, te
 
 function promptEnvelope(projectId: string, sender: TestDevice, updateId: string): ProjectContentEnvelope {
   const unsigned = {
-    version: 1 as const,
+    version: 2 as const,
     projectId,
+    chatId: projectId,
     keyEpoch: 1,
     recordType: "shared-prompt" as const,
     recordId: updateId,
@@ -251,8 +261,9 @@ function typedContentEnvelope(
   recordId: string,
 ): ProjectContentEnvelope {
   const unsigned = {
-    version: 1 as const,
+    version: 2 as const,
     projectId,
+    chatId: projectId,
     keyEpoch: 1,
     recordType,
     recordId,
@@ -467,10 +478,10 @@ describe("encrypted project WSS routing", () => {
     memberSocket.send(JSON.stringify({ version: 1, type: "project.key.share", requestId: randomUUID(), projectId: project.id, envelope: memberKey }));
     await expect(memberKeyError).rejects.toThrow("Only a project owner");
     const ownerInitialContext = nextFrame(ownerSocket, "project.context.result");
-    ownerSocket.send(JSON.stringify({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId: project.id }));
+    ownerSocket.send(JSON.stringify({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId: project.id, chatId: project.id }));
     expect((await ownerInitialContext).revision).toBe(0);
     const initialContext = nextFrame(memberSocket, "project.context.result");
-    memberSocket.send(JSON.stringify({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId: project.id }));
+    memberSocket.send(JSON.stringify({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId: project.id, chatId: project.id }));
     expect(await initialContext).toMatchObject({ projectId: project.id, envelope: null, revision: 0 });
     const firstContext = contextEnvelope(project.id, member);
     const contextChanged = nextFrame(ownerSocket, "project.context.changed");
@@ -482,6 +493,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.context.update",
       requestId: contextRequestId,
       projectId: project.id,
+      chatId: project.id,
       expectedRevision: 0,
       envelope: firstContext,
     }));
@@ -496,6 +508,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.context.update",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       expectedRevision: 0,
       envelope: staleContext,
     }));
@@ -508,6 +521,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.context.update",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       expectedRevision: 1,
       envelope: secondContext,
     }));
@@ -519,6 +533,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.context.update",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       expectedRevision: 1,
       envelope: secondContext,
     }));
@@ -598,6 +613,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.context.update",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       expectedRevision: 2,
       envelope: secondContext,
     }));
@@ -669,6 +685,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.chat.subscribe",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       afterSequence: 0,
     }));
     subscribe(ownerSocket);
@@ -686,6 +703,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.chat.send",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       eventId,
       envelope,
       clientCreatedAt: new Date().toISOString(),
@@ -705,6 +723,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.prompt.subscribe",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       afterSequence: 0,
     }));
     subscribePrompt(ownerSocket);
@@ -721,6 +740,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.prompt.update",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       updateId,
       envelope: prompt,
     }));
@@ -740,11 +760,127 @@ describe("encrypted project WSS routing", () => {
       type: "project.chat.send",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
       eventId: tamperedEventId,
       envelope: { ...tampered, recordId: tamperedEventId },
       clientCreatedAt: new Date().toISOString(),
     }));
     expect(await error).toMatchObject({ error: expect.stringContaining("signature") });
+  }, 15_000);
+
+  test("creates multiple authoritative chats and isolates encrypted history by chat", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-multi-chat-wss-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const owner = approvedDevice(db, fingerprint, "Stephen");
+    const member = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Multiple chats", owner.id);
+    addProjectMember(db, project.id, owner.id, member.id);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const ownerSocket = await connect(server.port, owner, fingerprint);
+    const memberSocket = await connect(server.port, member, fingerprint);
+    const keyAccepted = nextFrame(ownerSocket, "project.key.accepted");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.key.share",
+      requestId: randomUUID(),
+      projectId: project.id,
+      envelope: keyEnvelope(project.id, owner, member.id),
+    }));
+    await keyAccepted;
+
+    const chatId = randomUUID();
+    const requestId = randomUUID();
+    const title = "Launch planning";
+    const nonce = randomBytes(32).toString("base64url");
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const signature = sign(null, sharedChatCreationSigningTranscript({
+      projectId: project.id,
+      chatId,
+      title,
+      creatorDeviceId: owner.id,
+      nonce,
+      issuedAt,
+      expiresAt,
+    }), owner.privateKey).toString("base64url");
+    const created = nextFrame(ownerSocket, "project.chat.created");
+    const changed = nextFrame(memberSocket, "project.chat.changed");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.create",
+      requestId,
+      projectId: project.id,
+      chatId,
+      title,
+      nonce,
+      issuedAt,
+      expiresAt,
+      signature,
+    }));
+    expect(await created).toMatchObject({ requestId, chat: { id: chatId, projectId: project.id, title } });
+    expect(await changed).toMatchObject({ chat: { id: chatId, title } });
+
+    const generalSnapshot = nextFrame(memberSocket, "project.chat.snapshot");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId: project.id,
+      afterSequence: 0,
+    }));
+    expect((await generalSnapshot).events).toEqual([]);
+
+    const ownerSnapshot = nextFrame(ownerSocket, "project.chat.snapshot");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId,
+      afterSequence: 0,
+    }));
+    expect((await ownerSnapshot).events).toEqual([]);
+    const eventId = randomUUID();
+    const envelope = chatEnvelope(project.id, owner, eventId, "chat-bound secret", chatId);
+    const accepted = nextFrame(ownerSocket, "project.chat.accepted");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.send",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId,
+      eventId,
+      envelope,
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    await accepted;
+
+    const memberChatSnapshot = nextFrame(memberSocket, "project.chat.snapshot");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.subscribe",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId,
+      afterSequence: 0,
+    }));
+    const chatEvents = (await memberChatSnapshot).events as Array<Record<string, unknown>>;
+    expect(chatEvents).toHaveLength(1);
+    expect(chatEvents[0]).toMatchObject({ projectId: project.id, chatId, eventId, envelope });
+    expect(db.query(`
+      SELECT chat_id AS chatId FROM project_chat_events WHERE event_id = ?
+    `).get(eventId)).toEqual({ chatId });
   }, 15_000);
 
   test("publishes and lists opaque file references over authenticated WSS", async () => {
@@ -780,6 +916,7 @@ describe("encrypted project WSS routing", () => {
     publishEncryptedArtifact(db, {
       artifactId,
       projectId: project.id,
+      chatId: project.id,
       taskId: null,
       authorDeviceId: owner.id,
       envelope: typedContentEnvelope(project.id, owner, "artifact", artifactId),
@@ -791,12 +928,14 @@ describe("encrypted project WSS routing", () => {
       type: "project.file-reference.list",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
     }));
     memberSocket.send(JSON.stringify({
       version: 1,
       type: "project.file-reference.list",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
     }));
     expect((await ownerList).references).toEqual([]);
     expect((await memberList).references).toEqual([]);
@@ -811,6 +950,7 @@ describe("encrypted project WSS routing", () => {
       requestId: randomUUID(),
       referenceId,
       projectId: project.id,
+      chatId: project.id,
       artifactId,
       envelope,
     }));
@@ -824,6 +964,7 @@ describe("encrypted project WSS routing", () => {
       type: "project.file-reference.list",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
     }));
     expect((await recovery).references).toHaveLength(1);
   }, 15_000);

@@ -17,6 +17,9 @@ import {
   projectInvitationCreatedFrameSchema,
   projectInvitationListResultFrameSchema,
   projectInvitationRespondedFrameSchema,
+  sharedChatChangedFrameSchema,
+  sharedChatCreatedFrameSchema,
+  sharedChatListResultFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   privateContactSnapshotFrameSchema,
   privateAcceptedFrameSchema,
@@ -64,6 +67,11 @@ import {
   listProjectInvitations,
   respondToProjectInvitation,
 } from "./project-invitations";
+import {
+  createSharedChat,
+  listSharedChats,
+  requireSharedChat,
+} from "./shared-chats";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
@@ -103,6 +111,10 @@ const MAX_PROJECT_CREATIONS_PER_MINUTE = 12;
 const MAX_PRESENCE_MEMBERS = 128;
 const PRESENCE_TTL_MS = 15_000;
 
+function chatScopeKey(projectId: string, chatId: string): string {
+  return `${projectId}:${chatId}`;
+}
+
 interface SocketData {
   challenge: string;
   authenticatedDeviceId?: string;
@@ -133,6 +145,7 @@ interface DeviceAuthRow {
 interface PresenceState {
   deviceId: string;
   displayName: string;
+  chatId: string | null;
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
   typing: boolean;
@@ -347,78 +360,82 @@ export function startCoCodexServer(
     }
   }
 
-  function sendToEncryptedChat(projectId: string, frame: unknown): void {
+  function sendToEncryptedChat(projectId: string, chatId: string, frame: unknown): void {
+    const scope = chatScopeKey(projectId, chatId);
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedEncryptedChats.has(projectId)) continue;
+      if (!deviceId || !socket.data.subscribedEncryptedChats.has(scope)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
         continue;
       }
       try {
-        requireProjectMembership(db, projectId, deviceId);
+        requireSharedChat(db, projectId, chatId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedEncryptedChats.delete(projectId);
+        socket.data.subscribedEncryptedChats.delete(scope);
       }
     }
   }
 
-  function sendToEncryptedPrompt(projectId: string, frame: unknown): void {
+  function sendToEncryptedPrompt(projectId: string, chatId: string, frame: unknown): void {
+    const scope = chatScopeKey(projectId, chatId);
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedEncryptedPrompts.has(projectId)) continue;
+      if (!deviceId || !socket.data.subscribedEncryptedPrompts.has(scope)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
         continue;
       }
       try {
-        requireProjectMembership(db, projectId, deviceId);
+        requireSharedChat(db, projectId, chatId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedEncryptedPrompts.delete(projectId);
+        socket.data.subscribedEncryptedPrompts.delete(scope);
       }
     }
   }
 
-  function sendToEncryptedArtifact(projectId: string, frame: unknown): void {
+  function sendToEncryptedArtifact(projectId: string, chatId: string, frame: unknown): void {
+    const scope = chatScopeKey(projectId, chatId);
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedEncryptedArtifacts.has(projectId)) continue;
+      if (!deviceId || !socket.data.subscribedEncryptedArtifacts.has(scope)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
         continue;
       }
       try {
-        requireProjectMembership(db, projectId, deviceId);
+        requireSharedChat(db, projectId, chatId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedEncryptedArtifacts.delete(projectId);
+        socket.data.subscribedEncryptedArtifacts.delete(scope);
       }
     }
   }
 
-  function sendToEncryptedFileReference(projectId: string, frame: unknown): void {
+  function sendToEncryptedFileReference(projectId: string, chatId: string, frame: unknown): void {
+    const scope = chatScopeKey(projectId, chatId);
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedEncryptedFileReferences.has(projectId)) continue;
+      if (!deviceId || !socket.data.subscribedEncryptedFileReferences.has(scope)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
         continue;
       }
       try {
-        requireProjectMembership(db, projectId, deviceId);
+        requireSharedChat(db, projectId, chatId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedEncryptedFileReferences.delete(projectId);
+        socket.data.subscribedEncryptedFileReferences.delete(scope);
       }
     }
   }
@@ -461,21 +478,22 @@ export function startCoCodexServer(
     }
   }
 
-  function sendToEncryptedContext(projectId: string, frame: unknown): void {
+  function sendToEncryptedContext(projectId: string, chatId: string, frame: unknown): void {
+    const scope = chatScopeKey(projectId, chatId);
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedEncryptedContexts.has(projectId)) continue;
+      if (!deviceId || !socket.data.subscribedEncryptedContexts.has(scope)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
         continue;
       }
       try {
-        requireProjectMembership(db, projectId, deviceId);
+        requireSharedChat(db, projectId, chatId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedEncryptedContexts.delete(projectId);
+        socket.data.subscribedEncryptedContexts.delete(scope);
       }
     }
   }
@@ -524,8 +542,14 @@ export function startCoCodexServer(
     }
   }
 
-  function sendPresenceSnapshot(socket: ServerWebSocket<SocketData>, projectId: string, requestId: string, deviceId: string): void {
-    requireProjectMembership(db, projectId, deviceId);
+  function sendPresenceSnapshot(
+    socket: ServerWebSocket<SocketData>,
+    projectId: string,
+    chatId: string,
+    requestId: string,
+    deviceId: string,
+  ): void {
+    requireSharedChat(db, projectId, chatId, deviceId);
     socket.data.subscribedPresenceProjects.add(projectId);
     prunePresence();
     socket.send(JSON.stringify(presenceSnapshotFrameSchema.parse({
@@ -533,8 +557,12 @@ export function startCoCodexServer(
       type: "presence.snapshot",
       requestId,
       projectId,
+      chatId,
       members: [...(presenceByProject.get(projectId)?.values() ?? [])]
         .filter(member => member.deviceId !== deviceId)
+        .map(member => member.chatId === chatId
+          ? member
+          : { ...member, cursor: null, caret: null, typing: false })
         .slice(0, MAX_PRESENCE_MEMBERS),
     })));
   }
@@ -547,7 +575,7 @@ export function startCoCodexServer(
   function clearProjectPresence(projectId: string, deviceId: string): void {
     const members = presenceByProject.get(projectId);
     if (!members?.delete(deviceId)) return;
-    sendPresence(projectId, { version: 1, type: "presence.leave", projectId, deviceId });
+    sendPresence(projectId, { version: 1, type: "presence.leave", projectId, chatId: null, deviceId });
     if (members.size === 0) {
       presenceByProject.delete(projectId);
       presenceProjectUpdateTimes.delete(projectId);
@@ -827,6 +855,7 @@ export function startCoCodexServer(
               type: "project.created",
               requestId,
               project: created.project,
+              defaultChat: created.defaultChat,
               keyEpoch: created.keyEpoch,
               envelopes: created.envelopes,
               created: created.created,
@@ -848,6 +877,45 @@ export function startCoCodexServer(
                   envelope,
                 });
               }
+            }
+            return;
+          }
+          if (message.type === "project.chat.list") {
+            socket.send(JSON.stringify(sharedChatListResultFrameSchema.parse({
+              version: 1,
+              type: "project.chat.list.result",
+              requestId,
+              projectId: message.projectId,
+              chats: listSharedChats(db, message.projectId, deviceId),
+            })));
+            return;
+          }
+          if (message.type === "project.chat.create") {
+            const result = createSharedChat(db, {
+              projectId: message.projectId,
+              chatId: message.chatId,
+              title: message.title,
+              creatorDeviceId: deviceId,
+              nonce: message.nonce,
+              issuedAt: message.issuedAt,
+              expiresAt: message.expiresAt,
+              signature: message.signature,
+            });
+            socket.send(JSON.stringify(sharedChatCreatedFrameSchema.parse({
+              version: 1,
+              type: "project.chat.created",
+              requestId,
+              projectId: message.projectId,
+              chat: result.chat,
+              created: result.created,
+            })));
+            if (result.created) {
+              sendToProjectMembers(message.projectId, sharedChatChangedFrameSchema.parse({
+                version: 1,
+                type: "project.chat.changed",
+                projectId: message.projectId,
+                chat: result.chat,
+              }));
             }
             return;
           }
@@ -1018,12 +1086,14 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "agent.task.list") {
-            const tasks = listAgentTasks(db, message.projectId, deviceId);
+            const tasks = listAgentTasks(db, message.projectId, deviceId)
+              .filter(task => (task.chatId ?? task.projectId) === message.chatId);
             socket.send(JSON.stringify(agentTaskListFrameSchema.parse({
               version: 1,
               type: "agent.task.list.result",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               tasks,
             })));
             return;
@@ -1035,6 +1105,7 @@ export function startCoCodexServer(
             const accepted = acceptAgentExecutionReport(db, deviceId, {
               taskId: message.taskId,
               projectId: message.projectId,
+              chatId: message.chatId,
               agentId: message.agentId,
               workspaceMode: message.workspaceMode,
               workspaceRef: message.workspaceRef,
@@ -1054,14 +1125,21 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.chat.subscribe") {
-            const events = encryptedChatEventsAfter(db, message.projectId, deviceId, message.afterSequence);
-            socket.data.subscribedEncryptedChats.add(message.projectId);
-            sendPresenceSnapshot(socket, message.projectId, requestId, deviceId);
+            const events = encryptedChatEventsAfter(
+              db,
+              message.projectId,
+              message.chatId,
+              deviceId,
+              message.afterSequence,
+            );
+            socket.data.subscribedEncryptedChats.add(chatScopeKey(message.projectId, message.chatId));
+            sendPresenceSnapshot(socket, message.projectId, message.chatId, requestId, deviceId);
             socket.send(JSON.stringify({
               version: 1,
               type: "project.chat.snapshot",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               events,
             }));
             return;
@@ -1069,21 +1147,23 @@ export function startCoCodexServer(
           if (message.type === "project.chat.send") {
             const appended = appendEncryptedChatEventResult(db, {
               projectId: message.projectId,
+              chatId: message.chatId,
               eventId: message.eventId,
               senderDeviceId: deviceId,
               envelope: message.envelope,
               clientCreatedAt: message.clientCreatedAt,
             });
-            socket.data.subscribedEncryptedChats.add(message.projectId);
+            socket.data.subscribedEncryptedChats.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.chat.accepted",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               event: appended.event,
             }));
             if (appended.created) {
-              sendToEncryptedChat(message.projectId, {
+              sendToEncryptedChat(message.projectId, message.chatId, {
                 version: 1,
                 type: "project.chat.event",
                 event: appended.event,
@@ -1092,13 +1172,20 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.prompt.subscribe") {
-            const updates = encryptedPromptUpdatesAfter(db, message.projectId, deviceId, message.afterSequence);
-            socket.data.subscribedEncryptedPrompts.add(message.projectId);
+            const updates = encryptedPromptUpdatesAfter(
+              db,
+              message.projectId,
+              message.chatId,
+              deviceId,
+              message.afterSequence,
+            );
+            socket.data.subscribedEncryptedPrompts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.prompt.snapshot",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               updates,
             }));
             return;
@@ -1106,20 +1193,22 @@ export function startCoCodexServer(
           if (message.type === "project.prompt.update") {
             const appended = appendEncryptedPromptUpdateResult(db, {
               projectId: message.projectId,
+              chatId: message.chatId,
               updateId: message.updateId,
               senderDeviceId: deviceId,
               envelope: message.envelope,
             });
-            socket.data.subscribedEncryptedPrompts.add(message.projectId);
+            socket.data.subscribedEncryptedPrompts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.prompt.accepted",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               update: appended.update,
             }));
             if (appended.created) {
-              sendToEncryptedPrompt(message.projectId, {
+              sendToEncryptedPrompt(message.projectId, message.chatId, {
                 version: 1,
                 type: "project.prompt.changed",
                 update: appended.update,
@@ -1131,20 +1220,22 @@ export function startCoCodexServer(
             const published = publishEncryptedArtifact(db, {
               artifactId: message.artifactId,
               projectId: message.projectId,
+              chatId: message.chatId,
               taskId: message.taskId,
               authorDeviceId: deviceId,
               envelope: message.envelope,
             });
-            socket.data.subscribedEncryptedArtifacts.add(message.projectId);
+            socket.data.subscribedEncryptedArtifacts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.artifact.accepted",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               artifact: published.artifact,
             }));
             if (published.created) {
-              sendToEncryptedArtifact(message.projectId, {
+              sendToEncryptedArtifact(message.projectId, message.chatId, {
                 version: 1,
                 type: "project.artifact.published",
                 artifact: published.artifact,
@@ -1153,13 +1244,14 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.artifact.list") {
-            socket.data.subscribedEncryptedArtifacts.add(message.projectId);
+            socket.data.subscribedEncryptedArtifacts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.artifact.list.result",
               requestId,
               projectId: message.projectId,
-              artifacts: listEncryptedArtifacts(db, message.projectId, deviceId),
+              chatId: message.chatId,
+              artifacts: listEncryptedArtifacts(db, message.projectId, message.chatId, deviceId),
             }));
             return;
           }
@@ -1167,20 +1259,22 @@ export function startCoCodexServer(
             const published = publishEncryptedFileReference(db, {
               referenceId: message.referenceId,
               projectId: message.projectId,
+              chatId: message.chatId,
               artifactId: message.artifactId,
               authorDeviceId: deviceId,
               envelope: message.envelope,
             });
-            socket.data.subscribedEncryptedFileReferences.add(message.projectId);
+            socket.data.subscribedEncryptedFileReferences.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.file-reference.accepted",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               reference: published.reference,
             }));
             if (published.created) {
-              sendToEncryptedFileReference(message.projectId, {
+              sendToEncryptedFileReference(message.projectId, message.chatId, {
                 version: 1,
                 type: "project.file-reference.published",
                 reference: published.reference,
@@ -1189,13 +1283,14 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.file-reference.list") {
-            socket.data.subscribedEncryptedFileReferences.add(message.projectId);
+            socket.data.subscribedEncryptedFileReferences.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.file-reference.list.result",
               requestId,
               projectId: message.projectId,
-              references: listEncryptedFileReferences(db, message.projectId, deviceId),
+              chatId: message.chatId,
+              references: listEncryptedFileReferences(db, message.projectId, message.chatId, deviceId),
             }));
             return;
           }
@@ -1211,7 +1306,7 @@ export function startCoCodexServer(
               projectId: message.projectId,
               events,
             }));
-            sendPresenceSnapshot(socket, message.projectId, requestId, deviceId);
+            sendPresenceSnapshot(socket, message.projectId, message.projectId, requestId, deviceId);
             return;
           }
           if (message.type === "agent.cancel") {
@@ -1292,6 +1387,7 @@ export function startCoCodexServer(
             const member = {
               deviceId,
               displayName: currentDevice.displayName,
+              chatId: message.chatId,
               cursor: message.cursor,
               caret: message.caret,
               typing: message.typing,
@@ -1326,10 +1422,17 @@ export function startCoCodexServer(
                 version: 1,
                 type: "presence.leave",
                 projectId: message.projectId,
+                chatId: message.chatId,
                 deviceId,
               });
             }
-            socket.send(JSON.stringify(presenceAcceptedFrameSchema.parse({ version: 1, type: "presence.accepted", requestId, projectId: message.projectId })));
+            socket.send(JSON.stringify(presenceAcceptedFrameSchema.parse({
+              version: 1,
+              type: "presence.accepted",
+              requestId,
+              projectId: message.projectId,
+              chatId: message.chatId,
+            })));
             return;
           }
           if (message.type === "prompt.subscribe") {
@@ -1631,13 +1734,14 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.context.get") {
-            const record = getEncryptedProjectContext(db, message.projectId, deviceId);
-            socket.data.subscribedEncryptedContexts.add(message.projectId);
+            const record = getEncryptedProjectContext(db, message.projectId, message.chatId, deviceId);
+            socket.data.subscribedEncryptedContexts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.context.result",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               envelope: record?.envelope ?? null,
               revision: record?.revision ?? 0,
               updatedAt: record?.updatedAt ?? null,
@@ -1648,26 +1752,29 @@ export function startCoCodexServer(
             const updated = updateEncryptedProjectContext(
               db,
               message.projectId,
+              message.chatId,
               deviceId,
               message.expectedRevision,
               message.envelope,
             );
-            socket.data.subscribedEncryptedContexts.add(message.projectId);
+            socket.data.subscribedEncryptedContexts.add(chatScopeKey(message.projectId, message.chatId));
             socket.send(JSON.stringify({
               version: 1,
               type: "project.context.updated",
               requestId,
               projectId: message.projectId,
+              chatId: message.chatId,
               envelope: updated.envelope,
               revision: updated.revision,
               created: updated.created,
               updatedAt: updated.updatedAt,
             }));
             if (updated.created) {
-              sendToEncryptedContext(message.projectId, {
+              sendToEncryptedContext(message.projectId, message.chatId, {
                 version: 1,
                 type: "project.context.changed",
                 projectId: message.projectId,
+                chatId: message.chatId,
                 envelope: updated.envelope,
                 revision: updated.revision,
                 updatedAt: updated.updatedAt,
@@ -1734,6 +1841,7 @@ export function startCoCodexServer(
             const { task, created } = createAgentTask(db, identity, {
               id: message.taskId,
               projectId: message.projectId,
+              chatId: message.chatId,
               requesterDeviceId: deviceId,
               agentId: message.agentId,
               prompt: message.prompt,
@@ -1764,6 +1872,7 @@ export function startCoCodexServer(
             const { task, created } = createEncryptedAgentTask(db, identity, {
               id: message.taskId,
               projectId: message.projectId,
+              chatId: message.chatId,
               requesterDeviceId: deviceId,
               agentId: message.agentId,
               nonce: message.nonce,
@@ -1838,6 +1947,7 @@ export function startCoCodexServer(
             }
             const result = appendEncryptedAgentResult(db, {
               taskId: message.taskId,
+              chatId: message.chatId,
               eventId: message.eventId,
               targetDeviceId: deviceId,
               envelope: message.envelope,
@@ -1845,7 +1955,7 @@ export function startCoCodexServer(
               status: message.status,
             });
             if (result.created) {
-              sendToEncryptedChat(result.task.projectId, {
+              sendToEncryptedChat(result.task.projectId, result.task.chatId, {
                 version: 1,
                 type: "project.agent.result",
                 taskId: result.task.id,

@@ -49,9 +49,18 @@ import {
   projectInvitationRespondedFrameSchema,
   projectInvitationRespondFrameSchema,
 } from "./project-invitation";
+import {
+  sharedChatChangedFrameSchema,
+  sharedChatCreateFrameSchema,
+  sharedChatCreatedFrameSchema,
+  sharedChatListFrameSchema,
+  sharedChatListResultFrameSchema,
+  sharedChatSchema,
+} from "./shared-chat";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const deviceId = z.uuid();
 const privateMessageId = z.uuid();
 const deviceFingerprint = z.string().regex(
@@ -188,6 +197,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   projectInvitationListFrameSchema,
   projectInvitationRespondFrameSchema,
   projectInvitationCancelFrameSchema,
+  sharedChatCreateFrameSchema,
+  sharedChatListFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("device.key-certificate.publish"),
@@ -221,6 +232,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("agent.task.list"),
     requestId,
     projectId,
+    chatId,
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -228,6 +240,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     requestId,
     taskId: z.uuid(),
     projectId,
+    chatId,
     agentId: z.string().trim().min(1).max(120),
     workspaceMode: z.enum(["shared", "git-worktree"]),
     workspaceRef: z.string().trim().min(1).max(500),
@@ -259,6 +272,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     requestId,
     taskId: z.uuid(),
     projectId,
+    chatId,
     agentId: z.string().trim().min(1).max(120),
     prompt: z.string().min(1).max(32_768),
     nonce: z.string().min(32).max(128),
@@ -322,6 +336,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("presence.update"),
     requestId,
     projectId,
+    chatId: chatId.nullable(),
     cursor: cursorPosition.nullable(),
     caret: textCaret.nullable(),
     typing: z.boolean().default(false),
@@ -442,12 +457,14 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("project.context.get"),
     requestId,
     projectId,
+    chatId,
   }).strict(),
   z.object({
     version: z.literal(1),
     type: z.literal("project.context.update"),
     requestId,
     projectId,
+    chatId,
     expectedRevision: z.number().int().nonnegative(),
     envelope: projectContentEnvelopeSchema,
   }).strict(),
@@ -565,6 +582,7 @@ export const projectCreatedFrameSchema = z.object({
   type: z.literal("project.created"),
   requestId,
   project: sharedProjectSchema,
+  defaultChat: sharedChatSchema,
   keyEpoch: z.literal(1),
   envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
   created: z.boolean(),
@@ -644,6 +662,7 @@ export const agentReadyAcceptedFrameSchema = z.object({
 export const agentTaskViewSchema = z.object({
   id: z.uuid(),
   projectId,
+  chatId,
   agentId: z.string().trim().min(1).max(120),
   agentName: z.string().trim().min(1).max(120),
   requesterDeviceId: z.uuid(),
@@ -677,6 +696,7 @@ export const agentTaskListFrameSchema = z.object({
   type: z.literal("agent.task.list.result"),
   requestId,
   projectId,
+  chatId,
   tasks: z.array(agentTaskViewSchema).max(256),
 }).strict();
 
@@ -685,6 +705,7 @@ export const projectContextResultFrameSchema = z.object({
   type: z.literal("project.context.result"),
   requestId,
   projectId,
+  chatId,
   envelope: projectContentEnvelopeSchema.nullable(),
   revision: z.number().int().nonnegative(),
   updatedAt: z.iso.datetime().nullable(),
@@ -695,6 +716,7 @@ export const projectContextUpdatedFrameSchema = z.object({
   type: z.literal("project.context.updated"),
   requestId,
   projectId,
+  chatId,
   envelope: projectContentEnvelopeSchema,
   revision: z.number().int().positive(),
   created: z.boolean(),
@@ -705,6 +727,7 @@ export const projectContextChangedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("project.context.changed"),
   projectId,
+  chatId,
   envelope: projectContentEnvelopeSchema,
   revision: z.number().int().positive(),
   updatedAt: z.iso.datetime(),
@@ -713,6 +736,7 @@ export const projectContextChangedFrameSchema = z.object({
 const presenceMemberSchema = z.object({
   deviceId: z.uuid(),
   displayName: z.string().trim().min(1).max(80),
+  chatId: chatId.nullable(),
   cursor: cursorPosition.nullable(),
   caret: textCaret.nullable(),
   typing: z.boolean().default(false),
@@ -724,6 +748,7 @@ export const presenceSnapshotFrameSchema = z.object({
   type: z.literal("presence.snapshot"),
   requestId: requestId.optional(),
   projectId,
+  chatId,
   members: z.array(presenceMemberSchema).max(128),
 }).strict();
 
@@ -732,6 +757,7 @@ export const presenceUpdateFrameSchema = z.object({
   type: z.literal("presence.update"),
   requestId: requestId.optional(),
   projectId,
+  chatId: chatId.nullable(),
   deviceId: z.uuid(),
   displayName: z.string().trim().min(1).max(80),
   cursor: cursorPosition.nullable(),
@@ -745,6 +771,7 @@ export const presenceLeaveFrameSchema = z.object({
   type: z.literal("presence.leave"),
   requestId: requestId.optional(),
   projectId,
+  chatId: chatId.nullable(),
   deviceId: z.uuid(),
 }).strict();
 
@@ -753,6 +780,7 @@ export const presenceAcceptedFrameSchema = z.object({
   type: z.literal("presence.accepted"),
   requestId,
   projectId,
+  chatId: chatId.nullable(),
 }).strict();
 
 export const projectServerFrameSchema = z.discriminatedUnion("type", [
@@ -763,6 +791,9 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectInvitationCreatedFrameSchema,
   projectInvitationChangedFrameSchema,
   projectInvitationRespondedFrameSchema,
+  sharedChatListResultFrameSchema,
+  sharedChatCreatedFrameSchema,
+  sharedChatChangedFrameSchema,
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
   encryptedChatEventFrameSchema,
@@ -893,6 +924,7 @@ export type ProjectContextChangedFrame = z.infer<typeof projectContextChangedFra
 export const agentTaskSchema = z.object({
   id: z.uuid(),
   projectId,
+  chatId,
   requesterDeviceId: z.uuid(),
   targetDeviceId: z.uuid(),
   agentId: z.string().trim().min(1).max(120),
@@ -932,6 +964,7 @@ export interface SharedProject {
 export interface ChatEvent {
   sequence: number;
   projectId: string;
+  chatId?: string;
   eventId: string;
   senderDeviceId: string;
   content: string;
@@ -942,6 +975,7 @@ export interface ChatEvent {
 export interface AgentTask {
   id: string;
   projectId: string;
+  chatId?: string;
   requesterDeviceId: string;
   targetDeviceId: string;
   agentId: string;
@@ -964,6 +998,7 @@ export type ArtifactStatus = "draft" | "ready" | "accepted" | "rejected" | "supe
 export interface Artifact {
   id: string;
   projectId: string;
+  chatId?: string;
   taskId: string | null;
   authorDeviceId: string;
   type: ArtifactType;

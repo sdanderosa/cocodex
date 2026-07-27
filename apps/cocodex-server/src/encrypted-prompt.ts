@@ -6,13 +6,14 @@ import {
   projectContentSigningTranscript,
   type ProjectContentEnvelope,
 } from "../../../packages/cocodex-protocol/src/index.ts";
-import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
+import { requireSharedChat } from "./shared-chats";
 
 /** Opaque, ordered Yjs updates. The server never applies the Yjs payload. */
 export interface EncryptedPromptUpdate {
   sequence: number;
   projectId: string;
+  chatId: string;
   updateId: string;
   senderDeviceId: string;
   envelope: ProjectContentEnvelope;
@@ -21,6 +22,7 @@ export interface EncryptedPromptUpdate {
 
 export interface AppendEncryptedPromptInput {
   projectId: string;
+  chatId: string;
   updateId: string;
   senderDeviceId: string;
   envelope: unknown;
@@ -35,6 +37,7 @@ interface DeviceKeyRow { publicKeyPem: string }
 interface UpdateRow {
   sequence: number;
   projectId: string;
+  chatId: string;
   updateId: string;
   senderDeviceId: string;
   envelopeJson: string;
@@ -80,6 +83,7 @@ function updateFromRow(row: UpdateRow): EncryptedPromptUpdate {
   return {
     sequence: row.sequence,
     projectId: row.projectId,
+    chatId: row.chatId,
     updateId: row.updateId,
     senderDeviceId: row.senderDeviceId,
     envelope: parseEnvelope(row.envelopeJson),
@@ -92,9 +96,11 @@ export function appendEncryptedPromptUpdateResult(
   input: AppendEncryptedPromptInput,
   now = new Date(),
 ): AppendEncryptedPromptResult {
-  requireProjectMembership(db, input.projectId, input.senderDeviceId);
+  requireSharedChat(db, input.projectId, input.chatId, input.senderDeviceId);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
+  if (envelope.version !== 2) throw new Error("New encrypted prompt updates require a chat-bound content envelope");
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted prompt belongs to another project");
+  if (envelope.chatId !== input.chatId) throw new Error("Encrypted prompt belongs to another shared chat");
   if (envelope.recordType !== "shared-prompt") throw new Error("Encrypted prompt envelope must use the shared-prompt record type");
   if (envelope.recordId !== input.updateId) throw new Error("Encrypted prompt record ID must match the update ID");
   if (envelope.senderDeviceId !== input.senderDeviceId) throw new Error("Encrypted prompt sender does not match the authenticated device");
@@ -103,23 +109,24 @@ export function appendEncryptedPromptUpdateResult(
   verifySender(db, input.senderDeviceId, envelope);
   const serialized = envelopeJson(envelope);
   const existing = db.query(`
-    SELECT sequence, project_id AS projectId, update_id AS updateId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
     FROM project_prompt_updates WHERE update_id = ?
   `).get(input.updateId) as UpdateRow | null;
   if (existing) {
-    if (existing.projectId !== input.projectId || existing.senderDeviceId !== input.senderDeviceId || existing.envelopeJson !== serialized) {
+    if (existing.projectId !== input.projectId || existing.chatId !== input.chatId
+      || existing.senderDeviceId !== input.senderDeviceId || existing.envelopeJson !== serialized) {
       throw new Error("Encrypted prompt update ID was already used with different content");
     }
     return { update: updateFromRow(existing), created: false };
   }
   const result = db.query(`
     INSERT INTO project_prompt_updates (
-      project_id, update_id, sender_device_id, envelope_json, accepted_at
-    ) VALUES (?, ?, ?, ?, ?)
-  `).run(input.projectId, input.updateId, input.senderDeviceId, serialized, now.toISOString());
+      project_id, chat_id, update_id, sender_device_id, envelope_json, accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(input.projectId, input.chatId, input.updateId, input.senderDeviceId, serialized, now.toISOString());
   const row = db.query(`
-    SELECT sequence, project_id AS projectId, update_id AS updateId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
     FROM project_prompt_updates WHERE sequence = ?
   `).get(Number(result.lastInsertRowid)) as UpdateRow;
@@ -129,18 +136,19 @@ export function appendEncryptedPromptUpdateResult(
 export function encryptedPromptUpdatesAfter(
   db: Database,
   projectId: string,
+  chatId: string,
   deviceId: string,
   afterSequence: number,
   limit = 500,
 ): EncryptedPromptUpdate[] {
-  requireProjectMembership(db, projectId, deviceId);
+  requireSharedChat(db, projectId, chatId, deviceId);
   const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
   const rows = db.query(`
-    SELECT sequence, project_id AS projectId, update_id AS updateId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
     FROM project_prompt_updates
-    WHERE project_id = ? AND sequence > ?
+    WHERE project_id = ? AND chat_id = ? AND sequence > ?
     ORDER BY sequence ASC LIMIT ?
-  `).all(projectId, afterSequence, boundedLimit) as UpdateRow[];
+  `).all(projectId, chatId, afterSequence, boundedLimit) as UpdateRow[];
   return rows.map(updateFromRow);
 }

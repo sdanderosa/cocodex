@@ -12,9 +12,9 @@ import {
   type ProjectContentEnvelope,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import type { ServerIdentity } from "./identity";
-import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { encryptedArtifactsByIds } from "./encrypted-artifacts";
+import { requireSharedChat } from "./shared-chats";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_TASK_LIFETIME_MS = 5 * 60_000;
@@ -24,6 +24,7 @@ const ENCRYPTED_PROMPT_PLACEHOLDER = "[encrypted]" as const;
 export interface CreateEncryptedAgentTaskInput {
   id: string;
   projectId: string;
+  chatId?: string;
   requesterDeviceId: string;
   agentId: string;
   nonce: string;
@@ -37,6 +38,7 @@ export interface CreateEncryptedAgentTaskInput {
 
 export interface AppendEncryptedAgentResultInput {
   taskId: string;
+  chatId?: string;
   eventId: string;
   targetDeviceId: string;
   envelope: unknown;
@@ -59,6 +61,7 @@ interface DeviceKeyRow { publicKeyPem: string; status: string; }
 interface TaskRow {
   id: string;
   projectId: string;
+  chatId: string;
   requesterDeviceId: string;
   targetDeviceId: string;
   agentId: string;
@@ -79,6 +82,7 @@ interface TaskRow {
 interface EventRow {
   sequence: number;
   projectId: string;
+  chatId: string;
   taskId: string;
   eventId: string;
   senderDeviceId: string;
@@ -112,7 +116,13 @@ function normalizeArtifactIds(value: string[] | undefined): string[] {
   return artifactIds;
 }
 
-function rejectDependencyCycle(db: Database, projectId: string, taskId: string, dependencies: string[]): void {
+function rejectDependencyCycle(
+  db: Database,
+  projectId: string,
+  chatId: string,
+  taskId: string,
+  dependencies: string[],
+): void {
   const pending = [...dependencies];
   const visited = new Set<string>();
   while (pending.length > 0) {
@@ -122,10 +132,13 @@ function rejectDependencyCycle(db: Database, projectId: string, taskId: string, 
     visited.add(dependencyId);
     if (visited.size > 4_096) throw new Error("Task dependency graph is too large");
     const row = db.query(`
-      SELECT project_id AS projectId, dependencies_json AS dependenciesJson
+      SELECT project_id AS projectId, chat_id AS chatId, dependencies_json AS dependenciesJson
       FROM agent_tasks WHERE id = ?
-    `).get(dependencyId) as { projectId: string; dependenciesJson: string } | null;
-    if (!row || row.projectId !== projectId) continue;
+    `).get(dependencyId) as { projectId: string; chatId: string; dependenciesJson: string } | null;
+    if (!row) continue;
+    if (row.projectId !== projectId || row.chatId !== chatId) {
+      throw new Error("Task dependency graph crosses a shared-chat boundary");
+    }
     pending.push(...parseDependencies(row.dependenciesJson));
   }
 }
@@ -136,8 +149,15 @@ function envelopeJson(value: ProjectContentEnvelope): string {
   ));
 }
 
-function parseEnvelope(value: string): ProjectContentEnvelope {
-  try { return projectContentEnvelopeSchema.parse(JSON.parse(value)); }
+function parseEnvelope(value: string, projectId: string, chatId: string): ProjectContentEnvelope {
+  try {
+    const envelope = projectContentEnvelopeSchema.parse(JSON.parse(value));
+    if (envelope.projectId !== projectId
+      || (envelope.version === 1 ? chatId !== projectId : envelope.chatId !== chatId)) {
+      throw new Error("Stored encrypted agent envelope is not bound to its shared chat");
+    }
+    return envelope;
+  }
   catch { throw new Error("Stored encrypted agent envelope is invalid"); }
 }
 
@@ -168,17 +188,18 @@ function taskFromRow(db: Database, row: TaskRow): EncryptedAgentTask {
   return encryptedAgentTaskSchema.parse({
     id: row.id,
     projectId: row.projectId,
+    chatId: row.chatId,
     requesterDeviceId: row.requesterDeviceId,
     targetDeviceId: row.targetDeviceId,
     agentId: row.agentId,
     prompt: ENCRYPTED_PROMPT_PLACEHOLDER,
-    promptEnvelope: parseEnvelope(row.promptEnvelopeJson),
+    promptEnvelope: parseEnvelope(row.promptEnvelopeJson, row.projectId, row.chatId),
     nonce: row.nonce,
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
     dependencies: parseDependencies(row.dependenciesJson),
     inputArtifactIds,
-    inputArtifacts: encryptedArtifactsByIds(db, row.projectId, inputArtifactIds),
+    inputArtifacts: encryptedArtifactsByIds(db, row.projectId, row.chatId, inputArtifactIds),
     ...(row.privateShareMessageId ? { privateShareMessageId: row.privateShareMessageId } : {}),
     requesterSignature: row.requesterSignature,
     requesterPublicKeyPem: row.requesterPublicKeyPem,
@@ -190,7 +211,8 @@ function taskFromRow(db: Database, row: TaskRow): EncryptedAgentTask {
 
 function readTask(db: Database, id: string): TaskRow | null {
   return db.query(`
-    SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+    SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId,
+      t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt,
       t.prompt_envelope_json AS promptEnvelopeJson, t.nonce, t.issued_at AS issuedAt,
       t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
@@ -205,6 +227,7 @@ function readTask(db: Database, id: string): TaskRow | null {
 
 function sameTaskRequest(task: EncryptedAgentTask, input: CreateEncryptedAgentTaskInput, envelope: ProjectContentEnvelope, dependencies: string[], inputArtifactIds: string[]): boolean {
   return task.projectId === input.projectId && task.requesterDeviceId === input.requesterDeviceId
+    && task.chatId === (input.chatId ?? input.projectId)
     && task.agentId === input.agentId && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
     && JSON.stringify(task.dependencies) === JSON.stringify(dependencies)
@@ -219,11 +242,14 @@ export function createEncryptedAgentTask(
   input: CreateEncryptedAgentTaskInput,
   now = new Date(),
 ): { task: EncryptedAgentTask; created: boolean } {
-  requireProjectMembership(db, input.projectId, input.requesterDeviceId);
+  const chatId = input.chatId ?? input.projectId;
+  requireSharedChat(db, input.projectId, chatId, input.requesterDeviceId);
   const dependencies = normalizeDependencies(input.dependencies, input.id);
   const inputArtifactIds = normalizeArtifactIds(input.inputArtifactIds);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
+  if (input.chatId !== undefined && envelope.version !== 2) throw new Error("Encrypted agent prompt must use a chat-bound v2 envelope");
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted agent prompt belongs to another project");
+  if (envelope.version === 2 && envelope.chatId !== chatId) throw new Error("Encrypted agent prompt belongs to another shared chat");
   if (envelope.recordType !== "task") throw new Error("Encrypted agent prompt must use the task record type");
   if (envelope.recordId !== input.id) throw new Error("Encrypted agent prompt record ID must match the task ID");
   if (envelope.senderDeviceId !== input.requesterDeviceId) throw new Error("Encrypted agent prompt sender does not match the requester");
@@ -250,12 +276,15 @@ export function createEncryptedAgentTask(
     .get(input.agentId) as AgentRow | null;
   if (!agent || agent.projectId !== input.projectId || agent.enabled !== 1) throw new Error("Agent is not available in this project");
   for (const dependencyId of dependencies) {
-    const dependency = db.query("SELECT project_id AS projectId FROM agent_tasks WHERE id = ?").get(dependencyId) as { projectId: string } | null;
-    if (!dependency || dependency.projectId !== input.projectId) throw new Error("Task dependency was not found in this project");
+    const dependency = db.query("SELECT project_id AS projectId, chat_id AS chatId FROM agent_tasks WHERE id = ?")
+      .get(dependencyId) as { projectId: string; chatId: string } | null;
+    if (!dependency || dependency.projectId !== input.projectId || dependency.chatId !== chatId) {
+      throw new Error("Task dependency was not found in this shared chat");
+    }
   }
-  rejectDependencyCycle(db, input.projectId, input.id, dependencies);
-  encryptedArtifactsByIds(db, input.projectId, inputArtifactIds);
-  requireProjectMembership(db, input.projectId, agent.hostDeviceId);
+  rejectDependencyCycle(db, input.projectId, chatId, input.id, dependencies);
+  encryptedArtifactsByIds(db, input.projectId, chatId, inputArtifactIds);
+  requireSharedChat(db, input.projectId, chatId, agent.hostDeviceId);
   if (agent.hostDeviceId === input.requesterDeviceId && !input.privateShareMessageId) {
     throw new Error("Remote agent must be hosted by another device");
   }
@@ -270,6 +299,7 @@ export function createEncryptedAgentTask(
   const unsigned = {
     taskId: input.id,
     projectId: input.projectId,
+    chatId,
     agentId: input.agentId,
     nonce: input.nonce,
     issuedAt: input.issuedAt,
@@ -291,11 +321,11 @@ export function createEncryptedAgentTask(
   const serverSignature = signDispatch(identity.privateKeyPem, unsigned);
   const acceptedAt = now.toISOString();
   db.query(`INSERT INTO agent_tasks (
-    id, project_id, requester_device_id, target_device_id, agent_id, prompt,
+    id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt,
     prompt_envelope_json, nonce, issued_at, expires_at, requester_signature,
     server_signature, status, accepted_at, dependencies_json, input_artifact_ids_json, private_share_message_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`).run(
-    input.id, input.projectId, input.requesterDeviceId, agent.hostDeviceId, input.agentId,
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`).run(
+    input.id, input.projectId, chatId, input.requesterDeviceId, agent.hostDeviceId, input.agentId,
     ENCRYPTED_PROMPT_PLACEHOLDER, envelopeJson(envelope), input.nonce, input.issuedAt,
     input.expiresAt, envelope.signature, serverSignature, acceptedAt, JSON.stringify(dependencies),
     JSON.stringify(inputArtifactIds), input.privateShareMessageId ?? null,
@@ -310,7 +340,8 @@ function signDispatch(privateKeyPem: string, input: Parameters<typeof agentEncry
 export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string, now = new Date(), agentId?: string): EncryptedAgentTask[] {
   const agentFilter = agentId ? " AND t.agent_id = ?" : "";
   const rows = db.query(`
-    SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+    SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId,
+      t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt,
       t.prompt_envelope_json AS promptEnvelopeJson, t.nonce, t.issued_at AS issuedAt,
       t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
@@ -324,6 +355,9 @@ export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string,
       AND a.project_id = t.project_id
       AND a.host_device_id = t.target_device_id
       AND a.enabled = 1
+    JOIN shared_chats c ON c.id = t.chat_id
+      AND c.project_id = t.project_id
+      AND c.state = 'active'
     WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NOT NULL
       AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.target_device_id)
       AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.requester_device_id)
@@ -332,7 +366,10 @@ export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string,
     ORDER BY t.accepted_at, t.id
   `).all(targetDeviceId, now.toISOString(), ...(agentId ? [agentId] : [])) as TaskRow[];
   return rows.map(row => taskFromRow(db, row)).filter(task => task.dependencies.every(dependencyId => {
-    const dependency = db.query("SELECT status FROM agent_tasks WHERE id = ?").get(dependencyId) as { status: string } | null;
+    const dependency = db.query(`
+      SELECT status FROM agent_tasks
+      WHERE id = ? AND project_id = ? AND chat_id = ?
+    `).get(dependencyId, task.projectId, task.chatId) as { status: string } | null;
     return dependency?.status === "completed";
   }));
 }
@@ -356,7 +393,7 @@ export function cancelEncryptedAgentTask(
   if (row.requesterDeviceId !== actorDeviceId && row.targetDeviceId !== actorDeviceId) {
     throw new Error("Only the requester or host device can cancel this task");
   }
-  requireProjectMembership(db, row.projectId, actorDeviceId);
+  requireSharedChat(db, row.projectId, row.chatId, actorDeviceId);
   if (row.status === "completed" || row.status === "failed") {
     throw new Error("Agent task is already final");
   }
@@ -367,10 +404,11 @@ function resultFromRow(row: EventRow): EncryptedAgentResultEvent {
   return encryptedAgentResultEventSchema.parse({
     sequence: row.sequence,
     projectId: row.projectId,
+    chatId: row.chatId,
     taskId: row.taskId,
     eventId: row.eventId,
     senderDeviceId: row.senderDeviceId,
-    envelope: parseEnvelope(row.envelopeJson),
+    envelope: parseEnvelope(row.envelopeJson, row.projectId, row.chatId),
     final: Boolean(row.final),
     status: row.status,
     clientCreatedAt: row.clientCreatedAt,
@@ -385,12 +423,15 @@ export function appendEncryptedAgentResult(
 ): AppendEncryptedAgentResultOutput {
   const taskRow = readTask(db, input.taskId);
   if (!taskRow || taskRow.targetDeviceId !== input.targetDeviceId) throw new Error("Encrypted agent task is not assigned to this device");
-  requireProjectMembership(db, taskRow.projectId, input.targetDeviceId);
+  if (taskRow.chatId !== (input.chatId ?? taskRow.projectId)) throw new Error("Encrypted agent task belongs to another shared chat");
+  requireSharedChat(db, taskRow.projectId, taskRow.chatId, input.targetDeviceId);
   if (input.final !== (input.status === "completed" || input.status === "failed")) {
     throw new Error("Encrypted agent result final flag and status disagree");
   }
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
+  if (input.chatId !== undefined && envelope.version !== 2) throw new Error("Encrypted agent result must use a chat-bound v2 envelope");
   if (envelope.projectId !== taskRow.projectId) throw new Error("Encrypted agent result belongs to another project");
+  if (envelope.version === 2 && envelope.chatId !== taskRow.chatId) throw new Error("Encrypted agent result belongs to another shared chat");
   if (envelope.recordType !== "agent-response") throw new Error("Encrypted agent result must use the agent-response record type");
   if (envelope.recordId !== input.eventId) throw new Error("Encrypted agent result record ID must match the event ID");
   if (envelope.senderDeviceId !== input.targetDeviceId) throw new Error("Encrypted agent result sender does not match the host device");
@@ -399,13 +440,15 @@ export function appendEncryptedAgentResult(
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
     const existing = db.query(`
-      SELECT sequence, project_id AS projectId, task_id AS taskId, event_id AS eventId,
+      SELECT sequence, project_id AS projectId, chat_id AS chatId,
+        task_id AS taskId, event_id AS eventId,
         sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
         final, status, client_created_at AS clientCreatedAt, accepted_at AS acceptedAt
       FROM project_chat_events WHERE event_id = ?
     `).get(input.eventId) as EventRow | null;
     if (existing) {
-      if (existing.projectId !== taskRow.projectId || existing.taskId !== input.taskId
+      if (existing.projectId !== taskRow.projectId || existing.chatId !== taskRow.chatId
+        || existing.taskId !== input.taskId
         || existing.senderDeviceId !== input.targetDeviceId || existing.envelopeJson !== serialized
         || Boolean(existing.final) !== input.final || existing.status !== input.status) {
         throw new Error("Encrypted agent result event ID was reused with different content");
@@ -415,16 +458,17 @@ export function appendEncryptedAgentResult(
     if (taskRow.status === "completed" || taskRow.status === "failed") throw new Error("Encrypted agent task is already final");
     const acceptedAt = now.toISOString();
     const result = db.query(`INSERT INTO project_chat_events (
-      project_id, event_id, sender_device_id, envelope_json, client_created_at,
+      project_id, chat_id, event_id, sender_device_id, envelope_json, client_created_at,
       accepted_at, task_id, final, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      taskRow.projectId, input.eventId, input.targetDeviceId, serialized, acceptedAt,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      taskRow.projectId, taskRow.chatId, input.eventId, input.targetDeviceId, serialized, acceptedAt,
       acceptedAt, input.taskId, input.final ? 1 : 0, input.status,
     );
     db.query(`UPDATE agent_tasks SET status = ?, completed_at = CASE WHEN ? THEN ? ELSE completed_at END WHERE id = ?`)
       .run(input.status, input.final ? 1 : 0, acceptedAt, input.taskId);
     const row = db.query(`
-      SELECT sequence, project_id AS projectId, task_id AS taskId, event_id AS eventId,
+      SELECT sequence, project_id AS projectId, chat_id AS chatId,
+        task_id AS taskId, event_id AS eventId,
         sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
         final, status, client_created_at AS clientCreatedAt, accepted_at AS acceptedAt
       FROM project_chat_events WHERE sequence = ?

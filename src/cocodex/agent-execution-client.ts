@@ -16,6 +16,7 @@ export function reportAgentExecution(
   const unsigned = {
     taskId: task.id,
     projectId: task.projectId,
+    chatId: task.chatId ?? task.projectId,
     agentId: task.agentId,
     workspaceMode: workspace.mode,
     workspaceRef: workspace.workspaceRef,

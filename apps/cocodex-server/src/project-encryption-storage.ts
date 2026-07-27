@@ -9,13 +9,16 @@ import {
   projectKeyEnvelopeSigningTranscript,
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
+  type SharedChat,
   type SharedProject,
 } from "../../../packages/cocodex-protocol/src/index.ts";
+import { PROJECT_CONTENT_ENCRYPTION_VERSION } from "../../../packages/cocodex-protocol/src/project-encryption.ts";
 import { removeProjectMember as removeMembership, requireProjectMembership } from "./shared-state";
 import {
   expirePendingProjectInvitationsBeforeEpoch,
   expirePendingProjectInvitationsForProject,
 } from "./project-invitations";
+import { generalSharedChat, insertGeneralSharedChat, requireSharedChat } from "./shared-chats";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -26,6 +29,7 @@ interface KeyEnvelopeRow {
 }
 
 interface ContextRow {
+  chatId: string;
   envelopeJson: string;
   revision: number;
   updatedAt: string;
@@ -45,6 +49,7 @@ export interface ProjectKeyEnvelopeWriteResult {
 
 export interface EncryptedProjectContextRecord {
   projectId: string;
+  chatId: string;
   envelope: ProjectContentEnvelope;
   revision: number;
   updatedAt: string;
@@ -76,6 +81,7 @@ export interface ProjectKeyInitializationResult extends ProjectKeyEpochRecord {
 
 export interface EncryptedProjectCreationResult {
   project: SharedProject;
+  defaultChat: SharedChat;
   keyEpoch: 1;
   envelopes: ProjectKeyEnvelope[];
   created: boolean;
@@ -550,6 +556,7 @@ export function createEncryptedProject(
       }
       return {
         project: { id: projectId, name: normalizedName, role: "owner" as const },
+        defaultChat: generalSharedChat(db, projectId),
         keyEpoch: 1 as const,
         envelopes,
         created: false,
@@ -572,6 +579,7 @@ export function createEncryptedProject(
         INSERT INTO projects (id, name, created_by_device_id, created_at)
         VALUES (?, ?, ?, ?)
       `).run(projectId, normalizedName, ownerDeviceId, timestamp);
+      insertGeneralSharedChat(db, projectId, ownerDeviceId, timestamp);
       for (const recipientDeviceId of [...recipientIds].sort()) {
         db.query(`
           INSERT INTO project_members (project_id, device_id, role, joined_at)
@@ -625,6 +633,7 @@ export function createEncryptedProject(
     );
     return {
       project: { id: projectId, name: normalizedName, role: "owner" as const },
+      defaultChat: generalSharedChat(db, projectId),
       keyEpoch: 1 as const,
       envelopes: initialized.envelopes,
       created,
@@ -1072,18 +1081,34 @@ export function listProjectKeyEnvelopesForDevice(
 export function getEncryptedProjectContext(
   db: Database,
   projectId: string,
-  deviceId: string,
+  chatIdOrDeviceId: string,
+  maybeDeviceId?: string,
 ): EncryptedProjectContextRecord | null {
-  requireProjectMembership(db, projectId, deviceId);
+  const chatId = maybeDeviceId ? chatIdOrDeviceId : projectId;
+  const deviceId = maybeDeviceId ?? chatIdOrDeviceId;
+  requireSharedChat(db, projectId, chatId, deviceId);
   const row = db.query(`
-    SELECT envelope_json AS envelopeJson, revision, updated_at AS updatedAt
+    SELECT chat_id AS chatId, envelope_json AS envelopeJson,
+      revision, updated_at AS updatedAt
     FROM encrypted_project_context
-    WHERE project_id = ?
-  `).get(projectId) as ContextRow | null;
+    WHERE project_id = ? AND chat_id = ?
+  `).get(projectId, chatId) as ContextRow | null;
   if (!row) return null;
+  const envelope = parseContextEnvelope(row.envelopeJson);
+  if (envelope.version === 1) {
+    // Version-1 envelopes had no chat binding.  Migration places those
+    // records in the project's General chat; never make an unbound record
+    // readable from a newly-created chat.
+    if (chatId !== projectId || row.chatId !== projectId) {
+      throw new Error("Legacy encrypted project context is only supported for the General chat");
+    }
+  } else if (envelope.chatId !== chatId || row.chatId !== chatId) {
+    throw new Error("Stored encrypted project context belongs to another chat");
+  }
   return {
     projectId,
-    envelope: parseContextEnvelope(row.envelopeJson),
+    chatId,
+    envelope,
     revision: row.revision,
     updatedAt: row.updatedAt,
   };
@@ -1092,18 +1117,31 @@ export function getEncryptedProjectContext(
 export function updateEncryptedProjectContext(
   db: Database,
   projectId: string,
-  senderDeviceId: string,
-  expectedRevision: number,
-  value: unknown,
-  now = new Date(),
+  chatIdOrSenderDeviceId: string,
+  senderDeviceIdOrExpectedRevision: string | number,
+  expectedRevisionOrValue: number | unknown,
+  valueOrNow?: unknown,
+  maybeNow?: Date,
 ): EncryptedProjectContextWriteResult {
+  const chatScoped = typeof senderDeviceIdOrExpectedRevision === "string";
+  const chatId = chatScoped ? chatIdOrSenderDeviceId : projectId;
+  const senderDeviceId = chatScoped ? senderDeviceIdOrExpectedRevision : chatIdOrSenderDeviceId;
+  const expectedRevision = chatScoped
+    ? expectedRevisionOrValue as number
+    : senderDeviceIdOrExpectedRevision;
+  const value = chatScoped ? valueOrNow : expectedRevisionOrValue;
+  const now = (chatScoped ? maybeNow : valueOrNow instanceof Date ? valueOrNow : undefined) ?? new Date();
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
     throw new Error("Invalid encrypted project context revision");
   }
   const envelope = projectContentEnvelopeSchema.parse(value);
   if (envelope.projectId !== projectId) throw new Error("Encrypted project context belongs to another project");
+  if (chatScoped && envelope.version !== PROJECT_CONTENT_ENCRYPTION_VERSION) {
+    throw new Error("Encrypted project context writes require a chat-bound version 2 envelope");
+  }
+  if (envelope.version === 2 && envelope.chatId !== chatId) throw new Error("Encrypted project context belongs to another chat");
   if (envelope.recordType !== "shared-context") throw new Error("Project context envelope must use the shared-context record type");
-  requireProjectMembership(db, projectId, senderDeviceId);
+  requireSharedChat(db, projectId, chatId, senderDeviceId);
   const currentEpoch = currentProjectKeyEpochForWrite(db, projectId);
   if (envelope.keyEpoch !== currentEpoch) {
     throw new Error(`Encrypted project context must use the current project key epoch ${currentEpoch}`);
@@ -1119,16 +1157,21 @@ export function updateEncryptedProjectContext(
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
     const existing = db.query(`
-      SELECT envelope_json AS envelopeJson, revision, updated_at AS updatedAt
+      SELECT chat_id AS chatId, envelope_json AS envelopeJson,
+        revision, updated_at AS updatedAt
       FROM encrypted_project_context
-      WHERE project_id = ?
-    `).get(projectId) as ContextRow | null;
+      WHERE project_id = ? AND chat_id = ?
+    `).get(projectId, chatId) as ContextRow | null;
     if (existing) {
       const prior = parseContextEnvelope(existing.envelopeJson);
+      if ((prior.version === 2 && prior.chatId !== chatId) || existing.chatId !== chatId) {
+        throw new Error("Stored encrypted project context belongs to another chat");
+      }
       if (prior.recordId === envelope.recordId) {
         if (existing.envelopeJson === serialized) {
           return {
             projectId,
+            chatId,
             envelope: prior,
             revision: existing.revision,
             updatedAt: existing.updatedAt,
@@ -1147,10 +1190,10 @@ export function updateEncryptedProjectContext(
     const updatedAt = now.toISOString();
     db.query(`
       INSERT INTO encrypted_project_context (
-        project_id, key_epoch, record_id, sender_device_id, envelope_json,
+        project_id, chat_id, key_epoch, record_id, sender_device_id, envelope_json,
         revision, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, chat_id) DO UPDATE SET
         key_epoch = excluded.key_epoch,
         record_id = excluded.record_id,
         sender_device_id = excluded.sender_device_id,
@@ -1159,6 +1202,7 @@ export function updateEncryptedProjectContext(
         updated_at = excluded.updated_at
     `).run(
       projectId,
+      chatId,
       envelope.keyEpoch,
       envelope.recordId,
       envelope.senderDeviceId,
@@ -1169,7 +1213,8 @@ export function updateEncryptedProjectContext(
     );
     // Once an encrypted context revision is accepted, remove any legacy
     // plaintext projection so migration cannot leave a second readable copy.
-    db.query("DELETE FROM shared_project_context WHERE project_id = ?").run(projectId);
-    return { projectId, envelope, revision, updatedAt, created: true };
+    db.query("DELETE FROM shared_project_context WHERE project_id = ? AND chat_id = ?")
+      .run(projectId, chatId);
+    return { projectId, chatId, envelope, revision, updatedAt, created: true };
   }).immediate();
 }

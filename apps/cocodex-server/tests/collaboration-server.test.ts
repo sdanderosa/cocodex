@@ -446,6 +446,7 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId,
       projectId: project.id,
+      chatId: project.id,
       agentId,
       prompt,
       nonce,
@@ -454,6 +455,7 @@ describe("authenticated WSS collaboration", () => {
       signature: sign(null, agentRequestSigningTranscript({
         taskId,
         projectId: project.id,
+        chatId: project.id,
         agentId,
         prompt,
         nonce,
@@ -542,6 +544,7 @@ describe("authenticated WSS collaboration", () => {
       type: "agent.task.list",
       requestId: randomUUID(),
       projectId: project.id,
+      chatId: project.id,
     }));
     expect((await emptyTaskList).tasks).toEqual([]);
     for (const socket of [stephenSocket, kaiSocket]) {
@@ -788,6 +791,7 @@ describe("authenticated WSS collaboration", () => {
     const kaiSignature = sign(null, agentRequestSigningTranscript({
       taskId: kaiTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "local-codex",
       prompt: "Inspect authentication.",
       nonce: kaiNonce,
@@ -802,6 +806,7 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId: kaiTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "local-codex",
       prompt: "Inspect authentication.",
       nonce: kaiNonce,
@@ -811,10 +816,15 @@ describe("authenticated WSS collaboration", () => {
     }));
     expect((await taskAtStephen).task).toMatchObject({
       id: kaiTaskId,
+      chatId: project.id,
       requesterDeviceId: kai.id,
       targetDeviceId: stephen.id,
     });
-    expect((await acceptedAtKai).task).toMatchObject({ id: kaiTaskId, status: "queued" });
+    expect((await acceptedAtKai).task).toMatchObject({
+      id: kaiTaskId,
+      chatId: project.id,
+      status: "queued",
+    });
     const resultAtKai = nextFrame(reconnectedKai, "agent.result");
     stephenSocket.send(JSON.stringify({
       version: 1,
@@ -835,9 +845,11 @@ describe("authenticated WSS collaboration", () => {
     const completedTaskList = nextFrame(stephenSocket, "agent.task.list.result");
     stephenSocket.send(JSON.stringify({
       version: 1, type: "agent.task.list", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
     }));
     expect((await completedTaskList).tasks).toEqual([expect.objectContaining({
       id: kaiTaskId,
+      chatId: project.id,
       agentName: "Stephen's Codex",
       status: "completed",
       dependencies: [],
@@ -877,6 +889,7 @@ describe("authenticated WSS collaboration", () => {
     const stephenSignature = sign(null, agentRequestSigningTranscript({
       taskId: stephenTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "kai-codex",
       prompt: "Run the reciprocal check.",
       nonce: stephenNonce,
@@ -891,6 +904,7 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId: stephenTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "kai-codex",
       prompt: "Run the reciprocal check.",
       nonce: stephenNonce,
@@ -901,6 +915,7 @@ describe("authenticated WSS collaboration", () => {
     }));
     expect((await taskAtKai).task).toMatchObject({
       id: stephenTaskId,
+      chatId: project.id,
       requesterDeviceId: stephen.id,
       targetDeviceId: kai.id,
     });
@@ -923,9 +938,11 @@ describe("authenticated WSS collaboration", () => {
     const runningTaskList = nextFrame(stephenSocket, "agent.task.list.result");
     stephenSocket.send(JSON.stringify({
       version: 1, type: "agent.task.list", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
     }));
     expect((await runningTaskList).tasks).toEqual(expect.arrayContaining([expect.objectContaining({
       id: stephenTaskId,
+      chatId: project.id,
       status: "running",
       dependencies: [kaiTaskId],
       eventCount: 1,
@@ -974,6 +991,7 @@ describe("authenticated WSS collaboration", () => {
     const remotePresence = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 }, typing: true,
     }));
     const presenceUpdate = await remotePresence;
@@ -984,6 +1002,7 @@ describe("authenticated WSS collaboration", () => {
     const typingOnly = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: null, caret: null, typing: true,
     }));
     expect(await typingOnly).toMatchObject({
@@ -992,12 +1011,14 @@ describe("authenticated WSS collaboration", () => {
     const presenceLeave = nextFrame(reconnectedKai, "presence.leave", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: null, caret: null, typing: false,
     }));
     expect(await presenceLeave).toEqual({
       version: 1,
       type: "presence.leave",
       projectId: project.id,
+      chatId: project.id,
       deviceId: stephen.id,
     });
     await Bun.sleep(1_600);
@@ -1082,6 +1103,7 @@ describe("authenticated WSS collaboration", () => {
     const cancelSignature = sign(null, agentRequestSigningTranscript({
       taskId: cancelTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "kai-codex",
       prompt: "This request will be cancelled.",
       nonce: cancelNonce,
@@ -1092,7 +1114,7 @@ describe("authenticated WSS collaboration", () => {
     const cancellationResultAtStephen = nextFrame(restartedStephen, "agent.result", frame => frame.taskId === cancelTaskId);
     restartedStephen.send(JSON.stringify({
       version: 1, type: "agent.request", requestId: randomUUID(), taskId: cancelTaskId,
-      projectId: project.id, agentId: "kai-codex", prompt: "This request will be cancelled.",
+      projectId: project.id, chatId: project.id, agentId: "kai-codex", prompt: "This request will be cancelled.",
       nonce: cancelNonce, issuedAt: cancelIssuedAt, expiresAt: cancelExpiresAt, signature: cancelSignature,
     }));
     expect((await nextFrame(restartedKai, "agent.task")).task).toMatchObject({ id: cancelTaskId });
@@ -1113,6 +1135,7 @@ describe("authenticated WSS collaboration", () => {
     const expiringSignature = sign(null, agentRequestSigningTranscript({
       taskId: expiringTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "kai-codex",
       prompt: "This request should expire before execution.",
       nonce: expiringNonce,
@@ -1126,6 +1149,7 @@ describe("authenticated WSS collaboration", () => {
       requestId: randomUUID(),
       taskId: expiringTaskId,
       projectId: project.id,
+      chatId: project.id,
       agentId: "kai-codex",
       prompt: "This request should expire before execution.",
       nonce: expiringNonce,
@@ -1291,14 +1315,16 @@ describe("authenticated WSS collaboration", () => {
     const stephenSnapshot = nextFrame(stephenSocket, "project.chat.snapshot");
     const stephenPresence = nextFrame(stephenSocket, "presence.snapshot");
     stephenSocket.send(JSON.stringify({
-      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, afterSequence: 0,
     }));
-    expect((await stephenSnapshot).events).toEqual([]);
+    expect(await stephenSnapshot).toMatchObject({ chatId: project.id, events: [] });
     expect((await stephenPresence).members).toEqual([]);
 
     const initialPresence = nextFrame(stephenSocket, "presence.accepted");
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: { x: 0.18, y: 0.61 }, caret: { anchor: 6, head: 6 }, typing: false,
     }));
     await initialPresence;
@@ -1307,9 +1333,10 @@ describe("authenticated WSS collaboration", () => {
     const kaiSnapshot = nextFrame(kaiSocket, "project.chat.snapshot");
     const kaiPresence = nextFrame(kaiSocket, "presence.snapshot");
     kaiSocket.send(JSON.stringify({
-      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, afterSequence: 0,
     }));
-    expect((await kaiSnapshot).events).toEqual([]);
+    expect(await kaiSnapshot).toMatchObject({ chatId: project.id, events: [] });
     expect((await kaiPresence).members).toEqual([expect.objectContaining({
       deviceId: stephen.id,
       cursor: { x: 0.18, y: 0.61 },
@@ -1320,6 +1347,7 @@ describe("authenticated WSS collaboration", () => {
     const typingOnly = nextFrame(kaiSocket, "presence.update", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: null, caret: null, typing: true,
     }));
     expect(await typingOnly).toMatchObject({ deviceId: stephen.id, cursor: null, caret: null, typing: true });
@@ -1328,7 +1356,8 @@ describe("authenticated WSS collaboration", () => {
     const duplicateSnapshot = nextFrame(duplicateStephen, "project.chat.snapshot");
     const duplicatePresence = nextFrame(duplicateStephen, "presence.snapshot");
     duplicateStephen.send(JSON.stringify({
-      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, afterSequence: 0,
     }));
     await duplicateSnapshot;
     expect((await duplicatePresence).members).toEqual([]);
@@ -1337,13 +1366,15 @@ describe("authenticated WSS collaboration", () => {
     await originalClosed;
     const retainedPresence = nextFrame(kaiSocket, "presence.snapshot");
     kaiSocket.send(JSON.stringify({
-      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id, afterSequence: 0,
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, afterSequence: 0,
     }));
     expect((await retainedPresence).members).toEqual([expect.objectContaining({ deviceId: stephen.id, typing: true })]);
 
     const kaiPresenceUpdate = nextFrame(duplicateStephen, "presence.update", frame => frame.deviceId === kai.id);
     kaiSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id,
       cursor: null, caret: { anchor: 1, head: 4 }, typing: false,
     }));
     expect(await kaiPresenceUpdate).toMatchObject({ deviceId: kai.id, caret: { anchor: 1, head: 4 } });

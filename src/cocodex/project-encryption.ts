@@ -13,6 +13,7 @@ import {
   type ProjectRecordType,
   PROJECT_CONTENT_NONCE_BYTES,
   PROJECT_CONTENT_MAX_BYTES,
+  PROJECT_CONTENT_ENCRYPTION_VERSION,
   PROJECT_ENCRYPTION_VERSION,
   PROJECT_KEY_BYTES,
 } from "../../packages/cocodex-protocol/src/index.ts";
@@ -48,6 +49,7 @@ export interface OpenProjectKeyEnvelopeInput {
 
 export interface SealProjectContentInput {
   projectId: string;
+  chatId?: string;
   keyEpoch: number;
   recordType: ProjectRecordType;
   recordId: string;
@@ -62,11 +64,13 @@ export interface OpenProjectContentInput {
   envelope: ProjectContentEnvelope;
   projectKey: Uint8Array;
   expectedProjectId?: string;
+  expectedChatId?: string;
   expectedKeyEpoch?: number;
   expectedRecordType?: ProjectRecordType;
   expectedRecordId?: string;
   expectedSenderDeviceId?: string;
   expectedSenderPublicKeyPem?: string;
+  allowLegacyUnboundChat?: boolean;
 }
 
 function assertProjectKey(projectKey: Uint8Array): Uint8Array {
@@ -258,16 +262,28 @@ export async function sealProjectContent(
   const senderPrivateKeyPem = signingPrivateKey(input.senderPrivateKeyPem);
   const plaintext = plaintextBytes(input.plaintext);
   const nonce = randomBytes(PROJECT_CONTENT_NONCE_BYTES);
-  const unsignedBase = {
-    version: PROJECT_ENCRYPTION_VERSION,
-    projectId: input.projectId,
-    keyEpoch: input.keyEpoch,
-    recordType: input.recordType,
-    recordId: input.recordId.trim(),
-    nonce: encodeBase64Url(nonce),
-    senderDeviceId: input.senderDeviceId,
-    senderPublicKeyPem,
-  } as const;
+  const unsignedBase = input.chatId
+    ? {
+      version: PROJECT_CONTENT_ENCRYPTION_VERSION,
+      projectId: input.projectId,
+      chatId: input.chatId,
+      keyEpoch: input.keyEpoch,
+      recordType: input.recordType,
+      recordId: input.recordId.trim(),
+      nonce: encodeBase64Url(nonce),
+      senderDeviceId: input.senderDeviceId,
+      senderPublicKeyPem,
+    } as const
+    : {
+      version: 1 as const,
+      projectId: input.projectId,
+      keyEpoch: input.keyEpoch,
+      recordType: input.recordType,
+      recordId: input.recordId.trim(),
+      nonce: encodeBase64Url(nonce),
+      senderDeviceId: input.senderDeviceId,
+      senderPublicKeyPem,
+    };
   await sodium.ready;
   const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
     plaintext,
@@ -292,6 +308,15 @@ export async function openProjectContent(
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
   if (input.expectedProjectId && envelope.projectId !== input.expectedProjectId) {
     throw new Error("Project content belongs to another project");
+  }
+  if (input.expectedChatId) {
+    if (envelope.version === 1) {
+      if (!input.allowLegacyUnboundChat) {
+        throw new Error("Legacy project content is not bound to a shared chat");
+      }
+    } else if (envelope.chatId !== input.expectedChatId) {
+      throw new Error("Project content belongs to another shared chat");
+    }
   }
   if (input.expectedKeyEpoch !== undefined && envelope.keyEpoch !== input.expectedKeyEpoch) {
     throw new Error("Project content has an unexpected epoch");

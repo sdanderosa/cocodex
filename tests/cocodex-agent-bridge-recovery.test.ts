@@ -51,6 +51,7 @@ function signedTask(
   });
   const taskId = randomUUID();
   const projectId = randomUUID();
+  const chatId = randomUUID();
   const requesterDeviceId = randomUUID();
   const issuedAt = new Date(Date.now() - (status === "running" ? 120_000 : 0)).toISOString();
   const expiresAt = new Date(Date.now() + (status === "running" ? -60_000 : 60_000)).toISOString();
@@ -58,6 +59,7 @@ function signedTask(
   const request = {
     taskId,
     projectId,
+    chatId,
     agentId: "local-codex",
     prompt: "Continue the interrupted task.",
     nonce,
@@ -86,6 +88,7 @@ function signedTask(
     task: {
       id: taskId,
       projectId,
+      chatId,
       requesterDeviceId,
       targetDeviceId: localDeviceId,
       agentId: request.agentId,
@@ -121,13 +124,15 @@ function signedEncryptedTask(localDeviceId: string, inputArtifactIds: string[] =
   });
   const taskId = randomUUID();
   const projectId = randomUUID();
+  const chatId = randomUUID();
   const requesterDeviceId = randomUUID();
   const issuedAt = new Date(Date.now() - 10_000).toISOString();
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   const nonce = "N".repeat(43);
   const promptEnvelope = {
-    version: 1 as const,
+    version: 2 as const,
     projectId,
+    chatId,
     keyEpoch: 1,
     recordType: "task" as const,
     recordId: taskId,
@@ -140,6 +145,7 @@ function signedEncryptedTask(localDeviceId: string, inputArtifactIds: string[] =
   const dispatch = {
     taskId,
     projectId,
+    chatId,
     agentId: "local-codex",
     nonce,
     issuedAt,
@@ -163,6 +169,7 @@ function signedEncryptedTask(localDeviceId: string, inputArtifactIds: string[] =
     task: {
       id: taskId,
       projectId,
+      chatId,
       requesterDeviceId,
       targetDeviceId: localDeviceId,
       agentId: dispatch.agentId,
@@ -208,6 +215,40 @@ describe("CoCodex local agent crash recovery", () => {
           version: 1,
           type: "project.agent.task",
           task: { ...fixture.task, inputArtifactIds: [randomUUID()] },
+        }),
+      }));
+      await Bun.sleep(30);
+      expect(executeCount).toBe(0);
+      expect(decryptCount).toBe(0);
+      expect(socket.sent.some(frame => frame.type === "project.agent.result")).toBeFalse();
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects encrypted dispatch when its signed shared-chat ID is substituted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-chat-binding-"));
+    const localDeviceId = randomUUID();
+    const fixture = signedEncryptedTask(localDeviceId);
+    const socket = new AcknowledgingSocket();
+    let executeCount = 0;
+    let decryptCount = 0;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute() { executeCount += 1; yield "must not run"; },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([[fixture.task.requesterDeviceId, fixture.requesterFingerprint]]),
+      decryptTaskPrompt: async () => { decryptCount += 1; return "wrong-chat prompt"; },
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({
+          version: 1,
+          type: "project.agent.task",
+          task: { ...fixture.task, chatId: randomUUID() },
         }),
       }));
       await Bun.sleep(30);
@@ -424,8 +465,9 @@ describe("CoCodex local agent crash recovery", () => {
       journalPath,
       decryptTaskPrompt: async () => "encrypted cancellation prompt",
       encryptResult: async result => ({
-        version: 1,
+        version: 2,
         projectId: fixture.task.projectId,
+        chatId: fixture.task.chatId,
         keyEpoch: 1,
         recordType: "agent-response",
         recordId: result.eventId,

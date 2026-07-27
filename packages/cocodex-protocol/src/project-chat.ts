@@ -3,6 +3,7 @@ import { projectContentEnvelopeSchema } from "./project-encryption";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const deviceId = z.uuid();
 const eventId = z.uuid();
 
@@ -10,6 +11,7 @@ const eventId = z.uuid();
 export const encryptedChatEventSchema = z.object({
   sequence: z.number().int().nonnegative(),
   projectId,
+  chatId,
   eventId,
   senderDeviceId: deviceId,
   envelope: projectContentEnvelopeSchema,
@@ -26,6 +28,7 @@ export const encryptedChatSubscribeFrameSchema = z.object({
   type: z.literal("project.chat.subscribe"),
   requestId,
   projectId,
+  chatId,
   afterSequence: z.number().int().nonnegative(),
 }).strict();
 
@@ -34,6 +37,7 @@ export const encryptedChatSendFrameSchema = z.object({
   type: z.literal("project.chat.send"),
   requestId,
   projectId,
+  chatId,
   eventId,
   envelope: projectContentEnvelopeSchema,
   clientCreatedAt: z.iso.datetime(),
@@ -44,6 +48,7 @@ export const encryptedChatSnapshotFrameSchema = z.object({
   type: z.literal("project.chat.snapshot"),
   requestId,
   projectId,
+  chatId,
   events: z.array(encryptedChatEventSchema).max(500),
 }).strict();
 
@@ -52,6 +57,7 @@ export const encryptedChatAcceptedFrameSchema = z.object({
   type: z.literal("project.chat.accepted"),
   requestId,
   projectId,
+  chatId,
   event: encryptedChatEventSchema,
 }).strict();
 

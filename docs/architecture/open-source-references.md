@@ -91,7 +91,12 @@ reviewed again before release.
   ciphertext-only SQLite table. The client decrypts locally and exposes the
   normal chat event shape. Legacy `chat.*` remains for old fixtures when no
   project key exists; a release must migrate every project record type before
-  removing that compatibility path.
+  removing that compatibility path. Multiple authoritative chats use
+  device-signed creation, composite subscription/cursor scopes, and v2 content
+  envelopes whose AEAD and signature transcripts bind `chatId`; version-1
+  records are readable only in deterministic General. This adapts
+  Hocuspocus/Yjs document separation and Matrix conversation authority without
+  copying source or adding a dependency. See ADR 0039.
 - **Encrypted shared prompt:** the shipped `project.prompt.*` path carries
   individually encrypted Yjs updates. The server orders and deduplicates
   opaque updates but never applies Yjs; each client decrypts locally and feeds

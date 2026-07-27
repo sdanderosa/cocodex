@@ -290,7 +290,7 @@ export function listAgentTasks(
   requireProjectMembership(db, projectId, requesterDeviceId);
   const boundedLimit = Math.max(1, Math.min(256, Math.trunc(limit)));
   const rows = db.query(`
-    SELECT t.id, t.project_id AS projectId, t.agent_id AS agentId,
+    SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId, t.agent_id AS agentId,
       a.name AS agentName, t.requester_device_id AS requesterDeviceId,
       t.target_device_id AS targetDeviceId, t.status,
       t.dependencies_json AS dependenciesJson, t.input_artifact_ids_json AS inputArtifactIdsJson,
@@ -323,6 +323,7 @@ export function listAgentTasks(
   `).all(projectId, boundedLimit) as Array<{
     id: string;
     projectId: string;
+    chatId: string;
     agentId: string;
     agentName: string;
     requesterDeviceId: string;
@@ -345,6 +346,7 @@ export function listAgentTasks(
   return rows.map(row => ({
     id: row.id,
     projectId: row.projectId,
+    chatId: row.chatId,
     agentId: row.agentId,
     agentName: row.agentName,
     requesterDeviceId: row.requesterDeviceId,
@@ -369,6 +371,7 @@ export function listAgentTasks(
 export interface CreateAgentTaskInput {
   id: string;
   projectId: string;
+  chatId: string;
   requesterDeviceId: string;
   agentId: string;
   prompt: string;
@@ -426,7 +429,8 @@ function rejectDependencyCycle(db: Database, projectId: string, taskId: string, 
 }
 
 function taskById(db: Database, id: string): AgentTask | null {
-  const row = db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+  const row = db.query(`SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId,
+    t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,
@@ -439,7 +443,8 @@ function taskById(db: Database, id: string): AgentTask | null {
 }
 
 function sameRequest(task: AgentTask, input: CreateAgentTaskInput, dependencies: string[]): boolean {
-  return task.projectId === input.projectId && task.requesterDeviceId === input.requesterDeviceId
+  return task.projectId === input.projectId && task.chatId === input.chatId
+    && task.requesterDeviceId === input.requesterDeviceId
     && task.agentId === input.agentId && task.prompt === input.prompt && task.nonce === input.nonce
     && task.issuedAt === input.issuedAt && task.expiresAt === input.expiresAt
     && JSON.stringify(task.dependencies) === JSON.stringify(dependencies)
@@ -454,6 +459,9 @@ export function createAgentTask(
   now = new Date(),
 ): { task: AgentTask; created: boolean } {
   requireProjectMembership(db, input.projectId, input.requesterDeviceId);
+  if (input.chatId !== input.projectId) {
+    throw new Error("Plaintext agent tasks are limited to the General chat");
+  }
   const dependencies = normalizeDependencies(input.dependencies, input.id);
   if ((input.inputArtifactIds?.length ?? 0) > 0) {
     throw new Error("Task input artifacts require project encryption");
@@ -494,6 +502,7 @@ export function createAgentTask(
   const requestValid = verify(null, agentRequestSigningTranscript({
     taskId: input.id,
     projectId: input.projectId,
+    chatId: input.chatId,
     agentId: input.agentId,
     prompt: input.prompt,
     nonce: input.nonce,
@@ -508,6 +517,7 @@ export function createAgentTask(
   const unsigned = {
     taskId: input.id,
     projectId: input.projectId,
+    chatId: input.chatId,
     agentId: input.agentId,
     prompt: input.prompt,
     nonce: input.nonce,
@@ -525,11 +535,11 @@ export function createAgentTask(
   const { taskId: _signedTaskId, ...dispatch } = unsigned;
   const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies, inputArtifactIds: [] };
   db.query(`INSERT INTO agent_tasks (
-    id, project_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
+    id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
     issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json,
     private_share_message_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
-    task.id, task.projectId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
+    task.id, task.projectId, input.chatId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
     task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
     task.serverSignature, task.acceptedAt, JSON.stringify(dependencies), input.privateShareMessageId ?? null,
   );
@@ -589,7 +599,8 @@ export function cancelAgentTask(
 
 export function pendingAgentTasks(db: Database, targetDeviceId: string, now = new Date(), agentId?: string): AgentTask[] {
   const agentFilter = agentId ? " AND t.agent_id = ?" : "";
-  const rows = db.query(`SELECT t.id, t.project_id AS projectId, t.requester_device_id AS requesterDeviceId,
+  const rows = db.query(`SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId,
+    t.requester_device_id AS requesterDeviceId,
     t.target_device_id AS targetDeviceId, t.agent_id AS agentId, t.prompt, t.nonce,
     t.issued_at AS issuedAt, t.expires_at AS expiresAt, t.requester_signature AS requesterSignature,
     t.server_signature AS serverSignature, d.public_key_pem AS requesterPublicKeyPem,

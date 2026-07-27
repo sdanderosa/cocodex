@@ -3,6 +3,7 @@ import { projectContentEnvelopeSchema } from "./project-encryption";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const referenceId = z.uuid();
 const artifactId = z.uuid();
 const canonicalRelativePath = z.string().min(1).max(1024).superRefine((value, context) => {
@@ -22,6 +23,7 @@ export const fileReferencePlaintextSchema = z.object({
   version: z.literal(1),
   referenceId,
   projectId,
+  chatId,
   artifactId,
   hostDeviceId: z.uuid(),
   relativePath: canonicalRelativePath,
@@ -38,6 +40,7 @@ export type FileReferencePlaintext = z.infer<typeof fileReferencePlaintextSchema
 export const encryptedFileReferenceSchema = z.object({
   referenceId,
   projectId,
+  chatId,
   artifactId,
   hostDeviceId: z.uuid(),
   authorDeviceId: z.uuid(),
@@ -53,6 +56,7 @@ export const encryptedFileReferencePublishFrameSchema = z.object({
   requestId,
   referenceId,
   projectId,
+  chatId,
   artifactId,
   envelope: projectContentEnvelopeSchema,
 }).strict().superRefine((value, context) => {
@@ -72,6 +76,7 @@ export const encryptedFileReferenceListFrameSchema = z.object({
   type: z.literal("project.file-reference.list"),
   requestId,
   projectId,
+  chatId,
 }).strict();
 
 export const encryptedFileReferenceAcceptedFrameSchema = z.object({
@@ -79,6 +84,7 @@ export const encryptedFileReferenceAcceptedFrameSchema = z.object({
   type: z.literal("project.file-reference.accepted"),
   requestId,
   projectId,
+  chatId,
   reference: encryptedFileReferenceSchema,
 }).strict();
 
@@ -93,6 +99,7 @@ export const encryptedFileReferenceListResultFrameSchema = z.object({
   type: z.literal("project.file-reference.list.result"),
   requestId,
   projectId,
+  chatId,
   references: z.array(encryptedFileReferenceSchema).max(500),
 }).strict();
 

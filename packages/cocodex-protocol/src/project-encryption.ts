@@ -8,6 +8,7 @@ import { canonicalEd25519PublicKey } from "./keys";
  * owns all key material and encryption operations.
  */
 export const PROJECT_ENCRYPTION_VERSION = 1 as const;
+export const PROJECT_CONTENT_ENCRYPTION_VERSION = 2 as const;
 export const PROJECT_KEY_BYTES = 32 as const;
 export const PROJECT_KEY_EPOCH_MAX = 0x7fffffff as const;
 export const PROJECT_WRAP_SEALED_KEY_BYTES = 80 as const;
@@ -73,6 +74,7 @@ const boundedCiphertext = z.string()
 const senderPublicKeyPem = z.string().min(64).max(2_048);
 const keyEpoch = z.number().int().min(1).max(PROJECT_KEY_EPOCH_MAX);
 const projectId = z.uuid();
+const chatId = z.uuid();
 const deviceId = z.uuid();
 const signature = fixedBase64UrlBytes(64, "Project signature");
 const sealedProjectKey = fixedBase64UrlBytes(PROJECT_WRAP_SEALED_KEY_BYTES, "Sealed project key");
@@ -97,8 +99,8 @@ export type ProjectKeyEnvelope = z.infer<typeof projectKeyEnvelopeSchema>;
  * still bind it to the trusted device certificate rather than trusting this
  * field by itself.
  */
-export const projectContentEnvelopeSchema = z.object({
-  version: z.literal(PROJECT_ENCRYPTION_VERSION),
+const legacyProjectContentEnvelopeSchema = z.object({
+  version: z.literal(1),
   projectId,
   keyEpoch,
   recordType: projectRecordTypeSchema,
@@ -109,15 +111,35 @@ export const projectContentEnvelopeSchema = z.object({
   senderPublicKeyPem,
   signature,
 }).strict();
+
+const chatBoundProjectContentEnvelopeSchema = z.object({
+  version: z.literal(PROJECT_CONTENT_ENCRYPTION_VERSION),
+  projectId,
+  chatId,
+  keyEpoch,
+  recordType: projectRecordTypeSchema,
+  recordId: z.string().trim().min(1).max(256),
+  nonce: contentNonce,
+  ciphertext: boundedCiphertext,
+  senderDeviceId: deviceId,
+  senderPublicKeyPem,
+  signature,
+}).strict();
+
+export const projectContentEnvelopeSchema = z.discriminatedUnion("version", [
+  legacyProjectContentEnvelopeSchema,
+  chatBoundProjectContentEnvelopeSchema,
+]);
 export type ProjectContentEnvelope = z.infer<typeof projectContentEnvelopeSchema>;
 
 export type ProjectKeyEnvelopeUnsigned = Omit<ProjectKeyEnvelope, "signature">;
-export type ProjectContentEnvelopeUnsigned = Omit<ProjectContentEnvelope, "signature">;
+export type ProjectContentEnvelopeUnsigned =
+  | Omit<z.infer<typeof legacyProjectContentEnvelopeSchema>, "signature">
+  | Omit<z.infer<typeof chatBoundProjectContentEnvelopeSchema>, "signature">;
 
-export type ProjectContentAadInput = Pick<
-  ProjectContentEnvelopeUnsigned,
-  "version" | "projectId" | "keyEpoch" | "recordType" | "recordId" | "nonce" | "senderDeviceId" | "senderPublicKeyPem"
->;
+export type ProjectContentAadInput =
+  | Omit<z.infer<typeof legacyProjectContentEnvelopeSchema>, "ciphertext" | "signature">
+  | Omit<z.infer<typeof chatBoundProjectContentEnvelopeSchema>, "ciphertext" | "signature">;
 
 function lengthPrefix(value: string): Buffer {
   const data = Buffer.from(value, "utf8");
@@ -172,9 +194,22 @@ export function projectKeyEnvelopeSigningTranscript(input: ProjectKeyEnvelopeUns
  */
 export function projectContentAad(input: ProjectContentAadInput): Buffer {
   const senderKey = canonicalSenderKey(input.senderPublicKeyPem);
-  return transcript("COCODEX-PROJECT-CONTENT-AAD", [
+  if (input.version === 1) {
+    return transcript("COCODEX-PROJECT-CONTENT-AAD", [
+      String(input.version),
+      input.projectId,
+      String(input.keyEpoch),
+      input.recordType,
+      input.recordId.trim(),
+      input.nonce,
+      input.senderDeviceId,
+      senderKey,
+    ]);
+  }
+  return transcript("COCODEX-PROJECT-CONTENT-AAD-V2", [
     String(input.version),
     input.projectId,
+    input.chatId,
     String(input.keyEpoch),
     input.recordType,
     input.recordId.trim(),
@@ -187,9 +222,23 @@ export function projectContentAad(input: ProjectContentAadInput): Buffer {
 /** Signature transcript for an opaque project record. */
 export function projectContentSigningTranscript(input: ProjectContentEnvelopeUnsigned): Buffer {
   const senderKey = canonicalSenderKey(input.senderPublicKeyPem);
-  return transcript("COCODEX-PROJECT-CONTENT", [
+  if (input.version === 1) {
+    return transcript("COCODEX-PROJECT-CONTENT", [
+      String(input.version),
+      input.projectId,
+      String(input.keyEpoch),
+      input.recordType,
+      input.recordId.trim(),
+      input.nonce,
+      input.senderDeviceId,
+      senderKey,
+      digestBase64Url(input.ciphertext),
+    ]);
+  }
+  return transcript("COCODEX-PROJECT-CONTENT-V2", [
     String(input.version),
     input.projectId,
+    input.chatId,
     String(input.keyEpoch),
     input.recordType,
     input.recordId.trim(),
@@ -199,4 +248,3 @@ export function projectContentSigningTranscript(input: ProjectContentEnvelopeUns
     digestBase64Url(input.ciphertext),
   ]);
 }
-

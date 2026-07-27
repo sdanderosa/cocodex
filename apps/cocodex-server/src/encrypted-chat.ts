@@ -8,6 +8,7 @@ import {
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
+import { requireSharedChat } from "./shared-chats";
 
 /**
  * The server-side chat path stores only the signed opaque project envelope.
@@ -17,6 +18,7 @@ import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 export interface EncryptedChatEvent {
   sequence: number;
   projectId: string;
+  chatId: string;
   eventId: string;
   senderDeviceId: string;
   envelope: ProjectContentEnvelope;
@@ -29,6 +31,7 @@ export interface EncryptedChatEvent {
 
 export interface AppendEncryptedChatInput {
   projectId: string;
+  chatId: string;
   eventId: string;
   senderDeviceId: string;
   envelope: unknown;
@@ -47,6 +50,7 @@ interface DeviceKeyRow {
 interface EventRow {
   sequence: number;
   projectId: string;
+  chatId: string;
   eventId: string;
   senderDeviceId: string;
   envelopeJson: string;
@@ -113,6 +117,7 @@ function eventFromRow(row: EventRow): EncryptedChatEvent {
   return {
     sequence: row.sequence,
     projectId: row.projectId,
+    chatId: row.chatId,
     eventId: row.eventId,
     senderDeviceId: row.senderDeviceId,
     envelope: parseEnvelope(row.envelopeJson),
@@ -131,10 +136,12 @@ export function appendEncryptedChatEventResult(
   input: AppendEncryptedChatInput,
   now = new Date(),
 ): AppendEncryptedChatResult {
-  requireProjectMembership(db, input.projectId, input.senderDeviceId);
+  requireSharedChat(db, input.projectId, input.chatId, input.senderDeviceId);
   assertClientTimestamp(input.clientCreatedAt);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
+  if (envelope.version !== 2) throw new Error("New encrypted chat events require a chat-bound content envelope");
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted chat belongs to another project");
+  if (envelope.chatId !== input.chatId) throw new Error("Encrypted chat belongs to another shared chat");
   if (envelope.recordType !== "chat") throw new Error("Encrypted chat envelope must use the chat record type");
   if (envelope.recordId !== input.eventId) throw new Error("Encrypted chat record ID must match the event ID");
   if (envelope.senderDeviceId !== input.senderDeviceId) throw new Error("Encrypted chat sender does not match the authenticated device");
@@ -145,7 +152,7 @@ export function appendEncryptedChatEventResult(
   verifyEnvelopeSender(db, input.senderDeviceId, envelope);
   const serialized = envelopeJson(envelope);
   const existing = db.query(`
-    SELECT sequence, project_id AS projectId, event_id AS eventId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
       client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
       task_id AS taskId, final, status
@@ -154,6 +161,7 @@ export function appendEncryptedChatEventResult(
   `).get(input.eventId) as EventRow | null;
   if (existing) {
     if (existing.projectId !== input.projectId
+      || existing.chatId !== input.chatId
       || existing.senderDeviceId !== input.senderDeviceId
       || existing.clientCreatedAt !== input.clientCreatedAt
       || existing.envelopeJson !== serialized) {
@@ -163,11 +171,12 @@ export function appendEncryptedChatEventResult(
   }
   const result = db.query(`
     INSERT INTO project_chat_events (
-      project_id, event_id, sender_device_id, envelope_json,
+      project_id, chat_id, event_id, sender_device_id, envelope_json,
       client_created_at, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.projectId,
+    input.chatId,
     input.eventId,
     input.senderDeviceId,
     serialized,
@@ -175,7 +184,7 @@ export function appendEncryptedChatEventResult(
     now.toISOString(),
   );
   const row = db.query(`
-    SELECT sequence, project_id AS projectId, event_id AS eventId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
       client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
       task_id AS taskId, final, status
@@ -187,21 +196,22 @@ export function appendEncryptedChatEventResult(
 export function encryptedChatEventsAfter(
   db: Database,
   projectId: string,
+  chatId: string,
   deviceId: string,
   afterSequence: number,
   limit = 500,
 ): EncryptedChatEvent[] {
-  requireProjectMembership(db, projectId, deviceId);
+  requireSharedChat(db, projectId, chatId, deviceId);
   const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
   const rows = db.query(`
-    SELECT sequence, project_id AS projectId, event_id AS eventId,
+    SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
       client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
       task_id AS taskId, final, status
     FROM project_chat_events
-    WHERE project_id = ? AND sequence > ?
+    WHERE project_id = ? AND chat_id = ? AND sequence > ?
     ORDER BY sequence ASC
     LIMIT ?
-  `).all(projectId, afterSequence, boundedLimit) as EventRow[];
+  `).all(projectId, chatId, afterSequence, boundedLimit) as EventRow[];
   return rows.map(eventFromRow);
 }

@@ -16,6 +16,7 @@ import { startCoCodexServer } from "../apps/cocodex-server/src/server";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../apps/cocodex-server/src/tls";
 import {
   connectAuthenticatedClient,
+  createAgentRequest,
   enrollClient,
   acceptServerAuthorityTransfer,
   loadClientConnection,
@@ -37,6 +38,27 @@ afterEach(async () => {
 });
 
 describe("CoCodex Client direct enrollment", () => {
+  test("binds plaintext agent requests to one chat with an exact bounded lifetime", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-client-agent-request-"));
+    roots.push(root);
+    const paths = clientPaths(root);
+    const projectId = crypto.randomUUID();
+    const chatId = crypto.randomUUID();
+    const request = createAgentRequest(
+      projectId,
+      "local-codex",
+      "Inspect the task.",
+      paths,
+      [],
+      undefined,
+      [],
+      chatId,
+    );
+    expect(request.projectId).toBe(projectId);
+    expect(request.chatId).toBe(chatId);
+    expect(Date.parse(request.expiresAt) - Date.parse(request.issuedAt)).toBe(5 * 60_000);
+  });
+
   test("reconnects a resident client session after transport closure", async () => {
     const controller = new AbortController();
     const connected: number[] = [];

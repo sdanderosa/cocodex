@@ -298,8 +298,18 @@ export function sendAgentRequest(
   dependencies: string[] = [],
   privateShareMessageId?: string,
   inputArtifactIds: string[] = [],
+  chatId = projectId,
 ): string {
-  const frame = createAgentRequest(projectId, agentId, prompt, paths, dependencies, privateShareMessageId, inputArtifactIds);
+  const frame = createAgentRequest(
+    projectId,
+    agentId,
+    prompt,
+    paths,
+    dependencies,
+    privateShareMessageId,
+    inputArtifactIds,
+    chatId,
+  );
   socket.send(JSON.stringify(frame));
   return frame.taskId;
 }
@@ -312,14 +322,16 @@ export function createAgentRequest(
   dependencies: string[] = [],
   privateShareMessageId?: string,
   inputArtifactIds: string[] = [],
+  chatId = projectId,
 ) {
   const identity = loadOrCreateClientIdentity(paths);
   const taskId = randomUUID();
   const nonce = randomBytes(32).toString("base64url");
-  const issuedAt = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const issuedAtMs = Date.now();
+  const issuedAt = new Date(issuedAtMs).toISOString();
+  const expiresAt = new Date(issuedAtMs + 5 * 60_000).toISOString();
   const signature = sign(null, agentRequestSigningTranscript({
-    taskId, projectId, agentId, prompt, nonce, issuedAt, expiresAt, dependencies, inputArtifactIds, privateShareMessageId,
+    taskId, projectId, chatId, agentId, prompt, nonce, issuedAt, expiresAt, dependencies, inputArtifactIds, privateShareMessageId,
   }), identity.privateKeyPem).toString("base64url");
   return {
     version: 1,
@@ -327,6 +339,7 @@ export function createAgentRequest(
     requestId: randomUUID(),
     taskId,
     projectId,
+    chatId,
     agentId,
     prompt,
     nonce,

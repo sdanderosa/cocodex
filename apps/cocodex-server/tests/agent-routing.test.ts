@@ -211,6 +211,7 @@ describe("authoritative agent dependencies", () => {
       const requesterSignature = sign(null, agentRequestSigningTranscript({
         taskId,
         projectId: project.id,
+        chatId: project.id,
         agentId: "kai-agent",
         prompt,
         nonce,
@@ -222,6 +223,7 @@ describe("authoritative agent dependencies", () => {
       createAgentTask(db, identity, {
         id: taskId,
         projectId: project.id,
+        chatId: project.id,
         requesterDeviceId: stephen.id,
         agentId: "kai-agent",
         prompt,
@@ -235,6 +237,7 @@ describe("authoritative agent dependencies", () => {
       const unsigned = {
         taskId,
         projectId: project.id,
+        chatId: project.id,
         agentId: "kai-agent",
         workspaceMode: "git-worktree" as const,
         workspaceRef: `worktrees/${project.id}/kai-agent/${taskId}`,
@@ -253,6 +256,28 @@ describe("authoritative agent dependencies", () => {
       };
       expect(() => acceptAgentExecutionReport(db, stephen.id, report, now))
         .toThrow("cannot report");
+      const otherChatId = randomUUID();
+      db.query(`INSERT INTO shared_chats (
+        id, project_id, title, created_by_device_id, state, creation_nonce, created_at, updated_at
+      ) VALUES (?, ?, 'Other', ?, 'active', NULL, ?, ?)`).run(
+        otherChatId,
+        project.id,
+        stephen.id,
+        now.toISOString(),
+        now.toISOString(),
+      );
+      const crossChatReport = {
+        ...unsigned,
+        chatId: otherChatId,
+      };
+      expect(() => acceptAgentExecutionReport(db, kai.id, {
+        ...crossChatReport,
+        signature: sign(
+          null,
+          agentExecutionSigningTranscript(crossChatReport),
+          kai.privateKey,
+        ).toString("base64url"),
+      }, now)).toThrow("does not match a task");
       expect(() => acceptAgentExecutionReport(db, kai.id, {
         ...report,
         signature: sign(
@@ -341,10 +366,10 @@ describe("authoritative agent dependencies", () => {
       const nonce = "N".repeat(32);
       const prompt = "Find the bug";
       const signature = sign(null, agentRequestSigningTranscript({
-        taskId, projectId: project.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies: [],
+        taskId, projectId: project.id, chatId: project.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies: [],
       }), stephen.privateKey).toString("base64url");
       createAgentTask(db, identity, {
-        id: taskId, projectId: project.id, requesterDeviceId: stephen.id, agentId: "kai-agent", prompt,
+        id: taskId, projectId: project.id, chatId: project.id, requesterDeviceId: stephen.id, agentId: "kai-agent", prompt,
         nonce, issuedAt, expiresAt, dependencies: [], requesterSignature: signature,
       }, now);
       expect(listAgents(db, project.id, stephen.id, () => true)).toEqual([expect.objectContaining({
@@ -370,14 +395,15 @@ describe("authoritative agent dependencies", () => {
       registerAgent(db, { id: "kai-agent", projectId: project.id, hostDeviceId: kai.id, name: "Kai" }, now);
       const make = (id: string, prompt: string, dependencies: string[] = []) => {
         const issuedAt = now.toISOString(); const expiresAt = new Date(now.getTime() + 60_000).toISOString(); const nonce = id.padEnd(32, "0");
-        const signature = sign(null, agentRequestSigningTranscript({ taskId: id, projectId: project.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies }), stephen.privateKey).toString("base64url");
-        return createAgentTask(db, identity, { id, projectId: project.id, requesterDeviceId: stephen.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies, requesterSignature: signature }, now).task;
+        const signature = sign(null, agentRequestSigningTranscript({ taskId: id, projectId: project.id, chatId: project.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies }), stephen.privateKey).toString("base64url");
+        return createAgentTask(db, identity, { id, projectId: project.id, chatId: project.id, requesterDeviceId: stephen.id, agentId: "kai-agent", prompt, nonce, issuedAt, expiresAt, dependencies, requesterSignature: signature }, now).task;
       };
       const first = make("8661361f-ce2f-4bec-88fd-c4fb32f49704", "Find the bug");
       const second = make("4b9abf0f-94c3-4cfa-97a4-1a370b93bb2e", "Write tests", [first.id]);
       const replay = createAgentTask(db, identity, {
         id: second.id,
         projectId: project.id,
+        chatId: project.id,
         requesterDeviceId: stephen.id,
         agentId: "kai-agent",
         prompt: second.prompt,
@@ -516,7 +542,7 @@ describe("authoritative agent dependencies", () => {
         expiresAt,
         inputArtifactIds: ["be8c6278-c10d-44d6-829f-308030cce0cb"],
         envelope: contentEnvelope(project.id, stephen, "task", "82f2266a-16ac-4b83-b70f-f8145e88ae66"),
-      }, now)).toThrow("not found in this project");
+      }, now)).toThrow("not found in this shared chat");
       const otherProject = createProject(db, "Other encrypted project", stephen.id, now);
       expect(shareProjectKeyEnvelope(db, otherProject.id, stephen.id,
         keyEnvelope(otherProject.id, stephen, stephen.id), now).created).toBeTrue();
@@ -538,7 +564,7 @@ describe("authoritative agent dependencies", () => {
         expiresAt,
         inputArtifactIds: [otherArtifactId],
         envelope: contentEnvelope(project.id, stephen, "task", "f2c53ee8-ea55-4ba7-9cf8-f9f328bd92a3"),
-      }, now)).toThrow("not found in this project");
+      }, now)).toThrow("not found in this shared chat");
     } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });

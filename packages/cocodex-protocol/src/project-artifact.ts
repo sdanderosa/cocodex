@@ -3,12 +3,14 @@ import { projectContentEnvelopeSchema } from "./project-encryption";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const artifactId = z.uuid();
 
 /** Metadata needed for routing an opaque artifact without exposing its content. */
 export const encryptedArtifactSchema = z.object({
   artifactId,
   projectId,
+  chatId,
   taskId: z.uuid().nullable(),
   authorDeviceId: z.uuid(),
   envelope: projectContentEnvelopeSchema,
@@ -23,6 +25,7 @@ export const encryptedArtifactPublishFrameSchema = z.object({
   requestId,
   artifactId,
   projectId,
+  chatId,
   taskId: z.uuid().nullable(),
   envelope: projectContentEnvelopeSchema,
 }).strict();
@@ -32,6 +35,7 @@ export const encryptedArtifactListFrameSchema = z.object({
   type: z.literal("project.artifact.list"),
   requestId,
   projectId,
+  chatId,
 }).strict();
 
 export const encryptedArtifactAcceptedFrameSchema = z.object({
@@ -39,6 +43,7 @@ export const encryptedArtifactAcceptedFrameSchema = z.object({
   type: z.literal("project.artifact.accepted"),
   requestId,
   projectId,
+  chatId,
   artifact: encryptedArtifactSchema,
 }).strict();
 
@@ -53,6 +58,7 @@ export const encryptedArtifactListResultFrameSchema = z.object({
   type: z.literal("project.artifact.list.result"),
   requestId,
   projectId,
+  chatId,
   artifacts: z.array(encryptedArtifactSchema).max(500),
 }).strict();
 

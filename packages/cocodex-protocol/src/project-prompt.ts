@@ -3,6 +3,7 @@ import { projectContentEnvelopeSchema } from "./project-encryption";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const deviceId = z.uuid();
 const updateId = z.uuid();
 
@@ -10,6 +11,7 @@ const updateId = z.uuid();
 export const encryptedPromptUpdateSchema = z.object({
   sequence: z.number().int().nonnegative(),
   projectId,
+  chatId,
   updateId,
   senderDeviceId: deviceId,
   envelope: projectContentEnvelopeSchema,
@@ -22,6 +24,7 @@ export const encryptedPromptSubscribeFrameSchema = z.object({
   type: z.literal("project.prompt.subscribe"),
   requestId,
   projectId,
+  chatId,
   afterSequence: z.number().int().nonnegative(),
 }).strict();
 
@@ -30,6 +33,7 @@ export const encryptedPromptUpdateFrameSchema = z.object({
   type: z.literal("project.prompt.update"),
   requestId,
   projectId,
+  chatId,
   updateId,
   envelope: projectContentEnvelopeSchema,
 }).strict();
@@ -39,6 +43,7 @@ export const encryptedPromptSnapshotFrameSchema = z.object({
   type: z.literal("project.prompt.snapshot"),
   requestId,
   projectId,
+  chatId,
   updates: z.array(encryptedPromptUpdateSchema).max(500),
 }).strict();
 
@@ -47,6 +52,7 @@ export const encryptedPromptAcceptedFrameSchema = z.object({
   type: z.literal("project.prompt.accepted"),
   requestId,
   projectId,
+  chatId,
   update: encryptedPromptUpdateSchema,
 }).strict();
 
@@ -61,4 +67,3 @@ export type EncryptedPromptUpdateFrame = z.infer<typeof encryptedPromptUpdateFra
 export type EncryptedPromptSnapshotFrame = z.infer<typeof encryptedPromptSnapshotFrameSchema>;
 export type EncryptedPromptAcceptedFrame = z.infer<typeof encryptedPromptAcceptedFrameSchema>;
 export type EncryptedPromptChangedFrame = z.infer<typeof encryptedPromptChangedFrameSchema>;
-

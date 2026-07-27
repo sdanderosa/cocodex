@@ -1,4 +1,21 @@
 export {
+  sharedChatSchema,
+  sharedChatStateSchema,
+  sharedChatCreateFrameSchema,
+  sharedChatListFrameSchema,
+  sharedChatCreatedFrameSchema,
+  sharedChatListResultFrameSchema,
+  sharedChatChangedFrameSchema,
+  sharedChatCreationSigningTranscript,
+  type SharedChat,
+  type SharedChatCreateFrame,
+  type SharedChatListFrame,
+  type SharedChatCreatedFrame,
+  type SharedChatListResultFrame,
+  type SharedChatChangedFrame,
+  type SharedChatCreationTranscriptInput,
+} from "./shared-chat";
+export {
   invitationSchema,
   decodeInvitation,
   encodeInvitation,
@@ -132,6 +149,7 @@ export {
 export * from "./agent-signing";
 export {
   PROJECT_CONTENT_AUTH_TAG_BYTES,
+  PROJECT_CONTENT_ENCRYPTION_VERSION,
   PROJECT_CONTENT_CIPHERTEXT_MAX_BYTES,
   PROJECT_CONTENT_MAX_BYTES,
   PROJECT_CONTENT_NONCE_BYTES,

@@ -4,6 +4,7 @@ import { encryptedArtifactSchema } from "./project-artifact";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
+const chatId = z.uuid();
 const taskId = z.uuid();
 const eventId = z.uuid();
 const deviceId = z.uuid();
@@ -23,6 +24,7 @@ export const encryptedAgentRequestFrameSchema = z.object({
   requestId,
   taskId,
   projectId,
+  chatId,
   agentId,
   ...taskLifetime,
   dependencies,
@@ -36,6 +38,7 @@ export const encryptedAgentResultSendFrameSchema = z.object({
   type: z.literal("project.agent.result"),
   requestId,
   taskId,
+  chatId,
   eventId,
   envelope: projectContentEnvelopeSchema,
   final: z.boolean(),
@@ -45,6 +48,7 @@ export const encryptedAgentResultSendFrameSchema = z.object({
 export const encryptedAgentTaskSchema = z.object({
   id: taskId,
   projectId,
+  chatId,
   requesterDeviceId: deviceId,
   targetDeviceId: deviceId,
   agentId,
@@ -72,6 +76,7 @@ export const encryptedAgentTaskFrameSchema = z.object({
 export const encryptedAgentResultEventSchema = z.object({
   sequence: z.number().int().nonnegative(),
   projectId,
+  chatId,
   taskId,
   eventId,
   senderDeviceId: deviceId,
@@ -87,6 +92,7 @@ export const encryptedAgentResultChangedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("project.agent.result"),
   taskId,
+  chatId,
   final: z.boolean(),
   status: resultStatus,
   event: encryptedAgentResultEventSchema,

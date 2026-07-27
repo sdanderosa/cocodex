@@ -512,4 +512,134 @@ CREATE TABLE encrypted_project_creations (
   created_at TEXT NOT NULL
 );`,
   },
+  {
+    version: 28,
+    sql: `
+CREATE TABLE shared_chats (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(trim(title)) BETWEEN 1 AND 120),
+  created_by_device_id TEXT NOT NULL REFERENCES devices(id),
+  state TEXT NOT NULL CHECK (state IN ('active', 'archived')),
+  creation_nonce TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, id)
+);
+INSERT INTO shared_chats (
+  id, project_id, title, created_by_device_id, state, creation_nonce, created_at, updated_at
+)
+SELECT id, id, 'General', created_by_device_id, 'active', NULL, created_at, created_at
+FROM projects;
+CREATE INDEX shared_chats_project_state
+  ON shared_chats(project_id, state, created_at, id);
+
+ALTER TABLE chat_events ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE chat_events SET chat_id = project_id;
+CREATE INDEX chat_events_chat_sequence
+  ON chat_events(project_id, chat_id, sequence);
+
+CREATE TABLE shared_prompt_documents_v28 (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chat_id TEXT NOT NULL REFERENCES shared_chats(id) ON DELETE CASCADE,
+  yjs_state BLOB NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, chat_id),
+  FOREIGN KEY (project_id, chat_id) REFERENCES shared_chats(project_id, id)
+);
+INSERT INTO shared_prompt_documents_v28 (project_id, chat_id, yjs_state, updated_at)
+SELECT project_id, project_id, yjs_state, updated_at FROM shared_prompt_documents;
+DROP TABLE shared_prompt_documents;
+ALTER TABLE shared_prompt_documents_v28 RENAME TO shared_prompt_documents;
+
+ALTER TABLE shared_prompt_updates ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE shared_prompt_updates SET chat_id = project_id;
+CREATE INDEX shared_prompt_updates_chat_time
+  ON shared_prompt_updates(project_id, chat_id, accepted_at);
+
+ALTER TABLE agent_tasks ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE agent_tasks SET chat_id = project_id;
+CREATE INDEX agent_tasks_project_chat_status
+  ON agent_tasks(project_id, chat_id, status, accepted_at);
+
+ALTER TABLE artifacts ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE artifacts SET chat_id = project_id;
+CREATE INDEX artifacts_project_chat_created
+  ON artifacts(project_id, chat_id, created_at, id);
+
+CREATE TABLE shared_project_context_v28 (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chat_id TEXT NOT NULL REFERENCES shared_chats(id) ON DELETE CASCADE,
+  final_goal TEXT NOT NULL DEFAULT '',
+  context_json TEXT NOT NULL DEFAULT '{}',
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_by_device_id TEXT REFERENCES devices(id),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, chat_id),
+  FOREIGN KEY (project_id, chat_id) REFERENCES shared_chats(project_id, id)
+);
+INSERT INTO shared_project_context_v28 (
+  project_id, chat_id, final_goal, context_json, revision, updated_by_device_id, updated_at
+)
+SELECT project_id, project_id, final_goal, context_json, revision, updated_by_device_id, updated_at
+FROM shared_project_context;
+DROP TABLE shared_project_context;
+ALTER TABLE shared_project_context_v28 RENAME TO shared_project_context;
+
+CREATE TABLE encrypted_project_context_v28 (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chat_id TEXT NOT NULL REFERENCES shared_chats(id) ON DELETE CASCADE,
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 0),
+  record_id TEXT NOT NULL,
+  sender_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  envelope_json TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, chat_id),
+  FOREIGN KEY (project_id, chat_id) REFERENCES shared_chats(project_id, id)
+);
+INSERT INTO encrypted_project_context_v28 (
+  project_id, chat_id, key_epoch, record_id, sender_device_id,
+  envelope_json, revision, created_at, updated_at
+)
+SELECT project_id, project_id, key_epoch, record_id, sender_device_id,
+  envelope_json, revision, created_at, updated_at
+FROM encrypted_project_context;
+DROP TABLE encrypted_project_context;
+ALTER TABLE encrypted_project_context_v28 RENAME TO encrypted_project_context;
+
+ALTER TABLE project_chat_events ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE project_chat_events SET chat_id = project_id;
+CREATE INDEX project_chat_events_chat_sequence
+  ON project_chat_events(project_id, chat_id, sequence);
+
+ALTER TABLE project_prompt_updates ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE project_prompt_updates SET chat_id = project_id;
+CREATE INDEX project_prompt_updates_chat_sequence
+  ON project_prompt_updates(project_id, chat_id, sequence);
+
+ALTER TABLE project_artifacts ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE project_artifacts SET chat_id = project_id;
+CREATE INDEX project_artifacts_chat_created
+  ON project_artifacts(project_id, chat_id, created_at, id);
+
+ALTER TABLE project_file_references ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''
+  REFERENCES shared_chats(id);
+UPDATE project_file_references
+SET chat_id = (
+  SELECT project_artifacts.chat_id
+  FROM project_artifacts
+  WHERE project_artifacts.id = project_file_references.artifact_id
+);
+CREATE INDEX project_file_references_chat_created
+  ON project_file_references(project_id, chat_id, created_at, id);`,
+  },
 ];

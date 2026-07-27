@@ -830,21 +830,21 @@ describe("opaque project-encryption server storage", () => {
         removedAgent, project.id, removed.id, now.toISOString());
       const insertTask = db.query(`
         INSERT INTO agent_tasks (
-          id, project_id, requester_device_id, target_device_id, agent_id,
+          id, project_id, chat_id, requester_device_id, target_device_id, agent_id,
           prompt, nonce, issued_at, expires_at, requester_signature,
           server_signature, status, accepted_at
-        ) VALUES (?, ?, ?, ?, ?, 'opaque', ?, ?, ?, 'request-signature',
+        ) VALUES (?, ?, ?, ?, ?, ?, 'opaque', ?, ?, ?, 'request-signature',
           'server-signature', 'queued', ?)
       `);
       const removedRequesterTask = randomUUID();
       const removedTargetTask = randomUUID();
       const unrelatedTask = randomUUID();
       const expiry = new Date(now.getTime() + 60_000).toISOString();
-      insertTask.run(removedRequesterTask, project.id, removed.id, owner.id, ownerAgent,
+      insertTask.run(removedRequesterTask, project.id, project.id, removed.id, owner.id, ownerAgent,
         randomUUID(), now.toISOString(), expiry, now.toISOString());
-      insertTask.run(removedTargetTask, project.id, owner.id, removed.id, removedAgent,
+      insertTask.run(removedTargetTask, project.id, project.id, owner.id, removed.id, removedAgent,
         randomUUID(), now.toISOString(), expiry, now.toISOString());
-      insertTask.run(unrelatedTask, project.id, owner.id, survivor.id, ownerAgent,
+      insertTask.run(unrelatedTask, project.id, project.id, owner.id, survivor.id, ownerAgent,
         randomUUID(), now.toISOString(), expiry, now.toISOString());
 
       const rotationId = randomUUID();
@@ -1119,11 +1119,11 @@ describe("opaque project-encryption server storage", () => {
       expect(stored.envelopeJson).not.toContain("C:\\Users\\Stephen\\secret.txt");
       const insert = db.query(`
         INSERT INTO project_file_references
-          (id, project_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (id, project_id, chat_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (let index = 1; index < 500; index += 1) {
-        insert.run(randomUUID(), project.id, artifactId, owner.id, owner.id, stored.envelopeJson,
+        insert.run(randomUUID(), project.id, project.id, artifactId, owner.id, owner.id, stored.envelopeJson,
           new Date(1_800_000_000_000 + index).toISOString(), new Date(1_800_000_000_000 + index).toISOString());
       }
       const overflowId = randomUUID();

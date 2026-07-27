@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 export interface AgentRequestTranscriptInput {
   taskId: string;
   projectId: string;
+  chatId: string;
   agentId: string;
   prompt: string;
   nonce: string;
@@ -23,6 +24,7 @@ export interface AgentDispatchTranscriptInput extends AgentRequestTranscriptInpu
 export interface AgentEncryptedDispatchTranscriptInput {
   taskId: string;
   projectId: string;
+  chatId: string;
   agentId: string;
   nonce: string;
   issuedAt: string;
@@ -45,6 +47,7 @@ export interface AgentEncryptedDispatchTranscriptInput {
 export interface AgentExecutionTranscriptInput {
   taskId: string;
   projectId: string;
+  chatId?: string;
   agentId: string;
   workspaceMode: "shared" | "git-worktree";
   workspaceRef: string;
@@ -81,10 +84,11 @@ function transcript(context: string, values: string[]): Buffer {
 }
 
 export function agentRequestSigningTranscript(input: AgentRequestTranscriptInput): Buffer {
-  return transcript("COCODEX-AGENT-REQUEST", [
-    "1",
+  return transcript("COCODEX-AGENT-REQUEST-V2", [
+    "2",
     input.taskId,
     input.projectId,
+    input.chatId,
     input.agentId.trim(),
     createHash("sha256").update(input.prompt, "utf8").digest("base64url"),
     input.nonce,
@@ -97,10 +101,11 @@ export function agentRequestSigningTranscript(input: AgentRequestTranscriptInput
 }
 
 export function agentDispatchSigningTranscript(input: AgentDispatchTranscriptInput): Buffer {
-  return transcript("COCODEX-AGENT-DISPATCH", [
-    "1",
+  return transcript("COCODEX-AGENT-DISPATCH-V2", [
+    "2",
     input.taskId,
     input.projectId,
+    input.chatId,
     input.agentId.trim(),
     createHash("sha256").update(input.prompt, "utf8").digest("base64url"),
     input.nonce,
@@ -126,6 +131,7 @@ export function agentEncryptedDispatchSigningTranscript(input: AgentEncryptedDis
     "1",
     input.taskId,
     input.projectId,
+    input.chatId,
     input.agentId.trim(),
     input.nonce,
     input.issuedAt,
@@ -148,10 +154,11 @@ export function agentEncryptedDispatchSigningTranscript(input: AgentEncryptedDis
 
 /** Host-device proof for the local workspace selected before execution. */
 export function agentExecutionSigningTranscript(input: AgentExecutionTranscriptInput): Buffer {
-  return transcript("COCODEX-AGENT-EXECUTION", [
-    "1",
+  return transcript(input.chatId ? "COCODEX-AGENT-EXECUTION-V2" : "COCODEX-AGENT-EXECUTION", [
+    input.chatId ? "2" : "1",
     input.taskId,
     input.projectId,
+    ...(input.chatId ? [input.chatId] : []),
     input.agentId.trim(),
     input.workspaceMode,
     input.workspaceRef,

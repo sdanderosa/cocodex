@@ -35,9 +35,9 @@ export function publishArtifact(db: Database, input: PublishArtifactInput, now =
   const createdAt = now.toISOString();
   const artifact: Artifact = { ...input, createdAt, updatedAt: createdAt };
   db.query(`INSERT INTO artifacts
-    (id, project_id, task_id, author_device_id, type, title, summary, content, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    artifact.id, artifact.projectId, artifact.taskId, artifact.authorDeviceId, artifact.type,
+    (id, project_id, chat_id, task_id, author_device_id, type, title, summary, content, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    artifact.id, artifact.projectId, artifact.projectId, artifact.taskId, artifact.authorDeviceId, artifact.type,
     artifact.title.trim(), artifact.summary.trim(), artifact.content, artifact.status, createdAt, createdAt,
   );
   return { artifact, created: true };

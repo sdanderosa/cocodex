@@ -51,6 +51,7 @@ interface Status {
 interface ChatEvent {
   sequence: number;
   projectId: string;
+  chatId?: string;
   eventId: string;
   senderDeviceId: string;
   content: string;
@@ -71,6 +72,16 @@ interface PrivateMessage {
   rejectionReason?: string;
 }
 
+interface SharedChat {
+  id: string;
+  projectId: string;
+  title: string;
+  createdByDeviceId: string;
+  state: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface PrivateReceipt {
   sequence: number;
   messageId: string;
@@ -83,6 +94,7 @@ interface PrivateReceipt {
 interface AgentApproval {
   id: string;
   projectId: string;
+  chatId?: string;
   agentId: string;
   requesterDeviceId: string;
   prompt: string;
@@ -140,6 +152,7 @@ type AgentTaskStatus = "queued" | "running" | "completed" | "failed";
 interface AgentTaskView {
   id: string;
   projectId: string;
+  chatId?: string;
   agentId: string;
   agentName: string;
   requesterDeviceId: string;
@@ -163,6 +176,7 @@ interface AgentTaskView {
 interface Artifact {
   id: string;
   projectId: string;
+  chatId?: string;
   taskId: string | null;
   authorDeviceId: string;
   type: string;
@@ -177,6 +191,7 @@ interface Artifact {
 export interface FileReference {
   referenceId: string;
   projectId: string;
+  chatId?: string;
   artifactId: string;
   hostDeviceId: string;
   authorDeviceId: string;
@@ -194,6 +209,7 @@ export interface FileReference {
 
 interface SharedProjectContext {
   projectId: string;
+  chatId?: string;
   finalGoal: string;
   context: Record<string, unknown>;
   revision: number;
@@ -264,6 +280,10 @@ interface SessionValue {
   frame?: {
     type?: string;
     projectId?: string;
+    chatId?: string;
+    chats?: SharedChat[];
+    chat?: SharedChat;
+    defaultChat?: SharedChat;
     update?: string;
     deviceId?: string;
     displayName?: string;
@@ -450,6 +470,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [status, setStatus] = useState<Status>();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const [chats, setChats] = useState<SharedChat[]>([]);
+  const [chatId, setChatId] = useState("");
+  const [chatTitle, setChatTitle] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
@@ -516,8 +539,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       body: JSON.stringify(body),
     }), [apiBase]);
 
-  const ensurePromptDocument = useCallback((nextProjectId: string): Y.Doc => {
-    if (promptDoc.current && promptProject.current === nextProjectId) return promptDoc.current;
+  const ensurePromptDocument = useCallback((nextProjectId: string, nextChatId = nextProjectId): Y.Doc => {
+    const nextScope = `${nextProjectId}:${nextChatId}`;
+    if (promptDoc.current && promptProject.current === nextScope) return promptDoc.current;
     promptDoc.current?.destroy();
     const document = new Y.Doc();
     const text = document.getText("prompt");
@@ -526,13 +550,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       if (origin === "server" || !promptProject.current) return;
       void command({
         type: "prompt.update",
-        projectId: promptProject.current,
+        projectId: promptProject.current.split(":")[0],
+        chatId: promptProject.current.split(":")[1],
         updateId: crypto.randomUUID(),
         update: updateToBase64(update),
       }).catch(error => setNotice(error instanceof Error ? error.message : String(error)));
     });
     promptDoc.current = document;
-    promptProject.current = nextProjectId;
+    promptProject.current = nextScope;
     setSharedPrompt("");
     return document;
   }, [command]);
@@ -574,8 +599,27 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         const nextProject = safelyCreatedProject;
         setProjects(previous => [...previous.filter(project => project.id !== nextProject.id), nextProject]);
         setProjectId(nextProject.id);
+        setChatId(nextProject.id);
         setProjectName("");
         setNotice(t("cocodex.projects.created", { name: nextProject.name }));
+      }
+      if (frame?.projectId === projectId && frame.type === "project.chat.list.result"
+        && Array.isArray(frame.chats)) {
+        const listedChats = frame.chats as SharedChat[];
+        setChats(listedChats);
+        setChatId(previous => listedChats.some(item => item.id === previous)
+          ? previous
+          : listedChats[0]?.id ?? projectId);
+      } else if (frame?.projectId === projectId
+        && (frame.type === "project.chat.created" || frame.type === "project.chat.changed")
+        && frame.chat) {
+        const nextChat = frame.chat as SharedChat;
+        setChats(previous => [...previous.filter(item => item.id !== nextChat.id), nextChat]
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt)));
+        if (frame.type === "project.chat.created") {
+          setChatId(nextChat.id);
+          setChatTitle("");
+        }
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
@@ -586,6 +630,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setProjectId(reconciled.selectedProjectId);
         if (reconciled.clearedSelection) {
           subscribedProject.current = "";
+          setChats([]);
+          setChatId("");
+          setChatTitle("");
           setChat([]);
           setPresence([]);
           setProjectMembers([]);
@@ -617,28 +664,31 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         }
       }
       if ((frame?.type === "prompt.snapshot" || frame?.type === "prompt.update")
-        && frame.projectId && frame.update) {
-        try { Y.applyUpdate(ensurePromptDocument(frame.projectId), updateFromBase64(frame.update), "server"); }
+        && frame.projectId && (frame.chatId ?? frame.projectId) === chatId && frame.update) {
+        try { Y.applyUpdate(ensurePromptDocument(frame.projectId, frame.chatId ?? frame.projectId), updateFromBase64(frame.update), "server"); }
         catch { setNotice(t("cocodex.prompt.invalid")); }
       }
       if ((frame?.type === "context.result" || frame?.type === "context.updated" || frame?.type === "context.changed")
-        && frame.context?.projectId) {
+        && frame.context?.projectId && (frame.chatId ?? frame.context.chatId ?? frame.context.projectId) === chatId) {
         setSharedContext(frame.context);
         setFinalGoalDraft(frame.context.finalGoal);
       }
-      if (frame?.type === "usage.result" && Array.isArray(frame.reports)) {
+      if (frame?.projectId === projectId && frame.type === "usage.result" && Array.isArray(frame.reports)) {
         setUsageReports(frame.reports);
-      } else if ((frame?.type === "usage.changed" || frame?.type === "usage.accepted") && frame.report) {
+      } else if (frame?.projectId === projectId
+        && (frame.type === "usage.changed" || frame.type === "usage.accepted") && frame.report) {
         setUsageReports(previous => [...previous.filter(item => item.deviceId !== frame.report!.deviceId), frame.report!]
           .sort((a, b) => a.displayName.localeCompare(b.displayName)));
       }
       if (frame?.projectId === projectId && frame.type === "agent.list.result" && Array.isArray(frame.agents)) {
         setAgents(frame.agents);
       }
-      if (frame?.projectId === projectId && frame.type === "agent.task.list.result" && Array.isArray(frame.tasks)) {
+      if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
+        && frame.type === "agent.task.list.result" && Array.isArray(frame.tasks)) {
         setTasks(frame.tasks);
       }
-      if (frame?.projectId === projectId && frame.type === "artifact.list.result" && Array.isArray(frame.artifacts)) {
+      if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
+        && frame.type === "artifact.list.result" && Array.isArray(frame.artifacts)) {
         setArtifacts(frame.artifacts);
         setSelectedArtifactIds(previous => previous.filter(id => frame.artifacts!.some(artifact => artifact.id === id)));
         dispatchReferenceArtifactSelection({
@@ -646,15 +696,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           artifacts: frame.artifacts,
           localDeviceId: status?.deviceId,
         });
-      } else if (frame?.projectId === projectId
+      } else if (frame?.projectId === projectId && (frame.chatId ?? frame.artifact?.chatId ?? projectId) === chatId
         && (frame.type === "artifact.accepted" || frame.type === "artifact.published") && frame.artifact) {
         setArtifacts(previous => [...previous.filter(item => item.id !== frame.artifact!.id), frame.artifact!]
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
       }
-      if (frame?.projectId === projectId && frame.type === "file-reference.list.result"
+      if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId && frame.type === "file-reference.list.result"
         && Array.isArray(frame.references)) {
         setFileReferences(frame.references);
-      } else if (frame?.projectId === projectId
+      } else if (frame?.projectId === projectId && (frame.chatId ?? frame.reference?.chatId ?? projectId) === chatId
         && (frame.type === "file-reference.accepted" || frame.type === "file-reference.published")
         && frame.reference) {
         setFileReferences(previous => [
@@ -677,24 +727,30 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           setNotice(t("cocodex.projects.created", { name: nextProject.name }));
         }
       }
-      if (frame?.projectId === projectId && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
+      if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
+        && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
         setPresence((frame.members as PresenceMember[]).map(member => ({ ...member, typing: member.typing === true })));
       } else if (frame?.projectId === projectId && frame.type === "project.member.list.result"
         && Array.isArray(frame.members)) {
         setProjectMembers(frame.members as ProjectMember[]);
       } else if (frame?.projectId === projectId && frame.type === "project.member.removed" && frame.deviceId) {
         setProjectMembers(previous => previous.filter(member => member.deviceId !== frame.deviceId));
-      } else if (frame?.projectId === projectId && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
+      } else if (frame?.projectId === projectId && frame.chatId === chatId
+        && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
         setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
           deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null,
           caret: frame.caret ?? null, typing: frame.typing === true,
         }]);
-      } else if (frame?.projectId === projectId && frame.type === "presence.leave" && frame.deviceId) {
+      } else if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
+        && frame.type === "presence.leave" && frame.deviceId) {
         setPresence(previous => previous.filter(member => member.deviceId !== frame.deviceId));
       }
-      const incoming: ChatEvent[] = frame?.type === "chat.snapshot"
+      const incoming: ChatEvent[] = frame?.projectId === projectId
+        && (frame?.chatId ?? frame?.projectId) === chatId && frame?.type === "chat.snapshot"
         ? frame.events ?? []
-        : (frame?.type === "chat.event" || frame?.type === "agent.result") && frame.event
+        : frame?.projectId === projectId
+          && (frame?.chatId ?? frame?.event?.chatId ?? frame?.event?.projectId) === chatId
+          && (frame?.type === "chat.event" || frame?.type === "agent.result") && frame.event
           ? [frame.event]
           : [];
       if (incoming.length) {
@@ -738,7 +794,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         });
       }
     }
-  }, [command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, t]);
+  }, [chatId, command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -778,8 +834,22 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   }, [status?.state, command]);
 
   useEffect(() => {
-    if (status?.state !== "connected" || !projectId || subscribedProject.current === projectId) return;
-    subscribedProject.current = projectId;
+    if (status?.state !== "connected" || !projectId) return;
+    queueMicrotask(() => {
+      setChats([]);
+      setChatId(projectId);
+    });
+    void command({ type: "project.chat.list", projectId });
+    void command({ type: "usage.get", projectId });
+    void command({ type: "agent.list", projectId });
+    void command({ type: "project.member.list", projectId });
+  }, [status?.state, projectId, command]);
+
+  useEffect(() => {
+    if (status?.state !== "connected" || !projectId || !chatId) return;
+    const scope = `${projectId}:${chatId}`;
+    if (subscribedProject.current === scope) return;
+    subscribedProject.current = scope;
     setChat([]);
     setPresence([]);
     setProjectMembers([]);
@@ -792,28 +862,25 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setFileReferences([]);
     setSelectedArtifactIds([]);
     dispatchReferenceArtifactSelection({ type: "project-changed" });
-    ensurePromptDocument(projectId);
-    void command({ type: "chat.subscribe", projectId, afterSequence: 0 });
-    void command({ type: "prompt.subscribe", projectId });
-    void command({ type: "context.get", projectId });
-    void command({ type: "usage.get", projectId });
-    void command({ type: "agent.list", projectId });
-    void command({ type: "agent.task.list", projectId });
-    void command({ type: "artifact.list", projectId });
-    void command({ type: "project.file-reference.list", projectId });
-    void command({ type: "project.member.list", projectId });
-  }, [status?.state, projectId, command, ensurePromptDocument]);
+    ensurePromptDocument(projectId, chatId);
+    void command({ type: "chat.subscribe", projectId, chatId, afterSequence: 0 });
+    void command({ type: "prompt.subscribe", projectId, chatId });
+    void command({ type: "context.get", projectId, chatId });
+    void command({ type: "agent.task.list", projectId, chatId });
+    void command({ type: "artifact.list", projectId, chatId });
+    void command({ type: "project.file-reference.list", projectId, chatId });
+  }, [status?.state, projectId, chatId, command, ensurePromptDocument]);
 
   useEffect(() => {
-    if (status?.state !== "connected" || !projectId) return;
+    if (status?.state !== "connected" || !projectId || !chatId) return;
     const refresh = () => {
       void command({ type: "agent.list", projectId });
-      void command({ type: "agent.task.list", projectId });
+      void command({ type: "agent.task.list", projectId, chatId });
     };
     refresh();
     const interval = window.setInterval(refresh, 2_000);
     return () => window.clearInterval(interval);
-  }, [status?.state, projectId, command]);
+  }, [status?.state, projectId, chatId, command]);
 
   useEffect(() => {
     presenceConnectionState.current = status?.state;
@@ -864,8 +931,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   };
 
   const editSharedPrompt = (value: string) => {
-    if (!projectId) return;
-    const text = ensurePromptDocument(projectId).getText("prompt");
+    if (!projectId || !chatId) return;
+    const text = ensurePromptDocument(projectId, chatId).getText("prompt");
     text.doc?.transact(() => {
       text.delete(0, text.length);
       text.insert(0, value);
@@ -875,12 +942,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const sendPrompt = async (event: FormEvent) => {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || !projectId) return;
+    if (!content || !projectId || !chatId) return;
     setDraft("");
     try {
       await command(agentId.trim()
-        ? { type: "agent.request", projectId, agentId: agentId.trim(), prompt: content, inputArtifactIds: selectedArtifactIds }
-        : { type: "chat.send", projectId, content });
+        ? { type: "agent.request", projectId, chatId, agentId: agentId.trim(), prompt: content, inputArtifactIds: selectedArtifactIds }
+        : { type: "chat.send", projectId, chatId, content });
     } catch (error) {
       setDraft(content);
       setNotice(error instanceof Error ? error.message : String(error));
@@ -936,6 +1003,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const createChat = async (event: FormEvent) => {
+    event.preventDefault();
+    const title = chatTitle.trim();
+    if (!projectId || !title || status?.state !== "connected") return;
+    try {
+      await command({ type: "project.chat.create", projectId, chatId: crypto.randomUUID(), title });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -1052,6 +1130,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       await command({
         type: "artifact.publish",
         projectId,
+        chatId,
         taskId: null,
         artifactType: "handoff",
         title: artifactTitle.trim(),
@@ -1075,6 +1154,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       await command({
         type: "project.file-reference.publish",
         projectId,
+        chatId,
         artifactId: referenceArtifactId,
         workspaceRoot: referenceWorkspaceRoot.trim(),
         path: referencePath.trim(),
@@ -1099,6 +1179,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       await command({
         type: "private.share",
         projectId,
+        chatId,
         agentId: agentId.trim(),
         messageId: message.messageId,
       });
@@ -1172,6 +1253,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       await command({
         type: "context.update",
         projectId,
+        chatId,
         expectedRevision: sharedContext.revision,
         finalGoal: finalGoalDraft,
         context: sharedContext.context,
@@ -1182,51 +1264,54 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const sendPresenceState = useCallback((targetProjectId: string, state: LocalPresence) => {
+  const sendPresenceState = useCallback((targetProjectId: string, targetChatId: string | null, state: LocalPresence) => {
     if (presenceConnectionState.current !== "connected" || !targetProjectId) return;
-    void command({ type: "presence.update", projectId: targetProjectId, ...state });
+    void command({ type: "presence.update", projectId: targetProjectId, chatId: targetChatId, ...state });
   }, [command]);
 
   const publishPresence = useCallback((patch: Partial<LocalPresence>, immediate = true) => {
-    if (!projectId) return;
+    if (!projectId || !chatId) return;
     const targetProjectId = projectId;
+    const targetChatId = chatId;
     const next = { ...localPresence.current, ...patch };
     localPresence.current = next;
     if (next.typing) {
       if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
       typingIdleTimer.current = window.setTimeout(() => {
-        if (presenceProject.current !== targetProjectId) return;
+        if (presenceProject.current !== `${targetProjectId}:${targetChatId}`) return;
         const idle = { ...localPresence.current, typing: false };
         localPresence.current = idle;
-        sendPresenceState(targetProjectId, idle);
+        sendPresenceState(targetProjectId, targetChatId, idle);
       }, 1_500);
     }
     if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
     if (immediate) {
-      sendPresenceState(targetProjectId, next);
+      sendPresenceState(targetProjectId, targetChatId, next);
     } else {
       presenceSendTimer.current = window.setTimeout(() => {
-        sendPresenceState(targetProjectId, localPresence.current);
+        sendPresenceState(targetProjectId, targetChatId, localPresence.current);
       }, 100);
     }
-  }, [projectId, sendPresenceState]);
+  }, [projectId, chatId, sendPresenceState]);
 
   useEffect(() => {
-    const previousProjectId = presenceProject.current;
-    if (previousProjectId && previousProjectId !== projectId && presenceConnectionState.current === "connected") {
-      sendPresenceState(previousProjectId, { cursor: null, caret: null, typing: false });
+    const previousScope = presenceProject.current;
+    const nextScope = projectId && chatId ? `${projectId}:${chatId}` : "";
+    if (previousScope && previousScope !== nextScope && presenceConnectionState.current === "connected") {
+      const [previousProjectId, previousChatId] = previousScope.split(":");
+      sendPresenceState(previousProjectId!, previousChatId ?? null, { cursor: null, caret: null, typing: false });
     }
-    presenceProject.current = projectId;
+    presenceProject.current = nextScope;
     localPresence.current = { cursor: null, caret: null, typing: false };
     if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
     if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
-  }, [projectId, sendPresenceState]);
+  }, [projectId, chatId, sendPresenceState]);
 
   useEffect(() => {
-    if (status?.state !== "connected" || !projectId) return;
-    presenceProject.current = projectId;
-    sendPresenceState(projectId, localPresence.current);
-  }, [projectId, sendPresenceState, status?.state]);
+    if (status?.state !== "connected" || !projectId || !chatId) return;
+    presenceProject.current = `${projectId}:${chatId}`;
+    sendPresenceState(projectId, chatId, localPresence.current);
+  }, [projectId, chatId, sendPresenceState, status?.state]);
 
   const visiblePresence = status?.state === "connected" ? presence : [];
   const visibleAgents = status?.state === "connected" ? agents : [];
@@ -1234,6 +1319,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visibleArtifacts = status?.state === "connected" ? artifacts : [];
   const visibleFileReferences = status?.state === "connected" ? fileReferences : [];
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
+  const selectedChat = chats.find(item => item.id === chatId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
   const selectedPrivateContact = privateContacts.find(contact => contact.deviceId === recipientDeviceId);
@@ -1373,6 +1459,36 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               ))}
               {!projects.length && <p className="muted">{t("cocodex.projects.empty")}</p>}
             </div>
+            {projectId && (
+              <section className="cocodex-chats">
+                <div className="cocodex-section-head">
+                  <span>{t("cocodex.chats.title")}</span>
+                  <button type="button" className="btn btn-ghost btn-icon"
+                    title={t("cocodex.chats.refresh")}
+                    onClick={() => void command({ type: "project.chat.list", projectId })}
+                    disabled={status.state !== "connected"}>
+                    <IconRefresh />
+                  </button>
+                </div>
+                <div className="cocodex-project-list">
+                  {chats.map(item => (
+                    <button key={item.id} type="button" className={item.id === chatId ? "active" : ""}
+                      onClick={() => setChatId(item.id)}>
+                      <span>{item.title}</span>
+                    </button>
+                  ))}
+                </div>
+                <form className="cocodex-project-create" onSubmit={createChat}>
+                  <input className="input" value={chatTitle}
+                    onChange={event => setChatTitle(event.target.value)}
+                    placeholder={t("cocodex.chats.name")} maxLength={120} required />
+                  <button type="submit" className="btn btn-primary"
+                    disabled={status.state !== "connected" || !chatTitle.trim()}>
+                    {t("cocodex.chats.create")}
+                  </button>
+                </form>
+              </section>
+            )}
             <form className="cocodex-project-create" onSubmit={createProject}>
               <input className="input" value={projectName}
                 onChange={event => setProjectName(event.target.value)}
@@ -1517,7 +1633,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           <section className="card cocodex-chat">
             <div className="cocodex-section-head">
               <div>
-                <strong>{projects.find(project => project.id === projectId)?.name || t("cocodex.chat.title")}</strong>
+                <strong>{selectedChat?.title
+                  || projects.find(project => project.id === projectId)?.name
+                  || t("cocodex.chat.title")}</strong>
                 <small>{t("cocodex.chat.ordered")}</small>
               </div>
               <span className="cocodex-lock"><IconLock /> {t("cocodex.chat.transport")}</span>

@@ -123,16 +123,27 @@ device key and enrollment record do not change, so approval is not repeated.
 
 ## Shared work
 
-The client subscribes to project chat, prompt revisions, presence, and the
-shared Final Goal. Chat order and context revisions come from the server. Prompt
-text uses Yjs updates. When a project key is available, the client encrypts each
-Yjs update before sending it through `project.prompt.*`; the server orders and
-deduplicates the opaque update but never applies Yjs, and each client decrypts
-and applies it locally. Offline chat, private ciphertext, delivery/read receipt
-frames, prompt updates, and context updates are kept in the protected local
-outbox and replayed after reconnect. The private mailbox keeps a separate
-bounded receipt cursor so sender-visible status survives a Server restart
-without coupling it to the ciphertext message cursor.
+Every encrypted Co-Project starts with a **General** chat. Use the chat selector
+to open General or another shared chat, or create a new one with a bounded
+title. Chat creation is signed by the resident device and authorized by the
+Server; a typed title or UUID is never authority by itself.
+
+The client subscribes to the selected chat's chronological events, Yjs prompt
+revisions, presence, Final Goal/context projection, tasks, artifacts, and file
+references. Chat order and context revisions come from the server. New
+encrypted records bind both project and chat in their signature and AEAD
+metadata, so selecting another chat clears the current projection and loads
+that chat's state instead of mixing histories. Existing version-1 encrypted
+records are compatible only with General.
+
+Prompt text uses Yjs updates. When a project key is available, the client
+encrypts each Yjs update before sending it through `project.prompt.*`; the
+server orders and deduplicates the opaque update but never applies Yjs, and
+each client decrypts and applies it locally. Offline chat, private ciphertext,
+delivery/read receipt frames, prompt updates, and context updates are kept in
+the protected local outbox and replayed after reconnect. The private mailbox
+keeps a separate bounded receipt cursor so sender-visible status survives a
+Server restart without coupling it to the ciphertext message cursor.
 
 Presence is deliberately ephemeral. The client publishes a normalized mouse
 cursor plus a bounded prompt caret/selection and typing flag; local state keeps
@@ -144,12 +155,14 @@ current prompt snapshot, not stable Yjs RelativePositions or an inline overlay.
 To instruct a local or remote named agent through the JSON-line session:
 
 ```json
-{"id":"run-1","type":"agent.request","projectId":"PROJECT_ID","agentId":"lucas","prompt":"Inspect the authentication flow."}
+{"id":"run-1","type":"agent.request","projectId":"PROJECT_ID","chatId":"CHAT_ID","agentId":"lucas","prompt":"Inspect the authentication flow."}
 ```
 
-The destination client validates the signed task, its server authorization, and
-its local agent policy before invoking the local Codex runtime. Agent results
-are streamed back into the authoritative project chat. Private messages are
+Omitting `chatId` selects General for compatibility. The destination client
+validates the signed task, its exact chat, its server authorization, and its
+local agent policy before invoking the local Codex runtime. Agent results are
+streamed back into that authoritative chat. Dependencies and explicit artifact
+inputs must belong to the same chat. Private messages are
 decrypted locally and are never automatically added to an agent prompt. A host
 may explicitly share one already-decrypted private message with one selected
 project agent:

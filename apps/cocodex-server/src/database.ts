@@ -39,17 +39,19 @@ function applyMigrations(db: Database): void {
   // the project-membership parent constraint from historical agent rows; all
   // constraints are re-enabled and exhaustively checked before this function
   // returns.
-  const requiresAgentParentRebuild = !db.query(
+  const requiresForeignKeyRebuild = !db.query(
     "SELECT 1 FROM schema_migrations WHERE version = 24",
+  ).get() || !db.query(
+    "SELECT 1 FROM schema_migrations WHERE version = 28",
   ).get();
-  if (requiresAgentParentRebuild) db.exec("PRAGMA foreign_keys = OFF;");
+  if (requiresForeignKeyRebuild) db.exec("PRAGMA foreign_keys = OFF;");
   try {
     for (const migration of migrations) {
       const present = db.query("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration.version);
       if (!present) apply.immediate(migration.version, migration.sql);
     }
   } finally {
-    if (requiresAgentParentRebuild) db.exec("PRAGMA foreign_keys = ON;");
+    if (requiresForeignKeyRebuild) db.exec("PRAGMA foreign_keys = ON;");
   }
   const invalid = db.query("PRAGMA foreign_key_check").all();
   if (invalid.length > 0) throw new Error("Database foreign-key validation failed after migration");

@@ -63,6 +63,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     const requestValid = verify(null, agentEncryptedDispatchSigningTranscript({
       taskId: task.id,
       projectId: task.projectId,
+      chatId: task.chatId,
       agentId: task.agentId,
       nonce: task.nonce,
       issuedAt: task.issuedAt,
@@ -88,9 +89,11 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
     if (prompt.length < 1 || Buffer.byteLength(prompt, "utf8") > 300_000) return null;
     return requestValid ? { ...task, prompt } as AgentTask : null;
   }
+  const chatId = task.chatId ?? task.projectId;
   const requestValid = verify(null, agentRequestSigningTranscript({
     taskId: task.id,
     projectId: task.projectId,
+    chatId,
     agentId: task.agentId,
     prompt: task.prompt,
     nonce: task.nonce,
@@ -104,6 +107,7 @@ async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentB
   const dispatchValid = verify(null, agentDispatchSigningTranscript({
     taskId: task.id,
     projectId: task.projectId,
+    chatId,
     agentId: task.agentId,
     prompt: task.prompt,
     nonce: task.nonce,
@@ -145,6 +149,7 @@ function deliverResult(socket: WebSocket, result: DurableAgentResult): Promise<v
       type: "project.agent.result",
       requestId: result.requestId,
       taskId: result.taskId,
+      chatId: result.projectEnvelope.version === 2 ? result.projectEnvelope.chatId : result.projectEnvelope.projectId,
       eventId: result.eventId,
       envelope: result.projectEnvelope,
       final: result.final,

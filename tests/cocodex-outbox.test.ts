@@ -182,6 +182,7 @@ describe("CoCodex durable offline outbox", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-outbox-"));
     const paths = clientPaths(root);
     const projectId = randomUUID();
+    const chatId = randomUUID();
     const referenceId = randomUUID();
     const deviceId = randomUUID();
     const frame = {
@@ -190,10 +191,12 @@ describe("CoCodex durable offline outbox", () => {
       requestId: randomUUID(),
       referenceId,
       projectId,
+      chatId,
       artifactId: randomUUID(),
       envelope: {
-        version: 1 as const,
+        version: 2 as const,
         projectId,
+        chatId,
         keyEpoch: 1,
         recordType: "file-reference" as const,
         recordId: referenceId,
@@ -219,12 +222,13 @@ describe("CoCodex durable offline outbox", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-file-reference-terminal-"));
     const paths = clientPaths(root);
     const projectId = randomUUID();
+    const chatId = randomUUID();
     const referenceId = randomUUID();
     const reference = {
       version: 1 as const, type: "project.file-reference.publish" as const,
-      requestId: randomUUID(), referenceId, projectId, artifactId: randomUUID(),
+      requestId: randomUUID(), referenceId, projectId, chatId, artifactId: randomUUID(),
       envelope: {
-        version: 1 as const, projectId, keyEpoch: 1, recordType: "file-reference" as const,
+        version: 2 as const, projectId, chatId, keyEpoch: 1, recordType: "file-reference" as const,
         recordId: referenceId, nonce: Buffer.alloc(24, 1).toString("base64url"),
         ciphertext: Buffer.alloc(64, 2).toString("base64url"), senderDeviceId: randomUUID(),
         senderPublicKeyPem: "P".repeat(64), signature: Buffer.alloc(64, 3).toString("base64url"),
@@ -241,7 +245,7 @@ describe("CoCodex durable offline outbox", () => {
       send(value: string) {
         const sent = JSON.parse(value) as { requestId: string; type: string };
         const response = sent.type === "project.file-reference.publish"
-          ? { type: "error", requestId: sent.requestId, error: "File-reference artifact is not in this project" }
+          ? { type: "error", requestId: sent.requestId, error: "File-reference artifact is not in this shared chat" }
           : { type: "chat.accepted", requestId: sent.requestId };
         queueMicrotask(() => this.listeners.forEach(listener => listener({ data: JSON.stringify(response) } as MessageEvent)));
       }

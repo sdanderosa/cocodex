@@ -4,6 +4,7 @@ import {
   projectCreationSigningTranscript,
   projectInvitationDecisionTranscript,
   projectInvitationSigningTranscript,
+  sharedChatCreationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
@@ -232,7 +233,13 @@ export async function runJsonLineSession(
   const encryptedPromptSubscriptions = new Set<string>();
   const encryptedArtifactSubscriptions = new Set<string>();
   const encryptedFileReferenceSubscriptions = new Set<string>();
-  const encryptedTaskProjects = new Map<string, string>();
+  const encryptedTaskProjects = new Map<string, { projectId: string; chatId: string }>();
+  const splitChatScope = (scope: string): { projectId: string; chatId: string } => {
+    const separator = scope.indexOf(":");
+    return separator < 0
+      ? { projectId: scope, chatId: scope }
+      : { projectId: scope.slice(0, separator), chatId: scope.slice(separator + 1) };
+  };
   const decryptedProjectArtifacts = new Map<string, Artifact>();
   const decryptedProjectFileReferences = new Map<string, FileReferencePlaintext & {
     authorDeviceId: string;
@@ -578,12 +585,12 @@ export async function runJsonLineSession(
     if (chatSubscriptions.has(projectId) && !encryptedChatCursors.has(projectId)) {
       chatCursors.delete(projectId);
       encryptedChatCursors.set(projectId, 0);
-      send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence: 0 });
+      send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, chatId: projectId, afterSequence: 0 });
     }
     if (promptSubscriptions.delete(projectId)) {
       encryptedPromptCursors.set(projectId, 0);
       encryptedPromptSubscriptions.add(projectId);
-      send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: 0 });
+      send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, chatId: projectId, afterSequence: 0 });
     }
     if (contextSubscriptions.delete(projectId)) {
       encryptedContextSubscriptions.add(projectId);
@@ -594,6 +601,7 @@ export async function runJsonLineSession(
         const serialized = JSON.stringify({ finalGoal: snapshot.finalGoal, context: snapshot.context });
         const envelope = await sealProjectContent({
           projectId,
+          chatId: projectId,
           keyEpoch: stored.keyEpoch,
           recordType: "shared-context",
           recordId: migrationRecordId(projectId, snapshot.revision),
@@ -608,6 +616,7 @@ export async function runJsonLineSession(
           type: "project.context.update",
           requestId: randomUUID(),
           projectId,
+          chatId: projectId,
           expectedRevision: 0,
           envelope,
         });
@@ -617,11 +626,12 @@ export async function runJsonLineSession(
         try { await migration; }
         catch (error) { emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) }); }
       }
-      send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
+      send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId, chatId: projectId });
     }
   };
   const encryptedChatFrame = async (
     projectId: string,
+    chatId: string,
     eventId: string,
     content: string,
     requestId: string,
@@ -632,6 +642,7 @@ export async function runJsonLineSession(
     if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
     const envelope = await sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "chat",
       recordId: eventId,
@@ -646,6 +657,7 @@ export async function runJsonLineSession(
       type: "project.chat.send" as const,
       requestId,
       projectId,
+      chatId,
       eventId,
       envelope,
       clientCreatedAt,
@@ -653,6 +665,7 @@ export async function runJsonLineSession(
   };
   const encryptedPromptFrame = async (
     projectId: string,
+    chatId: string,
     updateId: string,
     update: string,
     requestId: string,
@@ -662,6 +675,7 @@ export async function runJsonLineSession(
     if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
     const envelope = await sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "shared-prompt",
       recordId: updateId,
@@ -676,12 +690,14 @@ export async function runJsonLineSession(
       type: "project.prompt.update" as const,
       requestId,
       projectId,
+      chatId,
       updateId,
       envelope,
     };
   };
   const encryptedArtifactFrame = async (
     projectId: string,
+    chatId: string,
     artifactId: string,
     taskId: string | null,
     artifactType: string,
@@ -698,12 +714,14 @@ export async function runJsonLineSession(
     if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
     const envelope = await sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "artifact",
       recordId: artifactId,
       plaintext: JSON.stringify({
         id: artifactId,
         projectId,
+        chatId,
         taskId,
         type: artifactType,
         title: title.trim(),
@@ -722,12 +740,14 @@ export async function runJsonLineSession(
       requestId,
       artifactId,
       projectId,
+      chatId,
       taskId,
       envelope,
     };
   };
   const encryptedFileReferenceFrame = async (
     projectId: string,
+    chatId: string,
     referenceId: string,
     artifactId: string,
     command: ControlCommand,
@@ -745,6 +765,7 @@ export async function runJsonLineSession(
     const plaintext = await inspectLocalFileReference({
       referenceId,
       projectId,
+      chatId,
       artifactId,
       hostDeviceId: connection.deviceId,
       workspaceRoot: String(command.workspaceRoot),
@@ -757,6 +778,7 @@ export async function runJsonLineSession(
     });
     const envelope = await sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "file-reference",
       recordId: referenceId,
@@ -772,12 +794,14 @@ export async function runJsonLineSession(
       requestId,
       referenceId,
       projectId,
+      chatId,
       artifactId,
       envelope,
     };
   };
   const encryptedAgentRequestFrame = async (
     projectId: string,
+    chatId: string,
     taskId: string,
     agentId: string,
     prompt: string,
@@ -796,6 +820,7 @@ export async function runJsonLineSession(
     const boundInputArtifactIds = [...new Set(inputArtifactIds)];
     const envelope = await sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "task",
       recordId: taskId,
@@ -816,6 +841,7 @@ export async function runJsonLineSession(
       requestId,
       taskId,
       projectId,
+      chatId,
       agentId,
       nonce,
       issuedAt,
@@ -826,10 +852,16 @@ export async function runJsonLineSession(
       envelope,
     };
   };
-  const queueAgentRequest = async (request: ReturnType<typeof createAgentRequest>): Promise<{
+  const queueAgentRequest = async (
+    request: ReturnType<typeof createAgentRequest>,
+    chatId = request.chatId,
+  ): Promise<{
     queued: boolean;
     encrypted: boolean;
   }> => {
+    if (chatId !== request.chatId) {
+      throw new Error("Agent request chat does not match its signed chat binding");
+    }
     const stored = loadProjectKeyForEncryption(paths.projectKeys, request.projectId);
     if (stored) {
       for (const artifactId of request.inputArtifactIds) {
@@ -843,6 +875,7 @@ export async function runJsonLineSession(
       }
       enqueueDurableEvent(paths, await encryptedAgentRequestFrame(
         request.projectId,
+        chatId,
         request.taskId,
         request.agentId,
         request.prompt,
@@ -1175,6 +1208,8 @@ export async function runJsonLineSession(
       envelope: parsedEnvelope,
       projectKey: key.projectKey,
       expectedProjectId: task.projectId,
+      expectedChatId: task.chatId,
+      allowLegacyUnboundChat: task.chatId === task.projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "task",
       expectedRecordId: task.id,
@@ -1212,12 +1247,14 @@ export async function runJsonLineSession(
   };
 
   const encryptAgentResult = async (result: import("./agent-journal").DurableAgentResult) => {
-    const projectId = encryptedTaskProjects.get(result.taskId);
-    if (!projectId) return undefined;
+    const scope = encryptedTaskProjects.get(result.taskId);
+    if (!scope) return undefined;
+    const { projectId, chatId } = scope;
     const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
     if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
     return sealProjectContent({
       projectId,
+      chatId,
       keyEpoch: stored.keyEpoch,
       recordType: "agent-response",
       recordId: result.eventId,
@@ -1245,6 +1282,7 @@ export async function runJsonLineSession(
 
   const openEncryptedChatEvent = async (rawEvent: Record<string, any>): Promise<ChatEvent> => {
     const projectId = String(rawEvent.projectId);
+    const chatId = String(rawEvent.chatId ?? projectId);
     const eventId = String(rawEvent.eventId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
     if (String(rawEvent.senderDeviceId) !== parsedEnvelope.senderDeviceId) {
@@ -1257,6 +1295,8 @@ export async function runJsonLineSession(
       envelope: parsedEnvelope,
       projectKey: key.projectKey,
       expectedProjectId: projectId,
+      expectedChatId: chatId,
+      allowLegacyUnboundChat: chatId === projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "chat",
       expectedRecordId: eventId,
@@ -1276,6 +1316,7 @@ export async function runJsonLineSession(
     return {
       sequence: Number(rawEvent.sequence),
       projectId,
+      chatId,
       eventId,
       senderDeviceId: String(rawEvent.senderDeviceId),
       content,
@@ -1286,6 +1327,7 @@ export async function runJsonLineSession(
 
   const openEncryptedAgentResult = async (rawEvent: Record<string, any>): Promise<{ taskId: string; final: boolean; status: "running" | "completed" | "failed"; event: ChatEvent }> => {
     const projectId = String(rawEvent.projectId);
+    const chatId = String(rawEvent.chatId ?? projectId);
     const taskId = String(rawEvent.taskId);
     const eventId = String(rawEvent.eventId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
@@ -1296,6 +1338,8 @@ export async function runJsonLineSession(
       envelope: parsedEnvelope,
       projectKey: key.projectKey,
       expectedProjectId: projectId,
+      expectedChatId: chatId,
+      allowLegacyUnboundChat: chatId === projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "agent-response",
       expectedRecordId: eventId,
@@ -1327,6 +1371,7 @@ export async function runJsonLineSession(
       event: {
         sequence: Number(rawEvent.sequence),
         projectId,
+        chatId,
         eventId,
         senderDeviceId: String(rawEvent.senderDeviceId),
         content,
@@ -1339,7 +1384,8 @@ export async function runJsonLineSession(
   const openEncryptedAgentResultFrame = async (frame: Record<string, any>): Promise<void> => {
     try {
       const result = await openEncryptedAgentResult(frame.event);
-      encryptedChatCursors.set(result.event.projectId, Math.max(encryptedChatCursors.get(result.event.projectId) ?? 0, result.event.sequence));
+      const scope = `${result.event.projectId}:${result.event.chatId ?? result.event.projectId}`;
+      encryptedChatCursors.set(scope, Math.max(encryptedChatCursors.get(scope) ?? 0, result.event.sequence));
       emit({ source: "server", frame: {
         version: 1,
         type: "agent.result",
@@ -1356,6 +1402,8 @@ export async function runJsonLineSession(
   const openEncryptedChatFrame = async (frame: Record<string, any>): Promise<void> => {
     try {
       const projectId = String(frame.projectId ?? frame.event?.projectId);
+      const chatId = String(frame.chatId ?? frame.event?.chatId ?? projectId);
+      const scope = `${projectId}:${chatId}`;
       if (frame.type === "project.chat.snapshot") {
         const rawEvents = Array.isArray(frame.events) ? frame.events : [];
         const events: ChatEvent[] = [];
@@ -1369,13 +1417,14 @@ export async function runJsonLineSession(
         const latestResult = agentResults.at(-1)?.event.sequence;
         const latestSequence = Math.max(latest ?? 0, latestResult ?? 0);
         if (latestSequence > 0) {
-          encryptedChatCursors.set(projectId, Math.max(encryptedChatCursors.get(projectId) ?? 0, latestSequence));
+          encryptedChatCursors.set(scope, Math.max(encryptedChatCursors.get(scope) ?? 0, latestSequence));
         }
         emit({ source: "server", frame: {
           version: 1,
           type: "chat.snapshot",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           events,
         } });
         for (const result of agentResults) {
@@ -1389,7 +1438,7 @@ export async function runJsonLineSession(
           } });
         }
         if (rawEvents.length === SNAPSHOT_PAGE_SIZE && latestSequence > 0) {
-          send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence: latestSequence });
+          send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, chatId, afterSequence: latestSequence });
         }
         return;
       }
@@ -1408,12 +1457,13 @@ export async function runJsonLineSession(
           return;
         }
         const event = await openEncryptedChatEvent(frame.event);
-        encryptedChatCursors.set(projectId, Math.max(encryptedChatCursors.get(projectId) ?? 0, event.sequence));
+        encryptedChatCursors.set(scope, Math.max(encryptedChatCursors.get(scope) ?? 0, event.sequence));
         emit({ source: "server", frame: {
           version: 1,
           type: frame.type === "project.chat.event" ? "chat.event" : "chat.accepted",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           event,
         } });
       }
@@ -1422,8 +1472,9 @@ export async function runJsonLineSession(
     }
   };
 
-  const openEncryptedPromptUpdate = async (rawUpdate: Record<string, any>): Promise<{ updateId: string; projectId: string; senderDeviceId: string; update: string; sequence: number }> => {
+  const openEncryptedPromptUpdate = async (rawUpdate: Record<string, any>): Promise<{ updateId: string; projectId: string; chatId: string; senderDeviceId: string; update: string; sequence: number }> => {
     const projectId = String(rawUpdate.projectId);
+    const chatId = String(rawUpdate.chatId ?? projectId);
     const updateId = String(rawUpdate.updateId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawUpdate.envelope);
     const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
@@ -1433,6 +1484,8 @@ export async function runJsonLineSession(
       envelope: parsedEnvelope,
       projectKey: key.projectKey,
       expectedProjectId: projectId,
+      expectedChatId: chatId,
+      allowLegacyUnboundChat: chatId === projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "shared-prompt",
       expectedRecordId: updateId,
@@ -1452,6 +1505,7 @@ export async function runJsonLineSession(
     return {
       updateId,
       projectId,
+      chatId,
       senderDeviceId: String(rawUpdate.senderDeviceId),
       update,
       sequence: Number(rawUpdate.sequence),
@@ -1461,34 +1515,38 @@ export async function runJsonLineSession(
   const openEncryptedPromptFrame = async (frame: Record<string, any>): Promise<void> => {
     try {
       const projectId = String(frame.projectId ?? frame.update?.projectId);
+      const chatId = String(frame.chatId ?? frame.update?.chatId ?? projectId);
+      const scope = `${projectId}:${chatId}`;
       if (frame.type === "project.prompt.snapshot") {
         const rawUpdates = Array.isArray(frame.updates) ? frame.updates : [];
         const updates = [];
         for (const rawUpdate of rawUpdates) updates.push(await openEncryptedPromptUpdate(rawUpdate));
         const latest = updates.at(-1)?.sequence;
         if (typeof latest === "number") {
-          encryptedPromptCursors.set(projectId, Math.max(encryptedPromptCursors.get(projectId) ?? 0, latest));
+          encryptedPromptCursors.set(scope, Math.max(encryptedPromptCursors.get(scope) ?? 0, latest));
         }
         emit({ source: "server", frame: {
           version: 1,
           type: "prompt.snapshot",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           updates,
         } });
         if (rawUpdates.length === SNAPSHOT_PAGE_SIZE && typeof latest === "number") {
-          send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: latest });
+          send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, chatId, afterSequence: latest });
         }
         return;
       }
       if (frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
         const update = await openEncryptedPromptUpdate(frame.update);
-        encryptedPromptCursors.set(projectId, Math.max(encryptedPromptCursors.get(projectId) ?? 0, update.sequence));
+        encryptedPromptCursors.set(scope, Math.max(encryptedPromptCursors.get(scope) ?? 0, update.sequence));
         emit({ source: "server", frame: {
           version: 1,
           type: "prompt.update",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           updateId: update.updateId,
           senderDeviceId: update.senderDeviceId,
           update: update.update,
@@ -1501,6 +1559,7 @@ export async function runJsonLineSession(
 
   const openEncryptedArtifact = async (rawArtifact: Record<string, any>): Promise<Artifact> => {
     const projectId = String(rawArtifact.projectId);
+    const chatId = String(rawArtifact.chatId ?? projectId);
     const artifactId = String(rawArtifact.artifactId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawArtifact.envelope);
     const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
@@ -1510,6 +1569,8 @@ export async function runJsonLineSession(
       envelope: parsedEnvelope,
       projectKey: key.projectKey,
       expectedProjectId: projectId,
+      expectedChatId: chatId,
+      allowLegacyUnboundChat: chatId === projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "artifact",
       expectedRecordId: artifactId,
@@ -1525,6 +1586,7 @@ export async function runJsonLineSession(
     const allowedTypes = new Set(["finding", "plan", "decision", "api-contract", "schema", "code-change", "commit", "diff", "test-result", "review", "handoff", "documentation", "failure-report", "browser-result", "final-result"]);
     const allowedStatuses = new Set(["draft", "ready", "accepted", "rejected", "superseded", "integrated"]);
     if (record.id !== artifactId || record.projectId !== projectId
+      || (record.chatId !== undefined && record.chatId !== chatId)
       || (record.taskId !== null && typeof record.taskId !== "string")
       || typeof record.type !== "string" || !allowedTypes.has(record.type)
       || typeof record.title !== "string" || record.title.trim().length < 1 || record.title.length > 200
@@ -1539,6 +1601,7 @@ export async function runJsonLineSession(
     return {
       id: artifactId,
       projectId,
+      chatId,
       taskId: record.taskId as string | null,
       authorDeviceId: String(rawArtifact.authorDeviceId),
       type: record.type as Artifact["type"],
@@ -1554,6 +1617,7 @@ export async function runJsonLineSession(
   const openEncryptedArtifactFrame = async (frame: Record<string, any>): Promise<void> => {
     try {
       const projectId = String(frame.projectId ?? frame.artifact?.projectId);
+      const chatId = String(frame.chatId ?? frame.artifact?.chatId ?? projectId);
       if (frame.type === "project.artifact.list.result") {
         const rawArtifacts = Array.isArray(frame.artifacts) ? frame.artifacts : [];
         const artifacts: Artifact[] = [];
@@ -1567,6 +1631,7 @@ export async function runJsonLineSession(
           type: "artifact.list.result",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           artifacts,
         } });
         return;
@@ -1579,6 +1644,7 @@ export async function runJsonLineSession(
           type: frame.type === "project.artifact.accepted" ? "artifact.accepted" : "artifact.published",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           artifact,
         } });
       }
@@ -1589,6 +1655,7 @@ export async function runJsonLineSession(
 
   const openEncryptedFileReference = async (rawReference: Record<string, any>) => {
     const projectId = String(rawReference.projectId);
+    const chatId = String(rawReference.chatId ?? projectId);
     const referenceId = String(rawReference.referenceId);
     const envelope = projectContentEnvelopeSchema.parse(rawReference.envelope);
     const key = loadProjectKey(paths.projectKeys, projectId, envelope.keyEpoch);
@@ -1598,6 +1665,8 @@ export async function runJsonLineSession(
       envelope,
       projectKey: key.projectKey,
       expectedProjectId: projectId,
+      expectedChatId: chatId,
+      allowLegacyUnboundChat: chatId === projectId,
       expectedKeyEpoch: key.keyEpoch,
       expectedRecordType: "file-reference",
       expectedRecordId: referenceId,
@@ -1606,6 +1675,7 @@ export async function runJsonLineSession(
     });
     const decoded = fileReferencePlaintextSchema.parse(JSON.parse(plaintext.toString("utf8")));
     if (decoded.referenceId !== referenceId || decoded.projectId !== projectId
+      || decoded.chatId !== chatId
       || decoded.artifactId !== rawReference.artifactId
       || decoded.hostDeviceId !== rawReference.hostDeviceId
       || rawReference.authorDeviceId !== rawReference.hostDeviceId
@@ -1614,6 +1684,7 @@ export async function runJsonLineSession(
     }
     return {
       ...decoded,
+      chatId,
       authorDeviceId: String(rawReference.authorDeviceId),
       createdAt: String(rawReference.createdAt),
       updatedAt: String(rawReference.updatedAt),
@@ -1622,6 +1693,7 @@ export async function runJsonLineSession(
 
   const openEncryptedFileReferenceFrame = async (frame: Record<string, any>): Promise<void> => {
     const projectId = String(frame.projectId ?? frame.reference?.projectId);
+    const chatId = String(frame.chatId ?? frame.reference?.chatId ?? projectId);
     if (frame.type === "project.file-reference.list.result") {
       const references = [];
       for (const rawReference of Array.isArray(frame.references) ? frame.references : []) {
@@ -1642,6 +1714,7 @@ export async function runJsonLineSession(
         type: "file-reference.list.result",
         ...(frame.requestId ? { requestId: frame.requestId } : {}),
         projectId,
+        chatId,
         references,
       } });
       return;
@@ -1656,6 +1729,7 @@ export async function runJsonLineSession(
           : "file-reference.published",
         ...(frame.requestId ? { requestId: frame.requestId } : {}),
         projectId,
+        chatId,
         reference,
       } });
     } catch (error) {
@@ -1710,13 +1784,15 @@ export async function runJsonLineSession(
   const openEncryptedProjectContext = (frame: Record<string, any>): void => {
     const envelope = frame.envelope as Record<string, any> | null;
     const projectId = String(frame.projectId);
+    const chatId = String(frame.chatId ?? projectId);
     if (!envelope) {
       emit({ source: "server", frame: {
         version: 1,
         type: frame.type === "project.context.result" ? "context.result" : "context.changed",
         ...(frame.requestId ? { requestId: frame.requestId } : {}),
         projectId,
-        context: { projectId, finalGoal: "", context: {}, revision: frame.revision ?? 0, updatedByDeviceId: null, updatedAt: null },
+        chatId,
+        context: { projectId, chatId, finalGoal: "", context: {}, revision: frame.revision ?? 0, updatedByDeviceId: null, updatedAt: null },
       } });
       return;
     }
@@ -1732,6 +1808,8 @@ export async function runJsonLineSession(
         envelope: parsedEnvelope,
         projectKey: key.projectKey,
         expectedProjectId: projectId,
+        expectedChatId: chatId,
+        allowLegacyUnboundChat: chatId === projectId,
         expectedKeyEpoch: key.keyEpoch,
         expectedRecordType: "shared-context",
         expectedRecordId: parsedEnvelope.recordId,
@@ -1745,8 +1823,10 @@ export async function runJsonLineSession(
             : frame.type === "project.context.updated" ? "context.updated" : "context.changed",
           ...(frame.requestId ? { requestId: frame.requestId } : {}),
           projectId,
+          chatId,
           context: {
             projectId,
+            chatId,
             finalGoal: decoded.finalGoal,
             context: decoded.context,
             revision: frame.revision,
@@ -1776,7 +1856,12 @@ export async function runJsonLineSession(
         catch { return; }
         if (frame.type === "project.agent.task") {
           const task = frame.task as Record<string, unknown> | undefined;
-          if (task?.id && task.projectId) encryptedTaskProjects.set(String(task.id), String(task.projectId));
+          if (task?.id && task.projectId) {
+            encryptedTaskProjects.set(String(task.id), {
+              projectId: String(task.projectId),
+              chatId: String(task.chatId ?? task.projectId),
+            });
+          }
           emit({
             source: "agent-worker",
             agentId: policy.agentId,
@@ -1957,6 +2042,8 @@ export async function runJsonLineSession(
       catch { return; }
       if (frame.type === "project.list.result"
         || frame.type === "project.created" || frame.type === "project.changed"
+        || frame.type === "project.chat.list.result" || frame.type === "project.chat.created"
+        || frame.type === "project.chat.changed"
         || frame.type === "project.invite.list.result" || frame.type === "project.invite.created"
         || frame.type === "project.invite.changed" || frame.type === "project.invite.responded"
         || frame.type === "agent.list.result" || frame.type === "agent.created"
@@ -2220,7 +2307,12 @@ export async function runJsonLineSession(
       }
       if (frame.type === "project.agent.task") {
         const task = frame.task as Record<string, unknown> | undefined;
-        if (task?.id && task.projectId) encryptedTaskProjects.set(String(task.id), String(task.projectId));
+        if (task?.id && task.projectId) {
+          encryptedTaskProjects.set(String(task.id), {
+            projectId: String(task.projectId),
+            chatId: String(task.chatId ?? task.projectId),
+          });
+        }
         emit({ source: "server", frame: {
           version: 1,
           type: "agent.task",
@@ -2357,6 +2449,7 @@ export async function runJsonLineSession(
               ok: true,
               projectId: pending.projectId,
               project,
+              defaultChat: frame.defaultChat,
               created: frame.created === true,
             });
           }
@@ -2575,35 +2668,41 @@ export async function runJsonLineSession(
     for (const [projectId, afterSequence] of chatCursors) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
         chatCursors.delete(projectId);
-        encryptedChatCursors.set(projectId, afterSequence);
-        send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+        encryptedChatCursors.set(`${projectId}:${projectId}`, afterSequence);
+        send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, chatId: projectId, afterSequence });
       } else {
         send({ version: 1, type: "chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
       }
     }
-    for (const [projectId, afterSequence] of encryptedChatCursors) {
-      send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, afterSequence });
+    for (const [scope, afterSequence] of encryptedChatCursors) {
+      const { projectId, chatId } = splitChatScope(scope);
+      send({ version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId, chatId, afterSequence });
     }
-    for (const projectId of encryptedPromptSubscriptions) {
+    for (const scope of encryptedPromptSubscriptions) {
+      const { projectId, chatId } = splitChatScope(scope);
       send({
         version: 1,
         type: "project.prompt.subscribe",
         requestId: randomUUID(),
         projectId,
-        afterSequence: encryptedPromptCursors.get(projectId) ?? 0,
+        chatId,
+        afterSequence: encryptedPromptCursors.get(scope) ?? 0,
       });
     }
-    for (const projectId of encryptedArtifactSubscriptions) {
-      send({ version: 1, type: "project.artifact.list", requestId: randomUUID(), projectId });
+    for (const scope of encryptedArtifactSubscriptions) {
+      const { projectId, chatId } = splitChatScope(scope);
+      send({ version: 1, type: "project.artifact.list", requestId: randomUUID(), projectId, chatId });
     }
-    for (const projectId of encryptedFileReferenceSubscriptions) {
-      send({ version: 1, type: "project.file-reference.list", requestId: randomUUID(), projectId });
+    for (const scope of encryptedFileReferenceSubscriptions) {
+      const { projectId, chatId } = splitChatScope(scope);
+      send({ version: 1, type: "project.file-reference.list", requestId: randomUUID(), projectId, chatId });
     }
     for (const projectId of promptSubscriptions) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
         promptSubscriptions.delete(projectId);
-        encryptedPromptSubscriptions.add(projectId);
-        send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, afterSequence: encryptedPromptCursors.get(projectId) ?? 0 });
+        const scope = `${projectId}:${projectId}`;
+        encryptedPromptSubscriptions.add(scope);
+        send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, chatId: projectId, afterSequence: encryptedPromptCursors.get(scope) ?? 0 });
       } else {
         send({ version: 1, type: "prompt.subscribe", requestId: randomUUID(), projectId });
       }
@@ -2611,8 +2710,8 @@ export async function runJsonLineSession(
     for (const projectId of contextSubscriptions) {
       if (loadProjectKeyState(paths.projectKeys, projectId)) {
         contextSubscriptions.delete(projectId);
-        encryptedContextSubscriptions.add(projectId);
-        send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
+        encryptedContextSubscriptions.add(`${projectId}:${projectId}`);
+        send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId, chatId: projectId });
       } else {
         send({ version: 1, type: "context.get", requestId: randomUUID(), projectId });
       }
@@ -2623,8 +2722,9 @@ export async function runJsonLineSession(
     for (const projectId of projectMemberSubscriptions) {
       send({ version: 1, type: "project.member.list", requestId: randomUUID(), projectId });
     }
-    for (const projectId of encryptedContextSubscriptions) {
-      send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId });
+    for (const scope of encryptedContextSubscriptions) {
+      const { projectId, chatId } = splitChatScope(scope);
+      send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId, chatId });
     }
     for (const projectId of usageSubscriptions) {
       send({ version: 1, type: "usage.get", requestId: randomUUID(), projectId });
@@ -2632,8 +2732,9 @@ export async function runJsonLineSession(
     for (const projectId of agentSubscriptions) {
       send({ version: 1, type: "agent.list", requestId: randomUUID(), projectId });
     }
-    for (const projectId of agentTaskSubscriptions) {
-      send({ version: 1, type: "agent.task.list", requestId: randomUUID(), projectId });
+    for (const scope of agentTaskSubscriptions) {
+      const { projectId, chatId } = splitChatScope(scope);
+      send({ version: 1, type: "agent.task.list", requestId: randomUUID(), projectId, chatId });
     }
     try {
       send({
@@ -2752,6 +2853,43 @@ export async function runJsonLineSession(
             // The durable signed creation remains staged for reconnect.
           }
           projectKeySubscriptions.add(projectId);
+        } else if (command.type === "project.chat.list") {
+          const projectId = String(command.projectId);
+          send({
+            version: 1,
+            type: "project.chat.list",
+            requestId: controlRequestId(command.id),
+            projectId,
+          });
+        } else if (command.type === "project.chat.create") {
+          const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? randomUUID());
+          const title = String(command.title ?? "").trim();
+          if (title.length < 1 || title.length > 120) throw new Error("Chat title must be 1-120 characters");
+          const issuedAt = new Date().toISOString();
+          const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+          const nonce = randomBytes(32).toString("base64url");
+          const signature = sign(null, sharedChatCreationSigningTranscript({
+            projectId,
+            chatId,
+            title,
+            creatorDeviceId: connection.deviceId,
+            nonce,
+            issuedAt,
+            expiresAt,
+          }), identity.privateKeyPem).toString("base64url");
+          send({
+            version: 1,
+            type: "project.chat.create",
+            requestId: controlRequestId(command.id),
+            projectId,
+            chatId,
+            title,
+            nonce,
+            issuedAt,
+            expiresAt,
+            signature,
+          });
         } else if (command.type === "project.invite.list") {
           send({ version: 1, type: "project.invite.list", requestId: controlRequestId(command.id) });
         } else if (command.type === "project.invite.create") {
@@ -3006,8 +3144,15 @@ export async function runJsonLineSession(
           send({ version: 1, type: "agent.list", requestId: controlRequestId(command.id), projectId });
         } else if (command.type === "agent.task.list") {
           const projectId = String(command.projectId);
-          agentTaskSubscriptions.add(projectId);
-          send({ version: 1, type: "agent.task.list", requestId: controlRequestId(command.id), projectId });
+          const chatId = String(command.chatId ?? projectId);
+          agentTaskSubscriptions.add(`${projectId}:${chatId}`);
+          send({
+            version: 1,
+            type: "agent.task.list",
+            requestId: controlRequestId(command.id),
+            projectId,
+            chatId,
+          });
         } else if (command.type === "project.key.get") {
           const projectId = String(command.projectId);
           projectKeySubscriptions.add(projectId);
@@ -3192,16 +3337,19 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, projectId, deviceId });
         } else if (command.type === "chat.subscribe") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
+          const scope = `${projectId}:${chatId}`;
           chatSubscriptions.add(projectId);
           const stored = loadProjectKey(paths.projectKeys, projectId);
           if (stored) {
-            const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(projectId) ?? 0);
-            encryptedChatCursors.set(projectId, afterSequence);
+            const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(scope) ?? 0);
+            encryptedChatCursors.set(scope, afterSequence);
             send({
               version: 1,
               type: "project.chat.subscribe",
               requestId: controlRequestId(command.id),
               projectId,
+              chatId,
               afterSequence,
             });
           } else {
@@ -3218,24 +3366,29 @@ export async function runJsonLineSession(
           }
         } else if (command.type === "project.chat.subscribe") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
+          const scope = `${projectId}:${chatId}`;
           chatSubscriptions.add(projectId);
-          const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(projectId) ?? 0);
-          encryptedChatCursors.set(projectId, afterSequence);
+          const afterSequence = Number(command.afterSequence ?? encryptedChatCursors.get(scope) ?? 0);
+          encryptedChatCursors.set(scope, afterSequence);
           send({
             version: 1,
             type: "project.chat.subscribe",
             requestId: controlRequestId(command.id),
             projectId,
+            chatId,
             afterSequence,
           });
         } else if (command.type === "prompt.subscribe") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
+          const scope = `${projectId}:${chatId}`;
           const stored = loadProjectKey(paths.projectKeys, projectId);
           if (stored) {
-            const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(projectId) ?? 0);
-            encryptedPromptCursors.set(projectId, afterSequence);
-            encryptedPromptSubscriptions.add(projectId);
-            send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, afterSequence });
+            const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(scope) ?? 0);
+            encryptedPromptCursors.set(scope, afterSequence);
+            encryptedPromptSubscriptions.add(scope);
+            send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, chatId, afterSequence });
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
             promptSubscriptions.add(projectId);
@@ -3248,25 +3401,30 @@ export async function runJsonLineSession(
           }
         } else if (command.type === "project.prompt.subscribe") {
           const projectId = String(command.projectId);
-          const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(projectId) ?? 0);
-          encryptedPromptCursors.set(projectId, afterSequence);
-          encryptedPromptSubscriptions.add(projectId);
-          send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, afterSequence });
+          const chatId = String(command.chatId ?? projectId);
+          const scope = `${projectId}:${chatId}`;
+          const afterSequence = Number(command.afterSequence ?? encryptedPromptCursors.get(scope) ?? 0);
+          encryptedPromptCursors.set(scope, afterSequence);
+          encryptedPromptSubscriptions.add(scope);
+          send({ version: 1, type: "project.prompt.subscribe", requestId: controlRequestId(command.id), projectId, chatId, afterSequence });
         } else if (command.type === "context.get") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           contextSubscriptions.add(projectId);
           if (loadProjectKeyState(paths.projectKeys, projectId)) {
-            encryptedContextSubscriptions.add(projectId);
-            send({ version: 1, type: "project.context.get", requestId: controlRequestId(command.id), projectId });
+            encryptedContextSubscriptions.add(`${projectId}:${chatId}`);
+            send({ version: 1, type: "project.context.get", requestId: controlRequestId(command.id), projectId, chatId });
           } else {
             send({ version: 1, type: "context.get", requestId: controlRequestId(command.id), projectId });
           }
         } else if (command.type === "project.context.get") {
           const projectId = String(command.projectId);
-          encryptedContextSubscriptions.add(projectId);
-          send({ version: 1, type: "project.context.get", requestId: controlRequestId(command.id), projectId });
+          const chatId = String(command.chatId ?? projectId);
+          encryptedContextSubscriptions.add(`${projectId}:${chatId}`);
+          send({ version: 1, type: "project.context.get", requestId: controlRequestId(command.id), projectId, chatId });
         } else if (command.type === "project.context.update") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const expectedRevision = Number(command.expectedRevision ?? 0);
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId, command.keyEpoch === undefined ? undefined : Number(command.keyEpoch));
           if (!stored) throw new Error(`No project encryption key is available for ${projectId}`);
@@ -3278,6 +3436,7 @@ export async function runJsonLineSession(
           if (Buffer.byteLength(serialized, "utf8") > PROJECT_CONTEXT_MAX_BYTES) throw new Error("Encrypted project context is too large");
           const envelope = await sealProjectContent({
             projectId,
+            chatId,
             keyEpoch: stored.keyEpoch,
             recordType: "shared-context",
             recordId: String(command.recordId ?? randomUUID()),
@@ -3287,12 +3446,13 @@ export async function runJsonLineSession(
             senderPrivateKeyPem: identity.privateKeyPem,
             senderPublicKeyPem: identity.publicKeyPem,
           });
-          encryptedContextSubscriptions.add(projectId);
+          encryptedContextSubscriptions.add(`${projectId}:${chatId}`);
           enqueueDurableEvent(paths, {
             version: 1,
             type: "project.context.update",
             requestId: controlRequestId(command.id),
             projectId,
+            chatId,
             expectedRevision,
             envelope,
           });
@@ -3309,6 +3469,7 @@ export async function runJsonLineSession(
           });
         } else if (command.type === "context.update") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           contextSubscriptions.add(projectId);
           const expectedRevision = Number(command.expectedRevision ?? 0);
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
@@ -3318,6 +3479,7 @@ export async function runJsonLineSession(
             if (Buffer.byteLength(serialized, "utf8") > PROJECT_CONTEXT_MAX_BYTES) throw new Error("Encrypted project context is too large");
             const envelope = await sealProjectContent({
               projectId,
+              chatId,
               keyEpoch: stored.keyEpoch,
               recordType: "shared-context",
               recordId: String(command.recordId ?? randomUUID()),
@@ -3327,8 +3489,8 @@ export async function runJsonLineSession(
               senderPrivateKeyPem: identity.privateKeyPem,
               senderPublicKeyPem: identity.publicKeyPem,
             });
-            encryptedContextSubscriptions.add(projectId);
-            enqueueDurableEvent(paths, { version: 1, type: "project.context.update", requestId: controlRequestId(command.id), projectId, expectedRevision, envelope });
+            encryptedContextSubscriptions.add(`${projectId}:${chatId}`);
+            enqueueDurableEvent(paths, { version: 1, type: "project.context.update", requestId: controlRequestId(command.id), projectId, chatId, expectedRevision, envelope });
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
             enqueueDurableEvent(paths, {
@@ -3346,13 +3508,14 @@ export async function runJsonLineSession(
         } else if (command.type === "prompt.update") {
           const updateId = String(command.updateId ?? randomUUID());
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const requestId = controlRequestId(command.id);
           const update = String(command.update);
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
           if (stored) {
-            const frame = await encryptedPromptFrame(projectId, updateId, update, requestId);
-            encryptedPromptCursors.set(projectId, encryptedPromptCursors.get(projectId) ?? 0);
-            encryptedPromptSubscriptions.add(projectId);
+            const frame = await encryptedPromptFrame(projectId, chatId, updateId, update, requestId);
+            encryptedPromptCursors.set(`${projectId}:${chatId}`, encryptedPromptCursors.get(`${projectId}:${chatId}`) ?? 0);
+            encryptedPromptSubscriptions.add(`${projectId}:${chatId}`);
             enqueueDurableEvent(paths, frame);
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
@@ -3370,32 +3533,35 @@ export async function runJsonLineSession(
         } else if (command.type === "project.prompt.update") {
           const updateId = String(command.updateId ?? randomUUID());
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const requestId = controlRequestId(command.id);
-          const frame = await encryptedPromptFrame(projectId, updateId, String(command.update), requestId);
-          encryptedPromptCursors.set(projectId, encryptedPromptCursors.get(projectId) ?? 0);
-          encryptedPromptSubscriptions.add(projectId);
+          const frame = await encryptedPromptFrame(projectId, chatId, updateId, String(command.update), requestId);
+          encryptedPromptCursors.set(`${projectId}:${chatId}`, encryptedPromptCursors.get(`${projectId}:${chatId}`) ?? 0);
+          encryptedPromptSubscriptions.add(`${projectId}:${chatId}`);
           enqueueDurableEvent(paths, frame);
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, updateId, encrypted: true });
         } else if (command.type === "project.chat.send") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const eventId = String(command.eventId ?? randomUUID());
           const requestId = controlRequestId(command.id);
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
-          const frame = await encryptedChatFrame(projectId, eventId, String(command.content), requestId, clientCreatedAt);
-          encryptedChatCursors.set(projectId, encryptedChatCursors.get(projectId) ?? 0);
+          const frame = await encryptedChatFrame(projectId, chatId, eventId, String(command.content), requestId, clientCreatedAt);
+          encryptedChatCursors.set(`${projectId}:${chatId}`, encryptedChatCursors.get(`${projectId}:${chatId}`) ?? 0);
           enqueueDurableEvent(paths, frame);
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, eventId, encrypted: true });
         } else if (command.type === "chat.send") {
           const eventId = String(command.eventId ?? randomUUID());
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const requestId = controlRequestId(command.id);
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
           if (stored) {
-            const frame = await encryptedChatFrame(projectId, eventId, String(command.content), requestId, clientCreatedAt);
-            encryptedChatCursors.set(projectId, encryptedChatCursors.get(projectId) ?? 0);
+            const frame = await encryptedChatFrame(projectId, chatId, eventId, String(command.content), requestId, clientCreatedAt);
+            encryptedChatCursors.set(`${projectId}:${chatId}`, encryptedChatCursors.get(`${projectId}:${chatId}`) ?? 0);
             enqueueDurableEvent(paths, frame);
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
@@ -3413,10 +3579,12 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, eventId, encrypted: Boolean(stored) });
         } else if (command.type === "project.artifact.publish") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const artifactId = String(command.artifactId ?? randomUUID());
           const taskId = command.taskId === null || command.taskId === undefined ? null : String(command.taskId);
           const frame = await encryptedArtifactFrame(
             projectId,
+            chatId,
             artifactId,
             taskId,
             String(command.artifactType),
@@ -3426,18 +3594,20 @@ export async function runJsonLineSession(
             String(command.status),
             controlRequestId(command.id),
           );
-          encryptedArtifactSubscriptions.add(projectId);
+          encryptedArtifactSubscriptions.add(`${projectId}:${chatId}`);
           enqueueDurableEvent(paths, frame);
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, artifactId, encrypted: true });
         } else if (command.type === "artifact.publish") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const artifactId = String(command.artifactId ?? randomUUID());
           const taskId = command.taskId === null || command.taskId === undefined ? null : String(command.taskId);
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
           if (stored) {
             const frame = await encryptedArtifactFrame(
               projectId,
+              chatId,
               artifactId,
               taskId,
               String(command.artifactType),
@@ -3447,7 +3617,7 @@ export async function runJsonLineSession(
               String(command.status),
               controlRequestId(command.id),
             );
-            encryptedArtifactSubscriptions.add(projectId);
+            encryptedArtifactSubscriptions.add(`${projectId}:${chatId}`);
             enqueueDurableEvent(paths, frame);
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
@@ -3469,30 +3639,34 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, artifactId, encrypted: Boolean(stored) });
         } else if (command.type === "project.artifact.list") {
           const projectId = String(command.projectId);
-          encryptedArtifactSubscriptions.add(projectId);
-          send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId });
+          const chatId = String(command.chatId ?? projectId);
+          encryptedArtifactSubscriptions.add(`${projectId}:${chatId}`);
+          send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId, chatId });
         } else if (command.type === "artifact.list") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
           if (stored) {
-            encryptedArtifactSubscriptions.add(projectId);
-            send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId });
+            encryptedArtifactSubscriptions.add(`${projectId}:${chatId}`);
+            send({ version: 1, type: "project.artifact.list", requestId: controlRequestId(command.id), projectId, chatId });
           } else {
             assertLegacyProjectFallbackAllowed(projectId);
             send({ version: 1, type: "artifact.list", requestId: controlRequestId(command.id), projectId });
           }
         } else if (command.type === "project.file-reference.publish") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const referenceId = String(command.referenceId ?? randomUUID());
           const artifactId = String(command.artifactId);
           const frame = await encryptedFileReferenceFrame(
             projectId,
+            chatId,
             referenceId,
             artifactId,
             command,
             controlRequestId(command.id),
           );
-          encryptedFileReferenceSubscriptions.add(projectId);
+          encryptedFileReferenceSubscriptions.add(`${projectId}:${chatId}`);
           enqueueDurableEvent(paths, frame);
           const delivered = await flush();
           emit({
@@ -3505,22 +3679,27 @@ export async function runJsonLineSession(
           });
         } else if (command.type === "project.file-reference.list") {
           const projectId = String(command.projectId);
-          encryptedFileReferenceSubscriptions.add(projectId);
+          const chatId = String(command.chatId ?? projectId);
+          encryptedFileReferenceSubscriptions.add(`${projectId}:${chatId}`);
           send({
             version: 1,
             type: "project.file-reference.list",
             requestId: controlRequestId(command.id),
             projectId,
+            chatId,
           });
         } else if (command.type === "agent.request") {
+          const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const request = createAgentRequest(
-            String(command.projectId),
+            projectId,
             String(command.agentId),
             String(command.prompt),
             paths,
             Array.isArray(command.dependencies) ? command.dependencies.map(String) : [],
             undefined,
             Array.isArray(command.inputArtifactIds) ? command.inputArtifactIds.map(String) : [],
+            chatId,
           );
           const delivery = await queueAgentRequest(request);
           emit({
@@ -3600,6 +3779,7 @@ export async function runJsonLineSession(
           emit({ source: "control", id: command.id, ok: true, agentId: policy.agentId, fullComputerEnabled: false });
         } else if (command.type === "private.share") {
           const projectId = String(command.projectId);
+          const chatId = String(command.chatId ?? projectId);
           const agentId = String(command.agentId).trim();
           const messageId = String(command.messageId);
           if (!agentId) throw new Error("Private-message sharing requires an agent ID");
@@ -3609,7 +3789,7 @@ export async function runJsonLineSession(
             throw new Error("Private-message sharing requires an encrypted project");
           }
           const prompt = `Shared private message ${messageId}:\n\n${shared.text}`;
-          const request = createAgentRequest(projectId, agentId, prompt, paths, [], messageId);
+          const request = createAgentRequest(projectId, agentId, prompt, paths, [], messageId, [], chatId);
           const delivery = await queueAgentRequest(request);
           emit({
             source: "control",
@@ -3626,6 +3806,7 @@ export async function runJsonLineSession(
             type: "presence.update",
             requestId: controlRequestId(command.id),
             projectId: String(command.projectId),
+            chatId: command.chatId === null ? null : String(command.chatId ?? command.projectId),
             cursor: command.cursor ?? null,
             caret: command.caret ?? null,
             typing: command.typing === true,

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { renameAtomicFile } from "../config";
 
 const MAX_HISTORY_ENTRIES = 512;
 const MAX_HISTORY_FILE_BYTES = 64 * 1024 * 1024;
@@ -100,7 +101,7 @@ export function savePrivateHistory(path: string, state: PrivateHistoryState): vo
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" });
   hardenSecretPath(temporary, { required: true });
-  renameSync(temporary, path);
+  renameAtomicFile(temporary, path);
   hardenSecretPath(path, { required: true });
 }
 

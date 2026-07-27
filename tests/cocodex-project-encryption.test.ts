@@ -268,8 +268,10 @@ describe("CoCodex project encryption foundation", () => {
   test("rejects ciphertext tampering, sender tampering, and a re-signed AAD transplant", async () => {
     const sender = device();
     const projectKey = createProjectKey();
+    const chatId = randomUUID();
     const envelope = await sealProjectContent({
       projectId: randomUUID(),
+      chatId,
       keyEpoch: 1,
       recordType: "chat",
       recordId: randomUUID(),
@@ -299,6 +301,27 @@ describe("CoCodex project encryption foundation", () => {
     };
     await expect(openProjectContent({ envelope: reSigned, projectKey }))
       .rejects.toThrow("could not be decrypted");
+
+    const transplantedChatId = randomUUID();
+    const unsignedChatTransplant = { ...envelope, chatId: transplantedChatId };
+    const reSignedChatTransplant: ProjectContentEnvelope = {
+      ...unsignedChatTransplant,
+      signature: sign(
+        null,
+        projectContentSigningTranscript(unsignedChatTransplant),
+        sender.signing.privateKey,
+      ).toString("base64url"),
+    };
+    await expect(openProjectContent({
+      envelope: reSignedChatTransplant,
+      projectKey,
+      expectedChatId: transplantedChatId,
+    })).rejects.toThrow("could not be decrypted");
+    await expect(openProjectContent({
+      envelope,
+      projectKey,
+      expectedChatId: transplantedChatId,
+    })).rejects.toThrow("another shared chat");
 
     const senderReplacement = device();
     await expect(openProjectContent({

@@ -19,6 +19,7 @@ export interface AgentExecutionReport extends AgentExecutionTranscriptInput {
 interface TaskRow {
   id: string;
   projectId: string;
+  chatId: string;
   agentId: string;
   targetDeviceId: string;
   status: "queued" | "running" | "completed" | "failed";
@@ -87,7 +88,7 @@ export function acceptAgentExecutionReport(
   now = new Date(),
 ): { taskId: string; startedAt: string; created: boolean } {
   const row = db.query(`
-    SELECT t.id, t.project_id AS projectId, t.agent_id AS agentId,
+    SELECT t.id, t.project_id AS projectId, t.chat_id AS chatId, t.agent_id AS agentId,
       t.target_device_id AS targetDeviceId, t.status, t.accepted_at AS acceptedAt,
       a.host_device_id AS hostDeviceId, a.enabled,
       d.public_key_pem AS publicKeyPem, d.status AS deviceStatus,
@@ -100,7 +101,8 @@ export function acceptAgentExecutionReport(
     JOIN devices d ON d.id = t.target_device_id
     WHERE t.id = ?
   `).get(input.taskId) as TaskRow | null;
-  if (!row || row.projectId !== input.projectId || row.agentId !== input.agentId) {
+  if (!row || row.projectId !== input.projectId || row.chatId !== input.chatId
+    || row.agentId !== input.agentId) {
     throw new Error("Agent execution report does not match a task");
   }
   if (row.targetDeviceId !== actorDeviceId || row.hostDeviceId !== actorDeviceId
@@ -153,6 +155,7 @@ export function acceptAgentExecutionReport(
       ) VALUES ('agent.execution.started', ?, ?, ?, ?)
     `).run(actorDeviceId, input.taskId, now.toISOString(), JSON.stringify({
       projectId: input.projectId,
+      chatId: input.chatId,
       agentId: input.agentId,
       workspaceMode: input.workspaceMode,
       workspaceRef: input.workspaceRef,

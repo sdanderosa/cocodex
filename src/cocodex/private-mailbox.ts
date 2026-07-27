@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { renameAtomicFile } from "../config";
 
 const privateMailboxReceiptSchema = z.object({
   messageId: z.uuid(),
@@ -96,7 +97,7 @@ export function savePrivateMailbox(path: string, state: PrivateMailboxState): vo
     flag: "wx",
   });
   hardenSecretPath(temporary, { required: true });
-  renameSync(temporary, path);
+  renameAtomicFile(temporary, path);
   hardenSecretPath(path, { required: true });
 }
 

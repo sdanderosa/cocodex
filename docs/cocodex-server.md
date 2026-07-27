@@ -177,7 +177,8 @@ from the matching authenticated ready lease. See ADRs 0025 and 0026.
 
 `agent.task.list` is the companion activity projection. It returns only
 bounded task identity, dependency, status, timestamp, event-count, and
-encryption metadata for the requesting project member. It joins both legacy
+encryption metadata for the requesting project member and selected chat. It
+joins both legacy
 and encrypted result-event tables without opening ciphertext or prompts, so a
 GUI activity card cannot become a server-side agent context leak.
 
@@ -222,6 +223,16 @@ Final Goal/context/chat/prompt/artifact/file-reference/task/result ciphertext. F
 encrypted prompts it orders and deduplicates Yjs updates without applying them;
 the clients perform the Yjs state transition after local decryption. Encrypted
 artifact rows expose only project/task/author routing metadata and timestamps.
+
+Each project has an authoritative General chat whose ID equals the project ID.
+Additional chats are created through an expiring device-signed request and are
+bounded to 64 per project. Migration 28 materializes General for existing
+projects and backfills existing collaboration rows into it. New project
+content uses a v2 envelope whose signature and XChaCha20-Poly1305 associated
+data bind `chatId`; legacy v1 envelopes are accepted only from General.
+Message order, Yjs documents, context revisions, tasks, dependencies,
+execution reports, artifacts, and encrypted file-reference metadata are
+queried by the composite project/chat scope. See ADR 0039.
 
 `project.create` accepts a client-generated project UUID, bounded name, one
 owner-signed epoch-1 envelope, and a creator signature over all of that

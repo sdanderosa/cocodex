@@ -25,6 +25,7 @@ export const FILE_REFERENCE_MAX_BYTES = 512 * 1024 * 1024;
 export interface InspectLocalFileReferenceInput {
   referenceId: string;
   projectId: string;
+  chatId?: string;
   artifactId: string;
   hostDeviceId: string;
   workspaceRoot: string;
@@ -80,6 +81,7 @@ export async function inspectLocalFileReference(
       version: 1,
       referenceId: input.referenceId,
       projectId: input.projectId,
+      chatId: input.chatId ?? input.projectId,
       artifactId: input.artifactId,
       hostDeviceId: input.hostDeviceId,
       relativePath,

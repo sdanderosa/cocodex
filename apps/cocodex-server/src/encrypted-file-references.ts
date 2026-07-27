@@ -8,22 +8,24 @@ import {
   type EncryptedFileReference,
   type ProjectContentEnvelope,
 } from "../../../packages/cocodex-protocol/src/index.ts";
-import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
+import { requireSharedChat } from "./shared-chats";
 
 export interface PublishEncryptedFileReferenceInput {
   referenceId: string;
   projectId: string;
+  chatId?: string;
   artifactId: string;
   authorDeviceId: string;
   envelope: unknown;
 }
 
 interface DeviceKeyRow { publicKeyPem: string; }
-interface ArtifactOwnerRow { projectId: string; authorDeviceId: string; }
+interface ArtifactOwnerRow { projectId: string; chatId: string; authorDeviceId: string; }
 interface FileReferenceRow {
   id: string;
   projectId: string;
+  chatId: string;
   artifactId: string;
   hostDeviceId: string;
   authorDeviceId: string;
@@ -74,6 +76,7 @@ function fromRow(row: FileReferenceRow): EncryptedFileReference {
   return encryptedFileReferenceSchema.parse({
     referenceId: row.id,
     projectId: row.projectId,
+    chatId: row.chatId,
     artifactId: row.artifactId,
     hostDeviceId: row.hostDeviceId,
     authorDeviceId: row.authorDeviceId,
@@ -88,19 +91,26 @@ export function publishEncryptedFileReference(
   input: PublishEncryptedFileReferenceInput,
   now = new Date(),
 ): { reference: EncryptedFileReference; created: boolean } {
-  requireProjectMembership(db, input.projectId, input.authorDeviceId);
+  const chatId = input.chatId ?? input.projectId;
+  requireSharedChat(db, input.projectId, chatId, input.authorDeviceId);
   const artifact = db.query(`
-    SELECT project_id AS projectId, author_device_id AS authorDeviceId
+    SELECT project_id AS projectId, chat_id AS chatId, author_device_id AS authorDeviceId
     FROM project_artifacts WHERE id = ?
   `).get(input.artifactId) as ArtifactOwnerRow | null;
-  if (!artifact || artifact.projectId !== input.projectId) {
-    throw new Error("File-reference artifact is not in this project");
+  if (!artifact || artifact.projectId !== input.projectId || artifact.chatId !== chatId) {
+    throw new Error("File-reference artifact is not in this shared chat");
   }
   if (artifact.authorDeviceId !== input.authorDeviceId) {
     throw new Error("Only the artifact host may publish its local file reference");
   }
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
+  if (input.chatId !== undefined && envelope.version !== 2) {
+    throw new Error("New encrypted file references require a chat-bound content envelope");
+  }
   if (envelope.projectId !== input.projectId) throw new Error("Encrypted file reference belongs to another project");
+  if (envelope.version === 2 && envelope.chatId !== chatId) {
+    throw new Error("Encrypted file reference belongs to another shared chat");
+  }
   if (envelope.recordType !== "file-reference") {
     throw new Error("Encrypted file-reference envelope must use the file-reference record type");
   }
@@ -116,13 +126,14 @@ export function publishEncryptedFileReference(
   verifyEnvelopeSender(db, input.authorDeviceId, envelope);
   const serialized = canonicalEnvelopeJson(envelope);
   const existing = db.query(`
-    SELECT id, project_id AS projectId, artifact_id AS artifactId,
+    SELECT id, project_id AS projectId, chat_id AS chatId, artifact_id AS artifactId,
       host_device_id AS hostDeviceId, author_device_id AS authorDeviceId,
       envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
     FROM project_file_references WHERE id = ?
   `).get(input.referenceId) as FileReferenceRow | null;
   if (existing) {
-    if (existing.projectId !== input.projectId || existing.artifactId !== input.artifactId
+    if (existing.projectId !== input.projectId || existing.chatId !== chatId
+      || existing.artifactId !== input.artifactId
       || existing.hostDeviceId !== input.authorDeviceId || existing.authorDeviceId !== input.authorDeviceId
       || existing.envelopeJson !== serialized) {
       throw new Error("Encrypted file-reference ID was already used for different content");
@@ -130,19 +141,20 @@ export function publishEncryptedFileReference(
     return { reference: fromRow(existing), created: false };
   }
   const count = db.query(
-    "SELECT COUNT(*) AS count FROM project_file_references WHERE project_id = ?",
-  ).get(input.projectId) as { count: number };
+    "SELECT COUNT(*) AS count FROM project_file_references WHERE project_id = ? AND chat_id = ?",
+  ).get(input.projectId, chatId) as { count: number };
   if (count.count >= 500) {
-    throw new Error("Encrypted file-reference project limit of 500 was reached");
+    throw new Error("Encrypted file-reference shared-chat limit of 500 was reached");
   }
   const timestamp = now.toISOString();
   db.query(`
     INSERT INTO project_file_references
-      (id, project_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (id, project_id, chat_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.referenceId,
     input.projectId,
+    chatId,
     input.artifactId,
     input.authorDeviceId,
     input.authorDeviceId,
@@ -154,6 +166,7 @@ export function publishEncryptedFileReference(
     reference: fromRow({
       id: input.referenceId,
       projectId: input.projectId,
+      chatId,
       artifactId: input.artifactId,
       hostDeviceId: input.authorDeviceId,
       authorDeviceId: input.authorDeviceId,
@@ -168,14 +181,19 @@ export function publishEncryptedFileReference(
 export function listEncryptedFileReferences(
   db: Database,
   projectId: string,
-  deviceId: string,
+  chatIdOrDeviceId: string,
+  maybeDeviceId?: string,
 ): EncryptedFileReference[] {
-  requireProjectMembership(db, projectId, deviceId);
+  const chatId = maybeDeviceId ? chatIdOrDeviceId : projectId;
+  const deviceId = maybeDeviceId ?? chatIdOrDeviceId;
+  requireSharedChat(db, projectId, chatId, deviceId);
   const rows = db.query(`
-    SELECT id, project_id AS projectId, artifact_id AS artifactId,
+    SELECT id, project_id AS projectId, chat_id AS chatId, artifact_id AS artifactId,
       host_device_id AS hostDeviceId, author_device_id AS authorDeviceId,
       envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
-    FROM project_file_references WHERE project_id = ? ORDER BY created_at, id LIMIT 500
-  `).all(projectId) as FileReferenceRow[];
+    FROM project_file_references
+    WHERE project_id = ? AND chat_id = ?
+    ORDER BY created_at, id LIMIT 500
+  `).all(projectId, chatId) as FileReferenceRow[];
   return rows.map(fromRow);
 }
