@@ -87,6 +87,17 @@
 .cocodex-usage-card-head, .cocodex-usage-window { display: flex; align-items: baseline; gap: 7px; }
 .cocodex-usage-card-head { justify-content: space-between; }
 .cocodex-usage-card small, .cocodex-usage-window small { color: var(--muted); font-size: var(--text-caption); }
+.cocodex-enrollment-verification { display: grid; gap: 6px; }
+.cocodex-enrollment-verification code,
+.cocodex-device-approval-card code { overflow-wrap: anywhere; white-space: normal; }
+.cocodex-device-approvals { display: grid; gap: 10px; }
+.cocodex-device-approval-list { display: grid; gap: 8px; }
+.cocodex-device-approval-card {
+  display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 45%, var(--raised));
+}
+.cocodex-device-approval-card > small { color: var(--muted); font-size: var(--text-caption); }
+.cocodex-device-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .cocodex-usage-metrics { display: flex; flex-wrap: wrap; gap: 5px 9px; margin: 5px 0; color: var(--muted); font-size: var(--text-caption); }
 .cocodex-usage-window { margin-top: 3px; font-size: var(--text-caption); }
 .cocodex-usage-window span { flex: 1; }

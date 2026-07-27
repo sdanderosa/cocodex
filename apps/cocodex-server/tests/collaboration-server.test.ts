@@ -21,7 +21,11 @@ import {
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
+import {
+  approvePendingDeviceForTest,
+  testServerIdentityFingerprint,
+} from "./device-approval-fixture";
 import { createServerIdentity } from "../src/identity";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
@@ -121,6 +125,8 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: testServerIdentityFingerprint(db),
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName,
@@ -128,7 +134,7 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     messagingPublicKeyPem: messagingPair.publicKey,
     signature,
   });
-  expect(approveDevice(db, device.fingerprint)).toBeTrue();
+  approvePendingDeviceForTest(db, device, pair.privateKey, invitation.serverFingerprint);
   return {
     id: device.id,
     privateKey: pair.privateKey,

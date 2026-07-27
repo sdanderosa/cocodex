@@ -724,4 +724,57 @@ CREATE TABLE project_lock_task_cancellations (
 CREATE INDEX project_lock_task_cancellations_target
   ON project_lock_task_cancellations(target_device_id, created_at);`,
   },
+  {
+    version: 31,
+    sql: `
+ALTER TABLE devices ADD COLUMN enrollment_digest TEXT;
+ALTER TABLE devices ADD COLUMN enrollment_signature TEXT;
+ALTER TABLE devices ADD COLUMN approval_expires_at TEXT;
+ALTER TABLE devices ADD COLUMN approval_revision INTEGER NOT NULL DEFAULT 0
+  CHECK (approval_revision BETWEEN 0 AND 1);
+ALTER TABLE devices ADD COLUMN approved_by_device_id TEXT;
+ALTER TABLE devices ADD COLUMN approval_operation_id TEXT;
+
+UPDATE devices
+SET approval_expires_at = datetime(enrolled_at, '+15 minutes')
+WHERE status = 'pending' AND approval_expires_at IS NULL;
+
+-- A pre-v31 pending row has no immutable enrollment attestation and therefore
+-- cannot be safely approved under the signed approval protocol.
+UPDATE devices
+SET status = 'revoked', revoked_at = datetime('now'), approval_revision = 1
+WHERE status = 'pending' AND enrollment_digest IS NULL;
+
+INSERT OR IGNORE INTO server_state (key, value)
+VALUES (
+  'device_bootstrap_consumed',
+  CASE WHEN EXISTS (
+    SELECT 1 FROM devices WHERE approved_at IS NOT NULL
+  ) THEN '1' ELSE '0' END
+);
+
+CREATE TABLE device_approval_operations (
+  operation_id TEXT PRIMARY KEY,
+  target_device_id TEXT NOT NULL UNIQUE REFERENCES devices(id),
+  approver_device_id TEXT NOT NULL REFERENCES devices(id),
+  decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+  target_fingerprint TEXT NOT NULL,
+  target_enrollment_digest TEXT NOT NULL,
+  expected_revision INTEGER NOT NULL CHECK (expected_revision = 0),
+  resulting_revision INTEGER NOT NULL CHECK (resulting_revision = 1),
+  resulting_status TEXT NOT NULL CHECK (resulting_status IN ('approved', 'rejected')),
+  server_identity_fingerprint TEXT NOT NULL,
+  server_epoch INTEGER NOT NULL CHECK (server_epoch > 0),
+  nonce TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  UNIQUE(approver_device_id, nonce)
+);
+CREATE INDEX device_approval_operations_approver_time
+  ON device_approval_operations(approver_device_id, decided_at);
+CREATE INDEX devices_pending_approval_expiry
+  ON devices(status, approval_expires_at, enrolled_at);`,
+  },
 ];

@@ -3,12 +3,17 @@ import type { Database } from "bun:sqlite";
 import { expirePendingProjectInvitationsForDevice } from "./project-invitations";
 import {
   canonicalEd25519PublicKey,
+  deviceEnrollmentDigest,
+  deviceVerificationPhrase,
   enrollmentSigningTranscript,
   publicKeyFingerprint,
   type InvitationPayload,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { consumeInvitation, invitationIsUsable } from "./invitations";
 import { quarantineEncryptedProjectsForRevokedDevice } from "./project-encryption-storage";
+import { requireActiveServerAuthority } from "./server-state";
+
+const PENDING_APPROVAL_TTL_MS = 15 * 60_000;
 
 export interface EnrollmentChallenge {
   id: string;
@@ -18,6 +23,8 @@ export interface EnrollmentChallenge {
 
 export interface EnrollmentRequest {
   invitation: InvitationPayload;
+  expectedServerFingerprint: string;
+  serverIdentityFingerprint: string;
   challengeId: string;
   challenge: string;
   displayName: string;
@@ -32,6 +39,13 @@ export interface DeviceRecord {
   fingerprint: string;
   displayName: string;
   status: "pending" | "approved" | "revoked";
+}
+
+export interface PendingEnrollmentRecord extends DeviceRecord {
+  enrollmentDigest: string;
+  enrolledAt: string;
+  approvalExpiresAt: string;
+  verificationPhrase: string;
 }
 
 interface ChallengeRow {
@@ -103,7 +117,10 @@ export function createEnrollmentChallenge(
   return result;
 }
 
-export function enrollDevice(db: Database, request: EnrollmentRequest, now = new Date()): DeviceRecord {
+export function enrollDevice(db: Database, request: EnrollmentRequest, now = new Date()): PendingEnrollmentRecord {
+  if (request.invitation.serverFingerprint !== request.expectedServerFingerprint) {
+    throw new Error("Invitation does not belong to this server");
+  }
   const displayName = validateDisplayName(request.displayName);
   const canonicalPublicKey = canonicalEd25519PublicKey(request.devicePublicKeyPem);
   const messagingPublicKeyPem = canonicalX25519PublicKey(request.messagingPublicKeyPem, "Messaging");
@@ -150,17 +167,53 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
     }
     db.query("UPDATE enrollment_challenges SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL")
       .run(now.toISOString(), challenge.id);
-    const record: DeviceRecord = {
-      id: randomUUID(),
-      fingerprint: publicKeyFingerprint(canonicalPublicKey),
+    const invitation = db.query(`
+      SELECT token_hash AS tokenHash, expires_at AS expiresAt
+      FROM invitations WHERE id = ?
+    `).get(request.invitation.invitationId) as { tokenHash: string; expiresAt: string } | null;
+    if (!invitation || invitation.expiresAt !== request.invitation.expiresAt) {
+      throw new Error("Invitation authority metadata is invalid");
+    }
+    const id = randomUUID();
+    const enrolledAt = now.toISOString();
+    const approvalExpiresAt = new Date(now.getTime() + PENDING_APPROVAL_TTL_MS).toISOString();
+    const fingerprint = publicKeyFingerprint(canonicalPublicKey);
+    const digest = deviceEnrollmentDigest({
+      serverTlsFingerprint: request.invitation.serverFingerprint,
+      serverIdentityFingerprint: request.serverIdentityFingerprint,
+      invitationId: request.invitation.invitationId,
+      invitationTokenHash: invitation.tokenHash,
+      invitationExpiresAt: invitation.expiresAt,
+      deviceId: id,
+      displayName,
+      fingerprint,
+      devicePublicKeyPem: canonicalPublicKey,
+      messagingPublicKeyPem,
+      projectWrapPublicKeyPem,
+      enrolledAt,
+      approvalExpiresAt,
+      approvalRevision: 0,
+    });
+    const record: PendingEnrollmentRecord = {
+      id,
+      fingerprint,
       displayName,
       status: "pending",
+      enrollmentDigest: digest,
+      enrolledAt,
+      approvalExpiresAt,
+      verificationPhrase: deviceVerificationPhrase(
+        request.serverIdentityFingerprint,
+        id,
+        fingerprint,
+      ),
     };
     db.query(`
       INSERT INTO devices (
         id, public_key_pem, messaging_public_key_pem, project_wrap_public_key_pem, fingerprint, display_name,
-        status, invitation_id, enrolled_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        status, invitation_id, enrolled_at, enrollment_digest, enrollment_signature,
+        approval_expires_at, approval_revision
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0)
     `).run(
       record.id,
       canonicalPublicKey,
@@ -169,7 +222,10 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
       record.fingerprint,
       record.displayName,
       request.invitation.invitationId,
-      now.toISOString(),
+      enrolledAt,
+      digest,
+      request.signature,
+      approvalExpiresAt,
     );
     db.query(`
       INSERT INTO audit_events (event_type, subject_id, occurred_at, details_json)
@@ -181,18 +237,49 @@ export function enrollDevice(db: Database, request: EnrollmentRequest, now = new
 }
 
 export function approveDevice(db: Database, fingerprint: string, now = new Date()): boolean {
-  const result = db.query(`
-    UPDATE devices
-    SET status = 'approved', approved_at = ?
-    WHERE fingerprint = ? AND status = 'pending'
-  `).run(now.toISOString(), fingerprint);
-  if (result.changes === 1) {
+  return bootstrapApproveDevice(db, fingerprint, now);
+}
+
+export function bootstrapApproveDevice(db: Database, fingerprint: string, now = new Date()): boolean {
+  return db.transaction(() => {
+    requireActiveServerAuthority(db);
+    const marker = db.query(`
+      SELECT value FROM server_state WHERE key = 'device_bootstrap_consumed'
+    `).get() as { value: string } | null;
+    if (!marker || marker.value !== "0") {
+      throw new Error("First-device bootstrap approval has already been consumed");
+    }
+    const approved = db.query(`
+      SELECT COUNT(*) AS count FROM devices WHERE status = 'approved'
+    `).get() as { count: number };
+    if (approved.count !== 0) {
+      throw new Error("First-device bootstrap requires zero approved devices");
+    }
+    const pending = db.query(`
+      SELECT COUNT(*) AS count FROM devices
+      WHERE status = 'pending' AND approval_expires_at > ?
+    `).get(now.toISOString()) as { count: number };
+    if (pending.count !== 1) {
+      throw new Error("First-device bootstrap requires exactly one unexpired pending device");
+    }
+    const result = db.query(`
+      UPDATE devices
+      SET status = 'approved', approved_at = ?, approval_revision = 1
+      WHERE fingerprint = ? AND status = 'pending' AND approval_expires_at > ?
+    `).run(now.toISOString(), fingerprint, now.toISOString());
+    if (result.changes !== 1) return false;
+    const consumed = db.query(`
+      UPDATE server_state SET value = '1'
+      WHERE key = 'device_bootstrap_consumed' AND value = '0'
+    `).run();
+    if (consumed.changes !== 1) throw new Error("First-device bootstrap state changed concurrently");
     db.query(`
       INSERT INTO audit_events (event_type, subject_id, occurred_at, details_json)
-      SELECT 'device.approved', id, ?, '{}' FROM devices WHERE fingerprint = ?
+      SELECT 'device.bootstrap-approved', id, ?, '{"bootstrap":true}'
+      FROM devices WHERE fingerprint = ?
     `).run(now.toISOString(), fingerprint);
-  }
-  return result.changes === 1;
+    return true;
+  }).immediate();
 }
 
 export function revokeDevice(db: Database, fingerprint: string, now = new Date()): boolean {

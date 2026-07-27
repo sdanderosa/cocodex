@@ -59,6 +59,22 @@ describe("CoCodex GUI bridge", () => {
         }],
       })}\n`);
       output.write(`${JSON.stringify({
+        source: "device-approvals",
+        devices: [{
+          deviceId: "6e83f26d-3159-48dc-b9b0-e2b7646ac961",
+          displayName: "Kai",
+          fingerprint: "DEVICE-FINGERPRINT",
+          verificationPhrase: "amber birch cobalt dawn",
+          enrolledAt: "2030-01-01T00:00:00.000Z",
+          approvalExpiresAt: "2030-01-01T00:15:00.000Z",
+          devicePublicKeyPem: "DEVICE_APPROVAL_PUBLIC_KEY_CANARY",
+          messagingPublicKeyPem: "DEVICE_APPROVAL_MESSAGING_KEY_CANARY",
+          invitationTokenHash: "DEVICE_APPROVAL_TOKEN_HASH_CANARY",
+          enrollmentDigest: "DEVICE_APPROVAL_DIGEST_CANARY",
+          signature: "DEVICE_APPROVAL_SIGNATURE_CANARY",
+        }],
+      })}\n`);
+      output.write(`${JSON.stringify({
         source: "project-invitations",
         invitations: [{
           invitationId: "project-invitation",
@@ -258,6 +274,20 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
     expect(bridge.status().state).toBe("connected");
     expect(bridge.command({ type: "project.list" }).accepted).toBe(true);
+    expect(bridge.command({ type: "device.approval.list" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "device.approval.update",
+      targetDeviceId: "6e83f26d-3159-48dc-b9b0-e2b7646ac961",
+      decision: "approve",
+      confirmedVerificationPhrase: "amber birch cobalt dawn",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "device.approval.update",
+      targetDeviceId: "6e83f26d-3159-48dc-b9b0-e2b7646ac961",
+      decision: "approve",
+      confirmedVerificationPhrase: "amber birch cobalt dawn",
+      signature: "RENDERER_DEVICE_APPROVAL_SIGNATURE_CANARY",
+    })).toThrow("Invalid device approval command");
     expect(bridge.command({
       type: "project.lock.update",
       projectId: crypto.randomUUID(),
@@ -372,6 +402,10 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
 
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "device.approval.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "device.approval.update"
+      && value.targetDeviceId === "6e83f26d-3159-48dc-b9b0-e2b7646ac961"
+      && value.confirmedVerificationPhrase === "amber birch cobalt dawn")).toBe(true);
     expect(received.some((value: any) => value.type === "project.create"
       && value.name === "Nocturne Launcher")).toBe(true);
     expect(received.some((value: any) => value.type === "project.invite.list")).toBe(true);
@@ -401,6 +435,22 @@ describe("CoCodex GUI bridge", () => {
     const privateEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "private.message");
     expect(JSON.stringify(privateEvent)).not.toContain("secret-box");
+    const deviceApprovalEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "device-approvals");
+    expect(deviceApprovalEvent?.value).toEqual({
+      source: "device-approvals",
+      devices: [{
+        deviceId: "6e83f26d-3159-48dc-b9b0-e2b7646ac961",
+        displayName: "Kai",
+        fingerprint: "DEVICE-FINGERPRINT",
+        verificationPhrase: "amber birch cobalt dawn",
+        enrolledAt: "2030-01-01T00:00:00.000Z",
+        approvalExpiresAt: "2030-01-01T00:15:00.000Z",
+      }],
+    });
+    expect(JSON.stringify(deviceApprovalEvent)).not.toContain("DEVICE_APPROVAL_PUBLIC_KEY_CANARY");
+    expect(JSON.stringify(deviceApprovalEvent)).not.toContain("DEVICE_APPROVAL_TOKEN_HASH_CANARY");
+    expect(JSON.stringify(deviceApprovalEvent)).not.toContain("DEVICE_APPROVAL_SIGNATURE_CANARY");
     const localHistoryEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.message?.messageId === "local-history-message");
     expect(localHistoryEvent?.value).toEqual({

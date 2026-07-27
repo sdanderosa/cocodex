@@ -69,14 +69,29 @@ cocodex-server status
 ```powershell
 cocodex-server invite --ttl 900
 cocodex-server devices
-cocodex-server approve --fingerprint FINGERPRINT
+cocodex-server bootstrap-approve --fingerprint FIRST_DEVICE_FINGERPRINT
 cocodex-server revoke --fingerprint FINGERPRINT
 cocodex-server project-create --name "Nocturne Launcher" --owner-device DEVICE_ID
 cocodex-server project-add-member --project PROJECT_ID --owner-device OWNER_ID --member-device MEMBER_ID
 ```
 
-Invites are single-use and short-lived. Approval is explicit; revocation is
-checked on every authenticated connection and project operation.
+Invites are single-use and short-lived. `bootstrap-approve` is local-only and
+works exactly once, for the first unexpired pending device when no approved
+device exists. The permanent bootstrap marker is not reset by revocation,
+restore, or transfer. The older `approve` spelling is a deprecated alias for
+that same one-shot operation; it cannot approve another device.
+
+Every later approval or rejection comes from an authenticated approved
+resident Client over WSS. Its Ed25519 signature binds the target's immutable
+enrollment digest, complete public-key bundle, Server identity and epoch,
+revision, decision, expiry, operation ID, and nonce. The Server rechecks all
+mutable authorization inside one immediate transaction and stores the
+decision, target transition, approver, and audit record atomically. Exact
+replay is idempotent; self-approval, altered replay, stale authority,
+concurrent decisions, and expired pending records fail closed. The GUI sees
+only a name, fingerprint, 16-word comparison phrase, and timestamps. See ADR
+0042. Revocation is checked on every authenticated connection and project
+operation.
 The two project CLI commands are administrative/recovery compatibility
 surfaces. The normal product flow uses the authenticated Client
 `project.create` operation, which creates only the owner membership and

@@ -92,8 +92,12 @@ or provider secrets.
    cocodex enroll --invite CODE --name Kai
    ```
 
-3. The owner approves the displayed device fingerprint.
-4. Start the client session from the GUI, or run:
+3. Compare the displayed 16-word verification phrase with the owner through a
+   separate trusted channel.
+4. The owner opens CoCodex on an already approved device, types that exact
+   phrase, and chooses **Approve device**. The resident Client, not the GUI,
+   signs the decision.
+5. Start the client session from the GUI, or run:
 
    ```powershell
    cocodex connect --json-lines
@@ -102,7 +106,12 @@ or provider secrets.
 The invite pins the server certificate fingerprint. Each installation proves
 possession of its Ed25519 device key during the WSS handshake and is remembered
 for reconnects. A display name, IP address, or copied bearer value is not an
-identity.
+identity. The first server-owner device uses the one-time local
+`cocodex-server bootstrap-approve` command; every later approval is signed by
+an authenticated approved Client and binds the exact enrolled public-key
+bundle, Server identity and epoch, expiry, and replay nonce. Pending approval
+expires after 15 minutes. The GUI receives no enrollment keys, token
+commitments, digests, nonces, or signatures. See ADR 0042.
 
 ## Accepting a server authority handoff
 

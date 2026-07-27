@@ -4,7 +4,8 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openDatabase } from "../apps/cocodex-server/src/database";
-import { approveDevice, devicePublicKeys } from "../apps/cocodex-server/src/enrollment";
+import { devicePublicKeys } from "../apps/cocodex-server/src/enrollment";
+import { approvePendingDeviceForTest } from "../apps/cocodex-server/tests/device-approval-fixture";
 import { createInvitation } from "../apps/cocodex-server/src/invitations";
 import { loadServerIdentity } from "../apps/cocodex-server/src/identity";
 import { serverPaths } from "../apps/cocodex-server/src/paths";
@@ -177,16 +178,26 @@ test("hands a live server to a prepared process and reconnects both resident cli
   const stephenPaths = clientPaths(stephenRoot);
   const kaiPaths = clientPaths(kaiRoot);
   const stephenConnection = await enrollClient(stephenInvitation, "Stephen", stephenPaths);
-  const kaiConnection = await enrollClient(kaiInvitation, "Kai", kaiPaths);
   const approvalDatabase = openDatabase(sourcePaths.database);
   const stephenPending = approvalDatabase.query("SELECT fingerprint FROM devices WHERE id = ?")
     .get(stephenConnection.deviceId) as { fingerprint: string } | null;
+  expect(stephenPending?.fingerprint).toBeTruthy();
+  approvePendingDeviceForTest(
+    approvalDatabase,
+    { id: stephenConnection.deviceId, fingerprint: stephenPending!.fingerprint },
+    loadOrCreateClientIdentity(stephenPaths).privateKeyPem,
+    sourceFingerprint,
+  );
+  const kaiConnection = await enrollClient(kaiInvitation, "Kai", kaiPaths);
   const kaiPending = approvalDatabase.query("SELECT fingerprint FROM devices WHERE id = ?")
     .get(kaiConnection.deviceId) as { fingerprint: string } | null;
-  expect(stephenPending?.fingerprint).toBeTruthy();
   expect(kaiPending?.fingerprint).toBeTruthy();
-  expect(approveDevice(approvalDatabase, stephenPending!.fingerprint)).toBeTrue();
-  expect(approveDevice(approvalDatabase, kaiPending!.fingerprint)).toBeTrue();
+  approvePendingDeviceForTest(
+    approvalDatabase,
+    { id: kaiConnection.deviceId, fingerprint: kaiPending!.fingerprint },
+    loadOrCreateClientIdentity(kaiPaths).privateKeyPem,
+    sourceFingerprint,
+  );
   const project = createProject(approvalDatabase, "Transfer Alpha", stephenConnection.deviceId);
   addProjectMember(approvalDatabase, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
   approvalDatabase.close();

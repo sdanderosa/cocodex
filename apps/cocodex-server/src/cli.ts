@@ -11,7 +11,7 @@ import {
 } from "./backup";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
-import { approveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
+import { bootstrapApproveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
 import { createServerIdentity, loadServerIdentity, randomToken } from "./identity";
 import { createInvitation } from "./invitations";
 import { classifyDirectHosting, tryAutomaticPortMapping } from "./port-mapping";
@@ -89,7 +89,7 @@ Usage:
   cocodex-server invite [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
   cocodex-server device-keys --device ID [--state-root PATH]
-  cocodex-server approve --fingerprint FINGERPRINT [--state-root PATH]
+  cocodex-server bootstrap-approve --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server revoke --fingerprint FINGERPRINT [--state-root PATH]
   cocodex-server project-create --name NAME --owner-device ID [--state-root PATH]
   cocodex-server project-add-member --project ID --owner-device ID --member-device ID [--state-root PATH]
@@ -311,12 +311,14 @@ async function run(): Promise<void> {
       db.close();
       console.log(JSON.stringify(keys, null, 2));
       return;
-    }    case "approve": {
+    }
+    case "approve":
+    case "bootstrap-approve": {
       const db = openDatabase(paths.database);
-      const approved = approveDevice(db, requiredOption("--fingerprint"));
+      const approved = bootstrapApproveDevice(db, requiredOption("--fingerprint"));
       db.close();
-      if (!approved) throw new Error("No pending device matched that fingerprint");
-      console.log(JSON.stringify({ approved: true }));
+      if (!approved) throw new Error("No unexpired pending device matched that fingerprint");
+      console.log(JSON.stringify({ approved: true, bootstrap: true }));
       return;
     }
     case "revoke": {

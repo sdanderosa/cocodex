@@ -4,6 +4,8 @@ import { isIP } from "node:net";
 import {
   agentRequestSigningTranscript,
   decodeInvitation,
+  deviceEnrollmentDigest,
+  deviceVerificationPhrase,
   enrollmentSigningTranscript,
   websocketAuthTranscript,
   canonicalEd25519PublicKey,
@@ -27,6 +29,10 @@ export interface ClientConnection {
   deviceId: string;
   displayName: string;
   serverEpoch: number;
+  deviceFingerprint?: string;
+  enrollmentDigest?: string;
+  verificationPhrase?: string;
+  approvalExpiresAt?: string;
 }
 
 function serverOrigin(invitation: InvitationPayload): string {
@@ -90,9 +96,51 @@ export async function enrollClient(
     messagingPublicKeyPem: identity.messagingPublicKeyPem,
     projectWrapPublicKeyPem: identity.projectWrapPublicKeyPem,
     signature,
-  }) as { device: { id: string }; serverIdentityPublicKeyPem: string; serverEpoch: number };
+  }) as {
+    device: {
+      id: string;
+      fingerprint: string;
+      enrollmentDigest: string;
+      enrolledAt: string;
+      approvalExpiresAt: string;
+      verificationPhrase: string;
+    };
+    serverIdentityPublicKeyPem: string;
+    serverEpoch: number;
+  };
   if (!Number.isSafeInteger(enrolled.serverEpoch) || enrolled.serverEpoch < 1) {
     throw new Error("CoCodex Server returned an invalid authority epoch during enrollment");
+  }
+  const serverIdentityFingerprint = publicKeyFingerprint(enrolled.serverIdentityPublicKeyPem);
+  const deviceFingerprint = publicKeyFingerprint(identity.publicKeyPem);
+  if (enrolled.device.fingerprint !== deviceFingerprint) {
+    throw new Error("CoCodex Server returned a different enrolled device identity");
+  }
+  const expectedDigest = deviceEnrollmentDigest({
+    serverTlsFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint,
+    invitationId: invitation.invitationId,
+    invitationTokenHash: createHash("sha256").update(invitation.token, "utf8").digest("hex"),
+    invitationExpiresAt: invitation.expiresAt,
+    deviceId: enrolled.device.id,
+    displayName,
+    fingerprint: deviceFingerprint,
+    devicePublicKeyPem: identity.publicKeyPem,
+    messagingPublicKeyPem: identity.messagingPublicKeyPem,
+    projectWrapPublicKeyPem: identity.projectWrapPublicKeyPem,
+    enrolledAt: enrolled.device.enrolledAt,
+    approvalExpiresAt: enrolled.device.approvalExpiresAt,
+    approvalRevision: 0,
+  });
+  const expectedPhrase = deviceVerificationPhrase(
+    serverIdentityFingerprint,
+    enrolled.device.id,
+    deviceFingerprint,
+  );
+  if (enrolled.device.enrollmentDigest !== expectedDigest
+    || enrolled.device.verificationPhrase !== expectedPhrase
+    || Date.parse(enrolled.device.approvalExpiresAt) <= Date.now()) {
+    throw new Error("CoCodex Server returned an invalid pending-enrollment attestation");
   }
   const connection: ClientConnection = {
     version: 1,
@@ -104,6 +152,10 @@ export async function enrollClient(
     deviceId: enrolled.device.id,
     displayName: displayName.trim(),
     serverEpoch: enrolled.serverEpoch,
+    deviceFingerprint,
+    enrollmentDigest: expectedDigest,
+    verificationPhrase: expectedPhrase,
+    approvalExpiresAt: enrolled.device.approvalExpiresAt,
   };
   saveClientConnection(paths, connection, "wx");
   return connection;
@@ -126,7 +178,19 @@ export function loadClientConnection(paths: ClientPaths = clientPaths()): Client
   const connection = JSON.parse(readFileSync(paths.connection, "utf8")) as ClientConnection;
   const epoch = connection.serverEpoch ?? 1;
   if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error("Invalid CoCodex Server epoch in client connection");
-  return { ...connection, serverEpoch: epoch };
+  const identity = loadOrCreateClientIdentity(paths);
+  const deviceFingerprint = connection.deviceFingerprint ?? publicKeyFingerprint(identity.publicKeyPem);
+  const serverIdentityFingerprint = publicKeyFingerprint(connection.serverIdentityPublicKeyPem);
+  return {
+    ...connection,
+    serverEpoch: epoch,
+    deviceFingerprint,
+    verificationPhrase: connection.verificationPhrase ?? deviceVerificationPhrase(
+      serverIdentityFingerprint,
+      connection.deviceId,
+      deviceFingerprint,
+    ),
+  };
 }
 
 /** Accept a source-signed authority handoff and atomically retarget this client. */

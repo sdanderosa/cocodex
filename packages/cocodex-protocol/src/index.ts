@@ -46,6 +46,20 @@ export {
   type EnrollmentClaim,
 } from "./enrollment";
 export {
+  pendingDeviceApprovalSchema,
+  deviceApprovalListFrameSchema,
+  deviceApprovalUpdateFrameSchema,
+  deviceApprovalSnapshotFrameSchema,
+  deviceApprovalUpdatedFrameSchema,
+  deviceApprovalChangedFrameSchema,
+  deviceEnrollmentDigest,
+  deviceVerificationPhrase,
+  deviceApprovalSigningTranscript,
+  type PendingDeviceApproval,
+  type DeviceApprovalUpdateFrame,
+  type DeviceEnrollmentDigestInput,
+} from "./device-approval";
+export {
   clientFrameSchema,
   projectServerFrameSchema,
   privateContactViewSchema,

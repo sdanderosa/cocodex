@@ -7,7 +7,11 @@ import {
   type UsageReport,
 } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import {
+  approvePendingDeviceForTest,
+  testServerIdentityFingerprint,
+} from "./device-approval-fixture";
 import { createInvitation } from "../src/invitations";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "../src/usage";
@@ -36,6 +40,8 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: testServerIdentityFingerprint(db),
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName: name,
@@ -43,7 +49,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
     messagingPublicKeyPem: messaging.publicKey,
     signature,
   }, now);
-  expect(approveDevice(db, device.fingerprint, now)).toBeTrue();
+  approvePendingDeviceForTest(db, device, pair.privateKey, invitation.serverFingerprint, now);
   return { id: device.id, privateKey: pair.privateKey };
 }
 

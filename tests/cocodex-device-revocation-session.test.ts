@@ -8,7 +8,8 @@ import type { Database } from "bun:sqlite";
 import { publicKeyFingerprint } from "@cocodex/protocol";
 import { createDefaultConfig } from "../apps/cocodex-server/src/config";
 import { openDatabase } from "../apps/cocodex-server/src/database";
-import { approveDevice, revokeDevice } from "../apps/cocodex-server/src/enrollment";
+import { revokeDevice } from "../apps/cocodex-server/src/enrollment";
+import { approvePendingDeviceForTest } from "../apps/cocodex-server/tests/device-approval-fixture";
 import { createServerIdentity } from "../apps/cocodex-server/src/identity";
 import { createInvitation } from "../apps/cocodex-server/src/invitations";
 import { serverPaths } from "../apps/cocodex-server/src/paths";
@@ -156,20 +157,29 @@ describe("CoCodex device-revocation incident recovery", () => {
       port: server.port,
       serverFingerprint,
     }), "Stephen", stephenPaths);
+    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
+    const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(stephenConnection.deviceId) as { fingerprint: string };
+    approvePendingDeviceForTest(
+      db,
+      { id: stephenConnection.deviceId, fingerprint: stephenRow.fingerprint },
+      stephenIdentity.privateKeyPem,
+      serverFingerprint,
+    );
     const kaiConnection = await enrollClient(createInvitation(db, {
       host: "127.0.0.1",
       port: server.port,
       serverFingerprint,
     }), "Kai", kaiPaths);
-    const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
-      .get(stephenConnection.deviceId) as { fingerprint: string };
+    const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
     const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(kaiConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, stephenRow.fingerprint)).toBeTrue();
-    expect(approveDevice(db, kaiRow.fingerprint)).toBeTrue();
-
-    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
-    const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+    approvePendingDeviceForTest(
+      db,
+      { id: kaiConnection.deviceId, fingerprint: kaiRow.fingerprint },
+      kaiIdentity.privateKeyPem,
+      serverFingerprint,
+    );
     trustDevice(
       stephenPaths.trustedDevices,
       kaiConnection.deviceId,

@@ -12,7 +12,11 @@ import {
   type ProjectLockUpdateFrame,
 } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import {
+  approvePendingDeviceForTest,
+  testServerIdentityFingerprint,
+} from "./device-approval-fixture";
 import { createInvitation } from "../src/invitations";
 import { addProjectMember, appendChatEvent, createProject, listProjects } from "../src/shared-state";
 import { projectLockState, updateProjectLock } from "../src/project-locks";
@@ -54,6 +58,8 @@ function approvedDevice(
   }), signing.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: testServerIdentityFingerprint(db),
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName: name,
@@ -61,7 +67,7 @@ function approvedDevice(
     messagingPublicKeyPem: messaging.publicKey,
     signature,
   }, now);
-  expect(approveDevice(db, device.fingerprint, now)).toBeTrue();
+  approvePendingDeviceForTest(db, device, signing.privateKey, invitation.serverFingerprint, now);
   return { id: device.id, privateKey: signing.privateKey };
 }
 

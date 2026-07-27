@@ -240,27 +240,63 @@ describe("three-process CoCodex private alpha", () => {
       ]));
       const devices = JSON.parse(await run(serverExe, ["devices", "--state-root", serverRoot]));
       const device = devices.find((item: any) => item.id === result.deviceId);
-      await run(serverExe, [
-        "approve", "--fingerprint", device.fingerprint, "--state-root", serverRoot,
-      ]);
-      return device as { id: string; fingerprint: string };
+      return {
+        ...device,
+        verificationPhrase: result.verificationPhrase,
+        approvalExpiresAt: result.approvalExpiresAt,
+      } as {
+        id: string;
+        fingerprint: string;
+        verificationPhrase: string;
+        approvalExpiresAt: string;
+      };
     };
     const stephenDevice = await enroll("Stephen", stephenRoot);
-    const kaiDevice = await enroll("Kai", kaiRoot);
+    await run(serverExe, [
+      "bootstrap-approve", "--fingerprint", stephenDevice.fingerprint, "--state-root", serverRoot,
+    ]);
     let stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "stephen-account",
       CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    await waitFor(stephen, line => line.source === "session" && line.state === "connected");
+    const kaiDevice = await enroll("Kai", kaiRoot);
+    const pendingKai = await waitFor(stephen, line => line.source === "device-approvals"
+      && line.devices?.some((device: any) => device.deviceId === kaiDevice.id));
+    const safeKai = pendingKai.devices.find((device: any) => device.deviceId === kaiDevice.id);
+    expect(safeKai).toEqual(expect.objectContaining({
+      deviceId: kaiDevice.id,
+      displayName: "Kai",
+      fingerprint: kaiDevice.fingerprint,
+      verificationPhrase: kaiDevice.verificationPhrase,
+    }));
+    expect(JSON.stringify(pendingKai)).not.toContain("PublicKeyPem");
+    expect(JSON.stringify(pendingKai)).not.toContain("enrollmentDigest");
+    expect(JSON.stringify(pendingKai)).not.toContain("invitationTokenHash");
+    expect(JSON.stringify(pendingKai)).not.toContain("signature");
+    const approveKaiRequest = randomUUID();
+    stephen.send({
+      id: approveKaiRequest,
+      type: "device.approval.update",
+      targetDeviceId: kaiDevice.id,
+      decision: "approve",
+      confirmedVerificationPhrase: kaiDevice.verificationPhrase,
+    });
+    expect(await waitFor(stephen, line => line.source === "control"
+      && line.id === approveKaiRequest)).toMatchObject({
+      ok: true,
+      targetDeviceId: kaiDevice.id,
+      decision: "approve",
+      status: "approved",
+      created: true,
     });
     let kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "kai-account",
       CODEX_RUNTIME_MARKER: JSON.stringify({ allowFullComputer: true }),
     });
-    await Promise.all([
-      waitFor(stephen, line => line.source === "session" && line.state === "connected"),
-      waitFor(kai, line => line.source === "session" && line.state === "connected"),
-    ]);
+    await waitFor(kai, line => line.source === "session" && line.state === "connected");
     const [stephenContacts, kaiContacts] = await Promise.all([
       waitFor(stephen, line => line.source === "private-contacts"
         && line.contacts?.some((contact: any) => contact.deviceId === kaiDevice.id)),

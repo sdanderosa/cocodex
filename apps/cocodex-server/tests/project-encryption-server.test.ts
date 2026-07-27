@@ -20,7 +20,11 @@ import {
 } from "@cocodex/protocol";
 import { createDefaultConfig } from "../src/config";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import {
+  approvePendingDeviceForTest,
+  testServerIdentityFingerprint,
+} from "./device-approval-fixture";
 import { createServerIdentity } from "../src/identity";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
@@ -90,6 +94,8 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: testServerIdentityFingerprint(db),
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName,
@@ -98,7 +104,7 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     projectWrapPublicKeyPem: projectWrap.publicKey,
     signature: enrollmentSignature,
   });
-  expect(approveDevice(db, device.fingerprint)).toBeTrue();
+  approvePendingDeviceForTest(db, device, pair.privateKey, invitation.serverFingerprint);
   db.query("UPDATE devices SET device_key_certificate = ? WHERE id = ?").run(
     createDeviceKeyCertificate(device.id, {
       publicKeyPem: pair.publicKey,

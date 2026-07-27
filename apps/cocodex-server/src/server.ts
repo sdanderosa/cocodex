@@ -19,6 +19,9 @@ import {
   projectInvitationListResultFrameSchema,
   projectInvitationRespondedFrameSchema,
   projectDeviceRevokedFrameSchema,
+  deviceApprovalChangedFrameSchema,
+  deviceApprovalSnapshotFrameSchema,
+  deviceApprovalUpdatedFrameSchema,
   projectLockChangedFrameSchema,
   projectLockUpdatedFrameSchema,
   sharedChatChangedFrameSchema,
@@ -106,6 +109,11 @@ import {
   projectLockState,
   updateProjectLock,
 } from "./project-locks";
+import {
+  expirePendingDeviceApprovals,
+  listPendingDeviceApprovals,
+  updateDeviceApproval,
+} from "./device-approvals";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -117,6 +125,8 @@ const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
 const MAX_PRIVATE_CONTACT_LISTS_PER_SECOND = 10;
+const MAX_DEVICE_APPROVAL_LISTS_PER_SECOND = 10;
+const MAX_DEVICE_APPROVAL_UPDATES_PER_MINUTE = 12;
 const PROJECT_LOCK_BLOCKED_FRAME_TYPES = new Set([
   "project.chat.create",
   "project.invite.create",
@@ -244,6 +254,8 @@ export function startCoCodexServer(
   const presenceProjectUpdateTimes = new Map<string, number[]>();
   const privateReceiptTimes = new Map<string, number[]>();
   const privateContactListTimes = new Map<string, number[]>();
+  const deviceApprovalListTimes = new Map<string, number[]>();
+  const deviceApprovalUpdateTimes = new Map<string, number[]>();
   const deviceCertificatePublishTimes = new Map<string, number[]>();
   const projectCreationTimes = new Map<string, number[]>();
   let privateContactRevision = privateContactDirectoryRevision(db);
@@ -295,6 +307,46 @@ export function startCoCodexServer(
       } catch {
         socket.data.subscribedProjects.delete(projectId);
       }
+    }
+  }
+
+  function sendToApprovedDevices(frame: unknown): void {
+    const encoded = JSON.stringify(frame);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId) continue;
+      const device = deviceForAuthentication(db, deviceId);
+      if (device?.status === "approved") socket.send(encoded);
+    }
+  }
+
+  function sendPendingDeviceApprovals(
+    socket: ServerWebSocket<SocketData>,
+    requesterDeviceId: string,
+    requestId?: string,
+  ): void {
+    socket.send(JSON.stringify(deviceApprovalSnapshotFrameSchema.parse({
+      version: 1,
+      type: "device.approval.snapshot",
+      ...(requestId ? { requestId } : {}),
+      serverIdentityFingerprint: identity.fingerprint,
+      serverEpoch: serverEpoch(db),
+      devices: listPendingDeviceApprovals(
+        db,
+        requesterDeviceId,
+        certificateFingerprint,
+        identity.fingerprint,
+      ),
+    })));
+  }
+
+  function broadcastPendingDeviceApprovals(): void {
+    for (const socket of sockets) {
+      const requesterDeviceId = socket.data.authenticatedDeviceId;
+      if (!requesterDeviceId) continue;
+      const device = deviceForAuthentication(db, requesterDeviceId);
+      if (device?.status !== "approved") continue;
+      sendPendingDeviceApprovals(socket, requesterDeviceId);
     }
   }
 
@@ -381,6 +433,32 @@ export function startCoCodexServer(
     }
     recent.push(now);
     privateContactListTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowDeviceApprovalList(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (deviceApprovalListTimes.get(deviceId) ?? [])
+      .filter(timestamp => now - timestamp < 1_000);
+    if (recent.length >= MAX_DEVICE_APPROVAL_LISTS_PER_SECOND) {
+      deviceApprovalListTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    deviceApprovalListTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowDeviceApprovalUpdate(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (deviceApprovalUpdateTimes.get(deviceId) ?? [])
+      .filter(timestamp => now - timestamp < 60_000);
+    if (recent.length >= MAX_DEVICE_APPROVAL_UPDATES_PER_MINUTE) {
+      deviceApprovalUpdateTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    deviceApprovalUpdateTimes.set(deviceId, recent);
     return true;
   }
 
@@ -727,6 +805,8 @@ export function startCoCodexServer(
           }
           const device = enrollDevice(db, {
             invitation,
+            expectedServerFingerprint: certificateFingerprint,
+            serverIdentityFingerprint: identity.fingerprint,
             challengeId: body.challengeId,
             challenge: body.challenge,
             displayName: body.displayName,
@@ -735,7 +815,13 @@ export function startCoCodexServer(
             projectWrapPublicKeyPem: body.projectWrapPublicKeyPem,
             signature: body.signature,
           });
-          return json({ device, approvalRequired: true, serverIdentityPublicKeyPem: identity.publicKeyPem, serverEpoch: serverEpoch(db) }, 202);
+          broadcastPendingDeviceApprovals();
+          return json({
+            device,
+            approvalRequired: true,
+            serverIdentityPublicKeyPem: identity.publicKeyPem,
+            serverEpoch: serverEpoch(db),
+          }, 202);
         } catch (error) {
           return json({ error: safeErrorMessage(error) }, 400);
         }
@@ -832,6 +918,7 @@ export function startCoCodexServer(
               serverIdentityPublicKeyPem: identity.publicKeyPem,
               serverEpoch: serverEpoch(db),
             }));
+            sendPendingDeviceApprovals(socket, device.id);
             // Re-deliver every envelope addressed to this device after each
             // authenticated reconnect. This closes the offline-recipient and
             // commit-before-broadcast window without exposing other members'
@@ -929,6 +1016,48 @@ export function startCoCodexServer(
               requestId,
               projects: listProjects(db, deviceId),
             }));
+            return;
+          }
+          if (message.type === "device.approval.list") {
+            if (!allowDeviceApprovalList(deviceId)) {
+              throw new Error("Pending-device list rate limit exceeded");
+            }
+            sendPendingDeviceApprovals(socket, deviceId, requestId);
+            return;
+          }
+          if (message.type === "device.approval.update") {
+            if (!allowDeviceApprovalUpdate(deviceId)) {
+              throw new Error("Device-approval update rate limit exceeded");
+            }
+            const result = updateDeviceApproval(
+              db,
+              deviceId,
+              message,
+              certificateFingerprint,
+              identity.fingerprint,
+              serverEpoch(db),
+            );
+            socket.send(JSON.stringify(deviceApprovalUpdatedFrameSchema.parse({
+              version: 1,
+              type: "device.approval.updated",
+              requestId,
+              ...result,
+            })));
+            if (result.created) {
+              sendToApprovedDevices(deviceApprovalChangedFrameSchema.parse({
+                version: 1,
+                type: "device.approval.changed",
+                operationId: result.operationId,
+                targetDeviceId: result.targetDeviceId,
+                targetFingerprint: result.targetFingerprint,
+                decision: result.decision,
+                status: result.status,
+                approverDeviceId: result.approverDeviceId,
+                resultingRevision: result.resultingRevision,
+                decidedAt: result.decidedAt,
+              }));
+              broadcastPendingDeviceApprovals();
+            }
             return;
           }
           if (message.type === "project.lock.update") {
@@ -2181,6 +2310,7 @@ export function startCoCodexServer(
   });
   const presencePruneTimer = setInterval(() => prunePresence(), presencePruneIntervalMs);
   const authorizationSweepTimer = setInterval(() => {
+    if (expirePendingDeviceApprovals(db).length > 0) broadcastPendingDeviceApprovals();
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
       if (!deviceId) continue;

@@ -56,6 +56,13 @@ import {
   projectLockUpdateFrameSchema,
 } from "./project-lock";
 import {
+  deviceApprovalChangedFrameSchema,
+  deviceApprovalListFrameSchema,
+  deviceApprovalSnapshotFrameSchema,
+  deviceApprovalUpdatedFrameSchema,
+  deviceApprovalUpdateFrameSchema,
+} from "./device-approval";
+import {
   sharedChatChangedFrameSchema,
   sharedChatCreateFrameSchema,
   sharedChatCreatedFrameSchema,
@@ -203,6 +210,8 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   projectInvitationListFrameSchema,
   projectInvitationRespondFrameSchema,
   projectInvitationCancelFrameSchema,
+  deviceApprovalListFrameSchema,
+  deviceApprovalUpdateFrameSchema,
   projectLockUpdateFrameSchema,
   sharedChatCreateFrameSchema,
   sharedChatListFrameSchema,
@@ -827,6 +836,9 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectInvitationCreatedFrameSchema,
   projectInvitationChangedFrameSchema,
   projectInvitationRespondedFrameSchema,
+  deviceApprovalSnapshotFrameSchema,
+  deviceApprovalUpdatedFrameSchema,
+  deviceApprovalChangedFrameSchema,
   sharedChatListResultFrameSchema,
   sharedChatCreatedFrameSchema,
   sharedChatChangedFrameSchema,

@@ -85,6 +85,8 @@ const RENDERER_FRAME_FIELDS = new Set([
   "operationId", "cancelledTaskCount",
 ]);
 const ALLOWED_COMMANDS = new Set([
+  "device.approval.list",
+  "device.approval.update",
   "project.list",
   "project.create",
   "project.invite.list",
@@ -151,7 +153,10 @@ export interface CoCodexGuiStatus {
   running: boolean;
   state: "not-configured" | "stopped" | "connecting" | "connected" | "retrying";
   deviceId?: string;
+  deviceFingerprint?: string;
   displayName?: string;
+  verificationPhrase?: string;
+  approvalExpiresAt?: string;
   server?: { host: string; port: number };
   agentConfigured: boolean;
   agentAccessProfile?: "project-only" | "full-computer";
@@ -223,6 +228,24 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           fingerprint: contact.fingerprint,
           trusted: contact.trusted === true,
           projectCapable: contact.projectCapable === true,
+        };
+      }),
+    };
+  }
+  if (record.source === "device-approvals" && Array.isArray(record.devices)) {
+    return {
+      source: "device-approvals",
+      devices: record.devices.map((candidate: unknown) => {
+        const device = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          deviceId: device.deviceId,
+          displayName: device.displayName,
+          fingerprint: device.fingerprint,
+          verificationPhrase: device.verificationPhrase,
+          enrolledAt: device.enrolledAt,
+          approvalExpiresAt: device.approvalExpiresAt,
         };
       }),
     };
@@ -443,7 +466,10 @@ export class CoCodexGuiBridge {
       state: configured ? this.state : "not-configured",
       ...(connection ? {
         deviceId: connection.deviceId,
+        deviceFingerprint: connection.deviceFingerprint,
         displayName: connection.displayName,
+        verificationPhrase: connection.verificationPhrase,
+        approvalExpiresAt: connection.approvalExpiresAt,
         server: { host: connection.host, port: connection.port },
       } : {}),
       agentConfigured: existsSync(this.paths.agentPolicy),
@@ -513,6 +539,26 @@ export class CoCodexGuiBridge {
     }
     if (command.type === "private.send" && "recipientKeyCertificate" in command) {
       throw new Error("The GUI must resolve private contacts inside the resident Client");
+    }
+    if (command.type === "device.approval.list") {
+      const allowed = new Set(["id", "type"]);
+      if (Object.keys(command).some(key => !allowed.has(key))) {
+        throw new Error("Invalid device approval list command");
+      }
+    }
+    if (command.type === "device.approval.update") {
+      const allowed = new Set([
+        "id", "type", "targetDeviceId", "decision", "confirmedVerificationPhrase",
+      ]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.targetDeviceId !== "string"
+        || !/^[0-9a-f-]{36}$/i.test(command.targetDeviceId)
+        || (command.decision !== "approve" && command.decision !== "reject")
+        || typeof command.confirmedVerificationPhrase !== "string"
+        || command.confirmedVerificationPhrase.trim().length < 1
+        || command.confirmedVerificationPhrase.length > 256) {
+        throw new Error("Invalid device approval command");
+      }
     }
     if (command.type === "project.lock.update") {
       const allowed = new Set(["id", "type", "projectId", "action", "expectedRevision", "reason"]);

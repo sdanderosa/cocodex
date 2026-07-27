@@ -38,7 +38,16 @@ reviewed again before release.
   local-agent-executes pattern.
 - **Device identity:** independently adapt Syncthing's cryptographic
   fingerprint and explicit trust model using Ed25519 identities protected by
-  the operating system. The Server now distributes a bounded directory of
+  the operating system. Exactly one first device has a permanent local-only
+  bootstrap. Every later decision is signed by an authenticated approved
+  resident Client and binds the new device's immutable enrollment attestation,
+  stable Server identity/epoch, expiry, revision, operation ID, and nonce.
+  The resident process verifies raw public keys and exposes only a fingerprint,
+  64-bit comparison phrase, and timestamps to the renderer. This independently
+  combines Syncthing-style explicit fingerprint trust with MeshCentral's
+  authoritative-server/resident-endpoint boundary; no reference code is
+  copied and no dependency is added. See ADR 0042.
+  The Server also distributes a bounded directory of
   other approved certificate-bearing devices, but discovery never implies
   trust: the resident Client verifies the self-signed certificate and the
   local user must independently confirm and enter its enrolled fingerprint

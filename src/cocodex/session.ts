@@ -1,6 +1,9 @@
 import { createHash, createPublicKey, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import {
   agentDefinitionSigningTranscript,
+  deviceApprovalSigningTranscript,
+  deviceEnrollmentDigest,
+  deviceVerificationPhrase,
   projectCreationSigningTranscript,
   projectInvitationDecisionTranscript,
   projectInvitationSigningTranscript,
@@ -23,6 +26,7 @@ import {
   type ProjectMemberView,
   type ProjectInvitationView,
   type ProjectLockState,
+  type PendingDeviceApproval,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
@@ -343,6 +347,12 @@ export async function runJsonLineSession(
   const localAgentActiveCounts = new Map<string, number>();
   const localAgentLegacyRuntime = new Map<string, boolean>();
   const pendingAgentApprovals = new Map<string, (approved: boolean) => void>();
+  const pendingDeviceApprovals = new Map<string, PendingDeviceApproval>();
+  const pendingDeviceApprovalCommands = new Map<string, {
+    commandId: string;
+    targetDeviceId: string;
+    frame: Record<string, unknown>;
+  }>();
   const pendingProjectKeyInitializations = new Map<string, {
     projectId: string;
     keyEpoch: 1;
@@ -387,6 +397,71 @@ export async function runJsonLineSession(
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
+  const serverIdentityFingerprint = publicKeyFingerprint(connection.serverIdentityPublicKeyPem);
+  const emitPendingDeviceApprovals = (): void => {
+    emit({
+      source: "device-approvals",
+      devices: [...pendingDeviceApprovals.values()].map(device => ({
+        deviceId: device.deviceId,
+        displayName: device.displayName,
+        fingerprint: device.fingerprint,
+        verificationPhrase: deviceVerificationPhrase(
+          serverIdentityFingerprint,
+          device.deviceId,
+          device.fingerprint,
+        ),
+        enrolledAt: device.enrolledAt,
+        approvalExpiresAt: device.approvalExpiresAt,
+      })),
+    });
+  };
+  const ingestPendingDeviceApprovals = (
+    authorityFingerprint: string,
+    authorityEpoch: number,
+    devices: PendingDeviceApproval[],
+  ): void => {
+    if (authorityFingerprint !== serverIdentityFingerprint
+      || authorityEpoch !== connection.serverEpoch) {
+      throw new Error("Pending device approvals target a different server authority");
+    }
+    const next = new Map<string, PendingDeviceApproval>();
+    const fingerprints = new Set<string>();
+    for (const device of devices) {
+      if (Date.parse(device.approvalExpiresAt) <= Date.now()) {
+        throw new Error("Server returned an expired pending device approval");
+      }
+      if (publicKeyFingerprint(device.devicePublicKeyPem) !== device.fingerprint) {
+        throw new Error("Pending device fingerprint does not match its signing key");
+      }
+      const digest = deviceEnrollmentDigest({
+        serverTlsFingerprint: connection.serverFingerprint,
+        serverIdentityFingerprint,
+        invitationId: device.invitationId,
+        invitationTokenHash: device.invitationTokenHash,
+        invitationExpiresAt: device.invitationExpiresAt,
+        deviceId: device.deviceId,
+        displayName: device.displayName,
+        fingerprint: device.fingerprint,
+        devicePublicKeyPem: device.devicePublicKeyPem,
+        messagingPublicKeyPem: device.messagingPublicKeyPem,
+        projectWrapPublicKeyPem: device.projectWrapPublicKeyPem,
+        enrolledAt: device.enrolledAt,
+        approvalExpiresAt: device.approvalExpiresAt,
+        approvalRevision: 0,
+      });
+      if (digest !== device.enrollmentDigest) {
+        throw new Error("Pending device enrollment attestation is invalid");
+      }
+      if (next.has(device.deviceId) || fingerprints.has(device.fingerprint)) {
+        throw new Error("Server returned duplicate pending device identity");
+      }
+      next.set(device.deviceId, device);
+      fingerprints.add(device.fingerprint);
+    }
+    pendingDeviceApprovals.clear();
+    for (const [deviceId, device] of next) pendingDeviceApprovals.set(deviceId, device);
+    emitPendingDeviceApprovals();
+  };
   const applyProjectLockState = (projectId: string, lock: ProjectLockState): boolean => {
     const current = projectLocks.get(projectId);
     const order = compareProjectLockState(current, lock);
@@ -2118,6 +2193,9 @@ export async function runJsonLineSession(
         || frame.type === "project.key.rotated"
         || frame.type === "project.key.rotation-required"
         || frame.type === "project.device-revoked"
+        || frame.type === "device.approval.snapshot"
+        || frame.type === "device.approval.updated"
+        || frame.type === "device.approval.changed"
         || frame.type === "project.lock.updated" || frame.type === "project.lock.changed"
         || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
@@ -2138,6 +2216,17 @@ export async function runJsonLineSession(
         }
       }
       if (frame.type === "error" && typeof frame.requestId === "string") {
+        const pendingDeviceApproval = pendingDeviceApprovalCommands.get(frame.requestId);
+        if (pendingDeviceApproval) {
+          pendingDeviceApprovalCommands.delete(frame.requestId);
+          emit({
+            source: "control",
+            id: pendingDeviceApproval.commandId,
+            ok: false,
+            targetDeviceId: pendingDeviceApproval.targetDeviceId,
+            error: String(frame.error ?? "Device approval request failed"),
+          });
+        }
         const pendingInvitationCommand = pendingProjectInvitationCommands.get(frame.requestId);
         if (pendingInvitationCommand) {
           pendingProjectInvitationCommands.delete(frame.requestId);
@@ -2213,6 +2302,45 @@ export async function runJsonLineSession(
             error: String(frame.error ?? "Project creation failed"),
           });
         }
+      }
+      if (frame.type === "device.approval.snapshot") {
+        try {
+          ingestPendingDeviceApprovals(
+            String(frame.serverIdentityFingerprint),
+            Number(frame.serverEpoch),
+            frame.devices as PendingDeviceApproval[],
+          );
+        } catch (error) {
+          emitError({
+            source: "device-approvals",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          connected.close(1008, "Invalid pending device approval snapshot");
+        }
+        return;
+      }
+      if (frame.type === "device.approval.updated" || frame.type === "device.approval.changed") {
+        pendingDeviceApprovals.delete(String(frame.targetDeviceId));
+        emitPendingDeviceApprovals();
+        if (frame.status === "approved") {
+          send({ version: 1, type: "private.contact.list", requestId: randomUUID() });
+        }
+        if (frame.type === "device.approval.updated" && typeof frame.requestId === "string") {
+          const pending = pendingDeviceApprovalCommands.get(frame.requestId);
+          if (pending) {
+            pendingDeviceApprovalCommands.delete(frame.requestId);
+            emit({
+              source: "control",
+              id: pending.commandId,
+              ok: true,
+              targetDeviceId: frame.targetDeviceId,
+              decision: frame.decision,
+              status: frame.status,
+              created: frame.created,
+            });
+          }
+        }
+        return;
       }
       if (frame.type === "project.invite.list.result") {
         void (async () => {
@@ -2807,6 +2935,11 @@ export async function runJsonLineSession(
     });
     send({
       version: 1,
+      type: "device.approval.list",
+      requestId: randomUUID(),
+    });
+    send({
+      version: 1,
       type: "project.invite.list",
       requestId: randomUUID(),
     });
@@ -2817,6 +2950,10 @@ export async function runJsonLineSession(
     for (const pending of pendingAgentConfigurations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will replay the exact signed create */ }
+    }
+    for (const pending of pendingDeviceApprovalCommands.values()) {
+      try { send(pending.frame); }
+      catch { /* replay the exact signed approval operation after reconnect */ }
     }
     for (const pending of pendingProjectCreations.values()) {
       try { send(pending.frame); }
@@ -2962,7 +3099,65 @@ export async function runJsonLineSession(
             throw new Error(`Project is locked: ${lock.reason ?? "shared changes are paused"}`);
           }
         }
-        if (command.type === "project.list") {
+        if (command.type === "device.approval.list") {
+          send({
+            version: 1,
+            type: "device.approval.list",
+            requestId: controlRequestId(command.id),
+          });
+        } else if (command.type === "device.approval.update") {
+          const targetDeviceId = String(command.targetDeviceId ?? "");
+          const decision = command.decision === "reject" ? "reject" as const : "approve" as const;
+          const target = pendingDeviceApprovals.get(targetDeviceId);
+          if (!target) throw new Error("Pending device approval was not found");
+          const expectedPhrase = deviceVerificationPhrase(
+            serverIdentityFingerprint,
+            target.deviceId,
+            target.fingerprint,
+          );
+          const confirmedPhrase = String(command.confirmedVerificationPhrase ?? "")
+            .trim().toLowerCase().replace(/\s+/g, " ");
+          if (confirmedPhrase !== expectedPhrase) {
+            throw new Error("The device verification phrase does not match");
+          }
+          const requestId = controlRequestId(command.id);
+          const issuedAt = new Date().toISOString();
+          const unsigned = {
+            version: 1 as const,
+            operationId: randomUUID(),
+            targetDeviceId: target.deviceId,
+            targetFingerprint: target.fingerprint,
+            targetEnrollmentDigest: target.enrollmentDigest,
+            expectedRevision: 0 as const,
+            decision,
+            serverIdentityFingerprint,
+            serverEpoch: connection.serverEpoch,
+            issuedAt,
+            expiresAt: new Date(Date.now() + 2 * 60_000).toISOString(),
+            nonce: randomBytes(32).toString("base64url"),
+          };
+          const frame = {
+            ...unsigned,
+            type: "device.approval.update" as const,
+            requestId,
+            signature: sign(
+              null,
+              deviceApprovalSigningTranscript(unsigned),
+              identity.privateKeyPem,
+            ).toString("base64url"),
+          };
+          pendingDeviceApprovalCommands.set(requestId, {
+            commandId: String(command.id ?? requestId),
+            targetDeviceId,
+            frame,
+          });
+          try {
+            send(frame);
+          } catch (error) {
+            pendingDeviceApprovalCommands.delete(requestId);
+            throw error;
+          }
+        } else if (command.type === "project.list") {
           send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
         } else if (command.type === "project.lock.update") {
           const projectId = String(command.projectId);

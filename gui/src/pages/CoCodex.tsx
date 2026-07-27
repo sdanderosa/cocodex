@@ -29,7 +29,10 @@ interface Status {
   running: boolean;
   state: ConnectionState;
   deviceId?: string;
+  deviceFingerprint?: string;
   displayName?: string;
+  verificationPhrase?: string;
+  approvalExpiresAt?: string;
   server?: { host: string; port: number };
   agentConfigured: boolean;
   agentAccessProfile?: "project-only" | "full-computer";
@@ -110,6 +113,15 @@ interface PrivateContact {
   fingerprint: string;
   trusted: boolean;
   projectCapable: boolean;
+}
+
+interface PendingDeviceApproval {
+  deviceId: string;
+  displayName: string;
+  fingerprint: string;
+  verificationPhrase: string;
+  enrolledAt: string;
+  approvalExpiresAt: string;
 }
 
 interface ProjectInvitation {
@@ -291,6 +303,7 @@ interface SessionValue {
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
   contacts?: PrivateContact[];
+  devices?: PendingDeviceApproval[];
   invitations?: ProjectInvitation[];
   project?: Project;
   frame?: {
@@ -507,6 +520,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
   const [privateReceipts, setPrivateReceipts] = useState<Record<string, "sent" | "delivered" | "read">>({});
   const [privateContacts, setPrivateContacts] = useState<PrivateContact[]>([]);
+  const [pendingDeviceApprovals, setPendingDeviceApprovals] = useState<PendingDeviceApproval[]>([]);
+  const [deviceApprovalConfirmations, setDeviceApprovalConfirmations] =
+    useState<Record<string, string>>({});
   const [privateSearch, setPrivateSearch] = useState("");
   const [presence, setPresence] = useState<PresenceMember[]>([]);
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
@@ -932,6 +948,13 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setPrivateContacts(contacts);
         setRecipientDeviceId(previous => reconcilePrivateContactSelection(previous, contacts));
       }
+      if (value?.source === "device-approvals" && Array.isArray(value.devices)) {
+        setPendingDeviceApprovals(value.devices as PendingDeviceApproval[]);
+        setDeviceApprovalConfirmations(previous => Object.fromEntries(
+          Object.entries(previous).filter(([deviceId]) =>
+            value.devices!.some(device => device.deviceId === deviceId)),
+        ));
+      }
       if (value?.source === "project-invitations" && Array.isArray(value.invitations)) {
         setProjectInvitations(value.invitations as ProjectInvitation[]);
       }
@@ -1131,6 +1154,29 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const updateDeviceApproval = async (
+    device: PendingDeviceApproval,
+    decision: "approve" | "reject",
+  ) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "device.approval.update",
+        targetDeviceId: device.deviceId,
+        decision,
+        confirmedVerificationPhrase: deviceApprovalConfirmations[device.deviceId] ?? "",
+      });
+      setNotice(t(decision === "approve"
+        ? "cocodex.deviceApproval.approving"
+        : "cocodex.deviceApproval.rejecting"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1502,6 +1548,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       </header>
 
       {notice && <div className="cocodex-notice" role="status">{notice}</div>}
+      {status?.configured && status.state !== "connected" && status.verificationPhrase
+        && status.approvalExpiresAt && (
+        <div className="cocodex-notice cocodex-enrollment-verification" role="status">
+          <strong>{t("cocodex.deviceApproval.yourPhrase")}</strong>
+          <code>{status.verificationPhrase}</code>
+          <small>{t("cocodex.deviceApproval.yourPhraseHelp", {
+            time: new Date(status.approvalExpiresAt).toLocaleTimeString(),
+          })}</small>
+        </div>
+      )}
       {selectedProjectSecurity && projectId && (
         <div className="cocodex-notice" role="alert">
           <strong>{selectedProjectSecurity.state === "device-revoked"
@@ -1929,6 +1985,60 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           </section>
 
           <aside className="card cocodex-private">
+            {pendingDeviceApprovals.length > 0 && (
+              <section className="cocodex-device-approvals">
+                <div className="cocodex-section-head">
+                  <div>
+                    <strong>{t("cocodex.deviceApproval.title")}</strong>
+                    <small>{t("cocodex.deviceApproval.subtitle")}</small>
+                  </div>
+                  <button type="button" className="btn btn-ghost btn-icon"
+                    title={t("cocodex.deviceApproval.refresh")}
+                    onClick={() => void command({ type: "device.approval.list" })}
+                    disabled={status.state !== "connected"}>
+                    <IconRefresh />
+                  </button>
+                </div>
+                <div className="cocodex-device-approval-list">
+                  {pendingDeviceApprovals.map(device => {
+                    const confirmation = (deviceApprovalConfirmations[device.deviceId] ?? "")
+                      .trim().toLowerCase().replace(/\s+/g, " ");
+                    const matches = confirmation === device.verificationPhrase;
+                    return (
+                      <article key={device.deviceId} className="cocodex-device-approval-card">
+                        <strong>{device.displayName}</strong>
+                        <code>{device.fingerprint}</code>
+                        <small>{t("cocodex.deviceApproval.phrase")}</small>
+                        <code>{device.verificationPhrase}</code>
+                        <small>{t("cocodex.deviceApproval.expires", {
+                          time: new Date(device.approvalExpiresAt).toLocaleTimeString(),
+                        })}</small>
+                        <input className="input"
+                          aria-label={t("cocodex.deviceApproval.confirm")}
+                          placeholder={t("cocodex.deviceApproval.confirm")}
+                          value={deviceApprovalConfirmations[device.deviceId] ?? ""}
+                          onChange={event => setDeviceApprovalConfirmations(previous => ({
+                            ...previous,
+                            [device.deviceId]: event.target.value,
+                          }))} />
+                        <div className="cocodex-device-approval-actions">
+                          <button type="button" className="btn btn-primary"
+                            disabled={busy || status.state !== "connected" || !matches}
+                            onClick={() => void updateDeviceApproval(device, "approve")}>
+                            {t("cocodex.deviceApproval.approve")}
+                          </button>
+                          <button type="button" className="btn btn-danger btn-ghost"
+                            disabled={busy || status.state !== "connected" || !matches}
+                            onClick={() => void updateDeviceApproval(device, "reject")}>
+                            {t("cocodex.deviceApproval.reject")}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
             <section className="cocodex-usage">
               <div className="cocodex-section-head">
                 <div><strong>{t("cocodex.usage.title")}</strong><small>{t("cocodex.usage.subtitle")}</small></div>

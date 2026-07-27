@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { decodeInvitation, enrollmentSigningTranscript } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
+import {
+  approvePendingDeviceForTest,
+  testServerIdentityFingerprint,
+} from "./device-approval-fixture";
 import { createInvitation } from "../src/invitations";
 import {
   addProjectMember,
@@ -44,6 +48,8 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: testServerIdentityFingerprint(db),
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName: name,
@@ -51,7 +57,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
     messagingPublicKeyPem: messaging.publicKey,
     signature,
   }, now);
-  expect(approveDevice(db, device.fingerprint, now)).toBeTrue();
+  approvePendingDeviceForTest(db, device, pair.privateKey, invitation.serverFingerprint, now);
   return device.id;
 }
 

@@ -8,7 +8,7 @@ import { createAgentForHost, createAgentTask, listAgentTasks, listAgents, pendin
 import { acceptAgentExecutionReport } from "../src/agent-execution";
 import { appendEncryptedAgentResult, cancelEncryptedAgentTask, createEncryptedAgentTask, pendingEncryptedAgentTasks } from "../src/encrypted-agent-routing";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
 import { createServerIdentity } from "../src/identity";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
@@ -16,6 +16,10 @@ import { addProjectMember, createProject } from "../src/shared-state";
 import { shareProjectKeyEnvelope } from "../src/project-encryption-storage";
 import { publishEncryptedArtifact } from "../src/encrypted-artifacts";
 import { publishArtifact } from "../src/artifacts";
+import {
+  approvePendingDeviceForTest,
+  TEST_SERVER_IDENTITY_FINGERPRINT,
+} from "./device-approval-fixture";
 
 const DEFAULT_AGENT_RUNTIME = {
   primaryModel: "gpt-5.6-sol",
@@ -31,8 +35,18 @@ function device(db: ReturnType<typeof openDatabase>, name: string, now: Date) {
   const invitation = decodeInvitation(createInvitation(db, { host: "server.test", port: 1, serverFingerprint: "AAAA-BBBB-CCCC-DDDD", now }));
   const challenge = createEnrollmentChallenge(db, invitation, pair.publicKey, invitation.serverFingerprint, now);
   const signature = sign(null, enrollmentSigningTranscript({ serverFingerprint: invitation.serverFingerprint, invitationId: invitation.invitationId, challengeId: challenge.id, challenge: challenge.challenge, displayName: name, devicePublicKeyPem: pair.publicKey, messagingPublicKeyPem: messaging.publicKey }), pair.privateKey).toString("base64url");
-  const enrolled = enrollDevice(db, { invitation, challengeId: challenge.id, challenge: challenge.challenge, displayName: name, devicePublicKeyPem: pair.publicKey, messagingPublicKeyPem: messaging.publicKey, signature }, now);
-  approveDevice(db, enrolled.fingerprint, now);
+  const enrolled = enrollDevice(db, {
+    invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: TEST_SERVER_IDENTITY_FINGERPRINT,
+    challengeId: challenge.id,
+    challenge: challenge.challenge,
+    displayName: name,
+    devicePublicKeyPem: pair.publicKey,
+    messagingPublicKeyPem: messaging.publicKey,
+    signature,
+  }, now);
+  approvePendingDeviceForTest(db, enrolled, pair.privateKey, invitation.serverFingerprint, now);
   return { id: enrolled.id, privateKey: pair.privateKey, publicKey: pair.publicKey };
 }
 

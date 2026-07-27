@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import { publicKeyFingerprint } from "@cocodex/protocol";
 import { createDefaultConfig } from "../apps/cocodex-server/src/config";
 import { openDatabase } from "../apps/cocodex-server/src/database";
-import { approveDevice } from "../apps/cocodex-server/src/enrollment";
+import { approvePendingDeviceForTest } from "../apps/cocodex-server/tests/device-approval-fixture";
 import { createServerIdentity } from "../apps/cocodex-server/src/identity";
 import { createInvitation } from "../apps/cocodex-server/src/invitations";
 import { serverPaths } from "../apps/cocodex-server/src/paths";
@@ -151,17 +151,29 @@ describe("CoCodex encrypted project context session", () => {
       port: server.port,
       serverFingerprint: fingerprint,
     }), "Stephen", stephenPaths);
+    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
+    const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(stephenConnection.deviceId) as { fingerprint: string };
+    approvePendingDeviceForTest(
+      db,
+      { id: stephenConnection.deviceId, fingerprint: stephenRow.fingerprint },
+      stephenIdentity.privateKeyPem,
+      fingerprint,
+    );
     const kaiConnection = await enrollClient(createInvitation(db, {
       host: "127.0.0.1",
       port: server.port,
       serverFingerprint: fingerprint,
     }), "Kai", kaiPaths);
-    for (const deviceId of [stephenConnection.deviceId, kaiConnection.deviceId]) {
-      const row = db.query("SELECT fingerprint FROM devices WHERE id = ?").get(deviceId) as { fingerprint: string };
-      expect(approveDevice(db, row.fingerprint)).toBeTrue();
-    }
-    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
     const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+    const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(kaiConnection.deviceId) as { fingerprint: string };
+    approvePendingDeviceForTest(
+      db,
+      { id: kaiConnection.deviceId, fingerprint: kaiRow.fingerprint },
+      kaiIdentity.privateKeyPem,
+      fingerprint,
+    );
     trustDevice(stephenPaths.trustedDevices, kaiConnection.deviceId, publicKeyFingerprint(kaiIdentity.publicKeyPem));
     trustDevice(kaiPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
 
@@ -358,7 +370,12 @@ describe("CoCodex encrypted project context session", () => {
     }), "Stephen", clientPaths(stephenRoot));
     const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(stephenConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, stephenRow.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      { id: stephenConnection.deviceId, fingerprint: stephenRow.fingerprint },
+      loadOrCreateClientIdentity(clientPaths(stephenRoot)).privateKeyPem,
+      fingerprint,
+    );
 
     const kaiConnection = await enrollClient(createInvitation(db, {
       host: "127.0.0.1",
@@ -367,7 +384,12 @@ describe("CoCodex encrypted project context session", () => {
     }), "Kai", clientPaths(kaiRoot));
     const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(kaiConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, kaiRow.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      { id: kaiConnection.deviceId, fingerprint: kaiRow.fingerprint },
+      loadOrCreateClientIdentity(clientPaths(kaiRoot)).privateKeyPem,
+      fingerprint,
+    );
 
     const angelaConnection = await enrollClient(createInvitation(db, {
       host: "127.0.0.1",
@@ -376,7 +398,12 @@ describe("CoCodex encrypted project context session", () => {
     }), "Angela", clientPaths(angelaRoot));
     const angelaRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(angelaConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, angelaRow.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      { id: angelaConnection.deviceId, fingerprint: angelaRow.fingerprint },
+      loadOrCreateClientIdentity(clientPaths(angelaRoot)).privateKeyPem,
+      fingerprint,
+    );
 
     const project = createProject(db, "Encrypted session project", stephenConnection.deviceId);
     addProjectMember(db, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
@@ -901,7 +928,12 @@ describe("CoCodex encrypted project context session", () => {
     }), "Stephen", stephenPaths);
     const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(stephenConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, stephenRow.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      { id: stephenConnection.deviceId, fingerprint: stephenRow.fingerprint },
+      loadOrCreateClientIdentity(stephenPaths).privateKeyPem,
+      fingerprint,
+    );
 
     const kaiPaths = clientPaths(kaiRoot);
     const kaiConnection = await enrollClient(createInvitation(db, {
@@ -911,7 +943,12 @@ describe("CoCodex encrypted project context session", () => {
     }), "Kai", kaiPaths);
     const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
       .get(kaiConnection.deviceId) as { fingerprint: string };
-    expect(approveDevice(db, kaiRow.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      { id: kaiConnection.deviceId, fingerprint: kaiRow.fingerprint },
+      loadOrCreateClientIdentity(kaiPaths).privateKeyPem,
+      fingerprint,
+    );
     const project = createProject(db, "Agent setup project", stephenConnection.deviceId);
     addProjectMember(db, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
     const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);

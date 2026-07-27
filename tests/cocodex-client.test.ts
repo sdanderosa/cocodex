@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,13 +93,17 @@ describe("CoCodex Client direct enrollment", () => {
     roots.push(root);
     const paths = clientPaths(root);
     loadOrCreateClientIdentity(paths);
+    const serverIdentity = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
     writeFileSync(paths.connection, JSON.stringify({
       version: 1,
       host: "server.example",
       port: 19463,
       serverFingerprint: "AAAA-BBBB-CCCC-DDDD",
       serverCertificatePem: "certificate",
-      serverIdentityPublicKeyPem: "server-identity",
+      serverIdentityPublicKeyPem: serverIdentity.publicKey,
       deviceId: crypto.randomUUID(),
       displayName: "Kai",
       serverEpoch: 1,
@@ -115,7 +120,7 @@ describe("CoCodex Client direct enrollment", () => {
           type: "auth.ok",
           requestId: frame.requestId,
           deviceId: frame.deviceId,
-          serverIdentityPublicKeyPem: "server-identity",
+          serverIdentityPublicKeyPem: serverIdentity.publicKey,
           serverEpoch: epoch,
         }) })));
       }) as WebSocket["send"];

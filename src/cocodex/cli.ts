@@ -139,6 +139,9 @@ async function run(): Promise<void> {
       console.log(JSON.stringify({
         enrolled: true,
         deviceId: connection.deviceId,
+        fingerprint: connection.deviceFingerprint,
+        verificationPhrase: connection.verificationPhrase,
+        approvalExpiresAt: connection.approvalExpiresAt,
         approvalRequired: true,
       }));
       return;

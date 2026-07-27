@@ -69,6 +69,8 @@ describe("device enrollment persistence", () => {
     }), pair.privateKey).toString("base64url");
     const request = {
       invitation,
+      expectedServerFingerprint: invitation.serverFingerprint,
+      serverIdentityFingerprint: invitation.serverFingerprint,
       challengeId: challenge.id,
       challenge: challenge.challenge,
       displayName: "Kai",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import {
   canonicalEd25519PublicKey,
   createDeviceKeyCertificate,
@@ -8,6 +8,10 @@ import {
   agentTaskListFrameSchema,
   clientFrameSchema,
   decodeInvitation,
+  deviceApprovalSigningTranscript,
+  deviceApprovalUpdateFrameSchema,
+  deviceEnrollmentDigest,
+  deviceVerificationPhrase,
   encodeInvitation,
   enrollmentSigningTranscript,
   encryptedFileReferenceSchema,
@@ -41,6 +45,72 @@ import {
 } from "../src";
 
 describe("CoCodex protocol", () => {
+  test("binds a signed device decision to one exact enrollment attestation", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const messaging = generateKeyPairSync("x25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const serverIdentityFingerprint =
+      "1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111-1111";
+    const targetDeviceId = randomUUID();
+    const targetFingerprint = publicKeyFingerprint(signing.publicKey);
+    const enrollmentDigest = deviceEnrollmentDigest({
+      serverTlsFingerprint: "AAAA-BBBB-CCCC-DDDD",
+      serverIdentityFingerprint,
+      invitationId: randomUUID(),
+      invitationTokenHash: "ab".repeat(32),
+      invitationExpiresAt: "2027-01-01T01:00:00.000Z",
+      deviceId: targetDeviceId,
+      displayName: "Kai",
+      fingerprint: targetFingerprint,
+      devicePublicKeyPem: signing.publicKey,
+      messagingPublicKeyPem: messaging.publicKey,
+      enrolledAt: "2027-01-01T00:00:00.000Z",
+      approvalExpiresAt: "2027-01-01T00:15:00.000Z",
+      approvalRevision: 0,
+    });
+    const unsigned = {
+      version: 1 as const,
+      operationId: randomUUID(),
+      targetDeviceId,
+      targetFingerprint,
+      targetEnrollmentDigest: enrollmentDigest,
+      expectedRevision: 0 as const,
+      decision: "approve" as const,
+      serverIdentityFingerprint,
+      serverEpoch: 1,
+      issuedAt: "2027-01-01T00:01:00.000Z",
+      expiresAt: "2027-01-01T00:03:00.000Z",
+      nonce: randomBytes(32).toString("base64url"),
+    };
+    const signature = sign(
+      null,
+      deviceApprovalSigningTranscript(unsigned),
+      signing.privateKey,
+    ).toString("base64url");
+    expect(deviceApprovalUpdateFrameSchema.parse({
+      ...unsigned,
+      type: "device.approval.update",
+      requestId: randomUUID(),
+      signature,
+    }).targetEnrollmentDigest).toBe(enrollmentDigest);
+    expect(verify(
+      null,
+      deviceApprovalSigningTranscript({ ...unsigned, decision: "reject" }),
+      signing.publicKey,
+      Buffer.from(signature, "base64url"),
+    )).toBeFalse();
+    expect(deviceVerificationPhrase(
+      serverIdentityFingerprint,
+      targetDeviceId,
+      targetFingerprint,
+    ).split(" ")).toHaveLength(16);
+  });
+
   test("validates an agent-scoped ready acknowledgement", () => {
     const frame = {
       version: 1 as const,

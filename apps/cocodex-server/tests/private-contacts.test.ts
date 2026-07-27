@@ -7,7 +7,6 @@ import {
 } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
 import {
-  approveDevice,
   createEnrollmentChallenge,
   enrollDevice,
   revokeDevice,
@@ -17,6 +16,10 @@ import {
   listPrivateContacts,
   privateContactDirectoryRevision,
 } from "../src/private-contacts";
+import {
+  approvePendingDeviceForTest,
+  TEST_SERVER_IDENTITY_FINGERPRINT,
+} from "./device-approval-fixture";
 
 function enrolledDevice(
   db: ReturnType<typeof openDatabase>,
@@ -54,6 +57,8 @@ function enrolledDevice(
   };
   const device = enrollDevice(db, {
     invitation,
+    expectedServerFingerprint: invitation.serverFingerprint,
+    serverIdentityFingerprint: TEST_SERVER_IDENTITY_FINGERPRINT,
     challengeId: challenge.id,
     challenge: challenge.challenge,
     displayName,
@@ -62,7 +67,12 @@ function enrolledDevice(
     signature: sign(null, enrollmentSigningTranscript(claim), signing.privateKey).toString("base64url"),
   });
   if (status !== "pending") {
-    expect(approveDevice(db, device.fingerprint)).toBeTrue();
+    approvePendingDeviceForTest(
+      db,
+      device,
+      signing.privateKey,
+      invitation.serverFingerprint,
+    );
   }
   const certificate = createDeviceKeyCertificate(device.id, {
     publicKeyPem: signing.publicKey,
@@ -74,7 +84,7 @@ function enrolledDevice(
       .run(certificate, device.id);
   }
   if (status === "revoked") expect(revokeDevice(db, device.fingerprint)).toBeTrue();
-  return { ...device, certificate };
+  return { ...device, certificate, privateKey: signing.privateKey, serverTlsFingerprint: invitation.serverFingerprint };
 }
 
 describe("authoritative private-contact directory", () => {
@@ -111,7 +121,12 @@ describe("authoritative private-contact directory", () => {
       const pending = enrolledDevice(db, "Pending", "pending", true);
       const before = privateContactDirectoryRevision(db);
       expect(() => listPrivateContacts(db, pending.id)).toThrow("not approved");
-      expect(approveDevice(db, pending.fingerprint)).toBeTrue();
+      approvePendingDeviceForTest(
+        db,
+        pending,
+        pending.privateKey,
+        pending.serverTlsFingerprint,
+      );
       expect(privateContactDirectoryRevision(db)).not.toBe(before);
       expect(listPrivateContacts(db, stephen.id).map(contact => contact.deviceId))
         .toContain(pending.id);
