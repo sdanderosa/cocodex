@@ -76,6 +76,25 @@ function packageVersion(): string {
   return serverPackage.version;
 }
 
+export function bunLockOverrides(): Record<string, string> {
+  const versions = new Map<string, Set<string>>();
+  for (const line of readFileSync(resolve(ROOT, "bun.lock"), "utf8").split(/\r?\n/)) {
+    const resolved = line.match(/:\s*\[\s*"([^"]+)"/)?.[1];
+    const match = resolved?.match(/^(.+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/);
+    if (!match) continue;
+    const [, name, version] = match;
+    const values = versions.get(name) ?? new Set<string>();
+    values.add(version);
+    versions.set(name, values);
+  }
+  return Object.fromEntries(
+    [...versions]
+      .filter(([, values]) => values.size === 1)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, values]) => [name, [...values][0]]),
+  );
+}
+
 export function privateAlphaPackageJson(
   source: Record<string, any>,
   version = packageVersion(),
@@ -113,7 +132,7 @@ export function privateAlphaPackageJson(
     scripts: {},
     workspaces: undefined,
     devDependencies: undefined,
-    overrides: undefined,
+    overrides: bunLockOverrides(),
     private: undefined,
   };
 }

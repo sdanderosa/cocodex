@@ -31,8 +31,13 @@ const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf
 };
 if (manifest.name !== "@sdanderosa/cocodex") throw new Error("Installed package identity is not CoCodex");
 
-const node = Bun.which(process.platform === "win32" ? "node.exe" : "node") ?? Bun.which("node");
-if (!node) throw new Error("Node.js is required to verify the installed launchers");
+const explicitNode = option("--node-command");
+const node = explicitNode
+  ? resolve(explicitNode)
+  : Bun.which(process.platform === "win32" ? "node.exe" : "node") ?? Bun.which("node");
+if (!node || !existsSync(node) || !statSync(node).isFile()) {
+  throw new Error("Node.js is required to verify the installed launchers; pass --node-command PATH");
+}
 const ocx = join(packageRoot, "bin", "ocx.mjs");
 const client = join(packageRoot, "bin", "ccx.mjs");
 const server = join(packageRoot, "bin", "ccx-server.mjs");

@@ -43,7 +43,7 @@ describe("CoCodex private-alpha distribution", () => {
     });
     expect(packaged.workspaces).toBeUndefined();
     expect(packaged.devDependencies).toBeUndefined();
-    expect(packaged.overrides).toBeUndefined();
+    expect(packaged.overrides["@hono/node-server"]).toBe("1.19.14");
     expect(packaged.private).toBeUndefined();
     expect(packaged.files).toContain("gui/dist");
     expect(packaged.files).toContain("apps/cocodex-server/src");
@@ -239,6 +239,11 @@ describe("CoCodex private-alpha distribution", () => {
     expect(workflow).toContain('node-version: "22.12.0"');
     expect(workflow).toContain("needs: minimum-runtime");
     expect(workflow).toContain("node-version: 24");
+    const verifier = readFileSync(
+      join(import.meta.dir, "..", "scripts", "verify-cocodex-private-alpha-install.ts"),
+      "utf8",
+    );
+    expect(verifier).toContain('option("--node-command")');
     expect(workflow).toContain("if: ${{ github.event_name == 'workflow_dispatch' }}");
     expect(workflow).toContain(
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",

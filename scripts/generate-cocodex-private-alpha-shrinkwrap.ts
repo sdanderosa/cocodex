@@ -16,25 +16,6 @@ import { privateAlphaPackageJson } from "./build-cocodex-private-alpha";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESTINATION = resolve(ROOT, "scripts", "private-alpha", "npm-shrinkwrap.json");
 
-function bunLockOverrides(): Record<string, string> {
-  const versions = new Map<string, Set<string>>();
-  for (const line of readFileSync(resolve(ROOT, "bun.lock"), "utf8").split(/\r?\n/)) {
-    const resolved = line.match(/:\s*\[\s*"([^"]+)"/)?.[1];
-    const match = resolved?.match(/^(.+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/);
-    if (!match) continue;
-    const [, name, version] = match;
-    const values = versions.get(name) ?? new Set<string>();
-    values.add(version);
-    versions.set(name, values);
-  }
-  return Object.fromEntries(
-    [...versions]
-      .filter(([, values]) => values.size === 1)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, values]) => [name, [...values][0]]),
-  );
-}
-
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
   return index >= 0 ? Bun.argv[index + 1] : undefined;
@@ -53,7 +34,6 @@ function npmCommand(): string {
 
 const source = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")) as Record<string, any>;
 const manifest = privateAlphaPackageJson(source);
-manifest.overrides = { ...(manifest.overrides ?? {}), ...bunLockOverrides() };
 const temporary = mkdtempSync(resolve(tmpdir(), "cocodex-shrinkwrap-"));
 
 try {

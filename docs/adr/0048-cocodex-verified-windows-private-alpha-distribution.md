@@ -38,7 +38,12 @@ Every direct runtime dependency is rewritten to the exact version in
 `bun.lock`. A committed npm shrinkwrap then pins every transitive package and
 registry SHA-512 integrity. Every shipped dependency name/version/integrity
 must also exist identically in `bun.lock`, and install-time lifecycle execution
-is rejected for every package except the pinned Bun runtime. The archive
+is rejected for every package except the pinned Bun runtime. Because npm global
+installation does not use a published package's shrinkwrap as the root
+resolution policy, the release package also carries exact Bun-derived npm
+overrides for every dependency name that has one unambiguous locked version.
+The installed-tree verifier rejects any resolved package/version outside the
+shrinkwrap. The archive
 checksum therefore covers the complete
 dependency resolution contract even though npm fetches those integrity-checked
 package bytes during installation.

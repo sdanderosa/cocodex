@@ -70,6 +70,12 @@ the exact installed lifecycle on both the minimum supported Node 22.12 runtime
 with npm 10 and current Node 24. An artifact is not operator-ready unless that
 workflow or the equivalent local clean-commit lifecycle succeeds.
 
+The hardened installed-tree verifier deliberately caught npm global
+installation resolving `@hono/node-server` beyond the shrinkwrap. The release
+manifest now carries exact Bun-derived npm overrides in addition to the
+shrinkwrap, and the final lifecycle must prove every installed dependency is
+one of the locked name/version pairs before the artifact is accepted.
+
 ## Installed Client and inherited runtime
 
 The installed `cocodex --help`, `cocodex-server --help`, and `ocx --version`
