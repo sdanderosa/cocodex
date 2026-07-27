@@ -3,12 +3,15 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { AgentTask } from "@cocodex/protocol";
 import type { LocalAgentPolicy } from "../src/cocodex/agent-policy";
 import { prepareTaskWorkspace } from "../src/cocodex/task-worktree";
@@ -148,6 +151,62 @@ describe("CoCodex task Git worktrees", () => {
         worktreeRoot: join(root, "state", "worktrees"),
         registryPath: join(root, "state", "task-worktrees.json"),
       })).toThrow("named merge-target branch");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts an alias of the exact repository root but rejects a subdirectory", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-task-worktree-alias-"));
+    const repository = join(root, "repository");
+    const alias = join(root, "repository-alias");
+    const state = join(root, "physical-state");
+    const stateAlias = join(root, "state-alias");
+    const projectId = "bd5b929c-1024-4a0b-bbd7-fc246a84de89";
+    try {
+      git(root, "init", "-b", "main", repository);
+      git(repository, "config", "user.name", "CoCodex Test");
+      git(repository, "config", "user.email", "cocodex@example.test");
+      writeFileSync(join(repository, "README.md"), "base\n");
+      mkdirSync(join(repository, "nested"));
+      git(repository, "add", ".");
+      git(repository, "commit", "-m", "base");
+      symlinkSync(repository, alias, process.platform === "win32" ? "junction" : "dir");
+      mkdirSync(state);
+      symlinkSync(state, stateAlias, process.platform === "win32" ? "junction" : "dir");
+      const policy: LocalAgentPolicy = {
+        version: 1,
+        projectId,
+        agentId: "local-codex",
+        workspaceRoot: alias,
+        workspaceMode: "git-worktree",
+        sandbox: "workspace-write",
+        accessProfile: "project-only",
+        fullComputerOptIn: false,
+        approvalMode: "trusted-device",
+        trustedRequesterFingerprints: {},
+      };
+      const options = {
+        worktreeRoot: join(stateAlias, "worktrees"),
+        registryPath: join(state, "task-worktrees.json"),
+      };
+      const created = prepareTaskWorkspace(policy, task(
+        "e3a91e9c-090a-45a6-b919-92ac31149883",
+        projectId,
+      ), options);
+      const stateRelative = relative(realpathSync.native(state), created.workingDirectory);
+      expect(stateRelative === ".." || stateRelative.startsWith(`..${sep}`)).toBeFalse();
+      expect(prepareTaskWorkspace(policy, task(
+        "e3a91e9c-090a-45a6-b919-92ac31149883",
+        projectId,
+      ), options)).toEqual(created);
+      expect(() => prepareTaskWorkspace({
+        ...policy,
+        workspaceRoot: join(repository, "nested"),
+      }, task(
+        "f4b02f40-f9c7-4a64-af36-a0c85dcd60a8",
+        projectId,
+      ), options)).toThrow("repository root");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -135,6 +135,21 @@ export function inboundPrivateEnvelope(
   return frame.type === "private.message" ? frame.message : undefined;
 }
 
+export function privateMailboxReconciliationCursor(
+  deviceId: string,
+  mailbox: Pick<PrivateMailboxState, "cursor" | "receipts">,
+  history: Pick<PrivateHistoryState, "entries">,
+): number {
+  const observed = new Set(mailbox.receipts.map(receipt => receipt.messageId));
+  let cursor = mailbox.cursor;
+  for (const entry of history.entries) {
+    if (entry.senderDeviceId !== deviceId || entry.deliveryState !== "accepted"
+      || typeof entry.serverSequence !== "number" || observed.has(entry.messageId)) continue;
+    cursor = Math.min(cursor, Math.max(0, entry.serverSequence - 1));
+  }
+  return cursor;
+}
+
 type CachedProjectMember = Omit<ProjectMemberView, "deviceKeyCertificate"> & {
   projectWrapPublicKeyPem: string | null;
   trusted: boolean;
@@ -316,6 +331,7 @@ export async function runJsonLineSession(
   let privateCursor = privateMailbox.cursor;
   let privateReceiptCursor = privateMailbox.receiptCursor;
   let privateProcessing = Promise.resolve();
+  let privateReconciliationScheduled = false;
   const privateRemoteReceipts = new Map<string, PrivateMailboxRemoteReceipt>(
     privateMailbox.remoteReceipts.map(receipt => [`${receipt.messageId}:${receipt.receipt}`, receipt]),
   );
@@ -615,6 +631,31 @@ export async function runJsonLineSession(
   const send = (frame: unknown) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("CoCodex Server is offline");
     socket.send(JSON.stringify(frame));
+  };
+  const subscribePrivateMailbox = () => {
+    send({
+      version: 1,
+      type: "private.subscribe",
+      requestId: randomUUID(),
+      afterSequence: privateMailboxReconciliationCursor(connection.deviceId, privateMailbox, privateHistory),
+      afterReceiptSequence: privateReceiptCursor,
+    });
+  };
+  const schedulePrivateMailboxReconciliation = () => {
+    if (privateReconciliationScheduled) return;
+    privateReconciliationScheduled = true;
+    privateProcessing = privateProcessing
+      .then(() => {
+        privateReconciliationScheduled = false;
+        subscribePrivateMailbox();
+      })
+      .catch(error => {
+        privateReconciliationScheduled = false;
+        emitError({
+          source: "private",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
   const scheduleProjectCreationRetry = (requestId: string) => {
     if (pendingProjectCreationRetryTimers.has(requestId)) return;
@@ -2662,7 +2703,7 @@ export async function runJsonLineSession(
               version: 1,
               type: "private.subscribe",
               requestId: randomUUID(),
-              afterSequence: privateCursor,
+              afterSequence: privateMailboxReconciliationCursor(connection.deviceId, privateMailbox, privateHistory),
               afterReceiptSequence: privateReceiptCursor,
             });
           }
@@ -2692,6 +2733,7 @@ export async function runJsonLineSession(
         // local sent history is already acknowledged above; a later snapshot
         // may safely replay this outbound envelope to advance the cursor after
         // all earlier mailbox rows have been observed.
+        schedulePrivateMailboxReconciliation();
         const inbound = inboundPrivateEnvelope({
           type: "private.accepted",
           message: frame.message as PrivateMailboxMessage,
@@ -2947,6 +2989,11 @@ export async function runJsonLineSession(
       emit({ source: "server", frame });
     };
     connected.addEventListener("message", listener);
+    // Establish the durable mailbox recovery fence before publishing keys,
+    // flushing the outbox, or awaiting any work. A live delivery can otherwise
+    // advance the maximum local cursor past an older row stored while offline
+    // before the first recovery snapshot has even been requested.
+    subscribePrivateMailbox();
     send({
       version: 1,
       type: "device.key-certificate.publish",
@@ -3083,13 +3130,6 @@ export async function runJsonLineSession(
         });
       })
       .then(() => undefined);
-    send({
-      version: 1,
-      type: "private.subscribe",
-      requestId: randomUUID(),
-      afterSequence: privateCursor,
-      afterReceiptSequence: privateReceiptCursor,
-    });
     emit({ source: "session", state: "connected", deviceId: connection.deviceId, flushedEvents });
     return async () => {
       connected.removeEventListener("message", listener);

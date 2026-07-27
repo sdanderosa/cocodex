@@ -3,12 +3,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, relative, resolve, sep } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { AgentTask } from "../../packages/cocodex-protocol/src/index.ts";
 import type { LocalAgentPolicy } from "./agent-policy";
@@ -90,6 +91,31 @@ function containedPath(root: string, ...parts: string[]): string {
   return target;
 }
 
+function physicalPath(path: string): string {
+  return realpathSync.native(resolve(path));
+}
+
+function physicalPathAllowMissing(path: string): string {
+  let current = resolve(path);
+  const suffix: string[] = [];
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) return resolve(path);
+    suffix.unshift(basename(current));
+    current = parent;
+  }
+  return resolve(physicalPath(current), ...suffix);
+}
+
+function physicalPathKey(path: string): string {
+  const canonical = physicalPath(path);
+  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+}
+
+function samePhysicalPath(left: string, right: string): boolean {
+  return physicalPathKey(left) === physicalPathKey(right);
+}
+
 function branchComponent(value: string): string {
   const result = value.trim().replace(branchComponentPattern, "-").replace(/^-+|-+$/g, "").slice(0, 80);
   if (!result || result === "." || result === ".." || result.endsWith(".lock")) {
@@ -120,7 +146,10 @@ function registeredWorktreePaths(git: string, repositoryRoot: string): Set<strin
     "Unable to inspect Git worktrees");
   const paths = new Set<string>();
   for (const field of output.split("\0")) {
-    if (field.startsWith("worktree ")) paths.add(resolve(field.slice("worktree ".length)));
+    if (field.startsWith("worktree ")) {
+      const path = field.slice("worktree ".length);
+      if (existsSync(path)) paths.add(physicalPathKey(path));
+    }
   }
   return paths;
 }
@@ -129,17 +158,19 @@ function verifyOwnedWorktree(git: string, entry: WorktreeOwnership["tasks"][stri
   if (!existsSync(entry.worktreePath) || !statSync(entry.worktreePath).isDirectory()) {
     throw new Error("Owned task worktree is missing; repair it explicitly before retrying");
   }
-  if (!registeredWorktreePaths(git, entry.repositoryRoot).has(resolve(entry.worktreePath))) {
+  const repositoryRoot = physicalPath(entry.repositoryRoot);
+  const worktreePath = physicalPath(entry.worktreePath);
+  if (!registeredWorktreePaths(git, repositoryRoot).has(physicalPathKey(worktreePath))) {
     throw new Error("Owned task path is not registered as a Git worktree");
   }
-  const branch = requireGit(git, ["-C", entry.worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD"],
+  const branch = requireGit(git, ["-C", worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD"],
     "Owned task worktree has no named branch");
   if (branch !== entry.branch) throw new Error("Owned task worktree branch changed");
-  const ancestry = runGit(git, ["-C", entry.worktreePath, "merge-base", "--is-ancestor", entry.baseCommit, "HEAD"]);
+  const ancestry = runGit(git, ["-C", worktreePath, "merge-base", "--is-ancestor", entry.baseCommit, "HEAD"]);
   if (ancestry.status !== 0) throw new Error("Owned task worktree no longer descends from its recorded base");
   return {
     mode: "git-worktree",
-    workingDirectory: entry.worktreePath,
+    workingDirectory: worktreePath,
     workspaceRef: entry.workspaceRef,
     branch: entry.branch,
     baseCommit: entry.baseCommit,
@@ -152,11 +183,12 @@ export function prepareTaskWorkspace(
   task: AgentTask,
   options: TaskWorktreeOptions,
 ): TaskWorkspace {
-  const repositoryRoot = resolve(policy.workspaceRoot);
+  const configuredRoot = resolve(policy.workspaceRoot);
   if (policy.workspaceMode === "shared") {
-    if (!existsSync(repositoryRoot) || !statSync(repositoryRoot).isDirectory()) {
+    if (!existsSync(configuredRoot) || !statSync(configuredRoot).isDirectory()) {
       throw new Error("Configured shared workspace does not exist");
     }
+    const repositoryRoot = physicalPath(configuredRoot);
     return {
       mode: "shared",
       workingDirectory: repositoryRoot,
@@ -167,23 +199,26 @@ export function prepareTaskWorkspace(
     };
   }
 
+  if (!existsSync(configuredRoot) || !statSync(configuredRoot).isDirectory()) {
+    throw new Error("Configured Git workspace does not exist");
+  }
+  const repositoryRoot = physicalPath(configuredRoot);
   const git = options.gitCommand ?? "git";
   const ownership = loadOwnership(options.registryPath);
   const existing = ownership.tasks[task.id];
   if (existing) {
     if (existing.projectId !== task.projectId || existing.agentId !== task.agentId
-      || resolve(existing.repositoryRoot) !== repositoryRoot) {
+      || !samePhysicalPath(existing.repositoryRoot, repositoryRoot)) {
       throw new Error("Task worktree ownership does not match this assignment");
     }
     return verifyOwnedWorktree(git, existing);
   }
 
-  if (!existsSync(repositoryRoot) || !statSync(repositoryRoot).isDirectory()) {
-    throw new Error("Configured Git workspace does not exist");
+  const discoveredRoot = requireGit(git, ["-C", repositoryRoot, "rev-parse", "--show-toplevel"],
+    "Configured workspace is not a Git repository");
+  if (!samePhysicalPath(discoveredRoot, repositoryRoot)) {
+    throw new Error("Configured Git workspace must be the repository root");
   }
-  const discoveredRoot = resolve(requireGit(git, ["-C", repositoryRoot, "rev-parse", "--show-toplevel"],
-    "Configured workspace is not a Git repository"));
-  if (discoveredRoot !== repositoryRoot) throw new Error("Configured Git workspace must be the repository root");
   const dirty = requireGit(git, ["-C", repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all"],
     "Unable to inspect Git dirty state");
   if (dirty) throw new Error("Configured Git workspace has uncommitted changes");
@@ -199,14 +234,25 @@ export function prepareTaskWorkspace(
   if (branchExists.status === 0) throw new Error("Task Git branch already exists without CoCodex ownership");
   if (branchExists.status !== 1) throw new Error("Unable to inspect task Git branch");
 
-  const worktreePath = containedPath(options.worktreeRoot, task.projectId, agentComponent, task.id);
-  if (existsSync(worktreePath)) throw new Error("Task worktree path already exists without CoCodex ownership");
-  mkdirSync(dirname(worktreePath), { recursive: true });
+  const physicalWorktreeRoot = physicalPathAllowMissing(options.worktreeRoot);
+  const requestedWorktreePath = containedPath(physicalWorktreeRoot, task.projectId, agentComponent, task.id);
+  if (existsSync(requestedWorktreePath)) throw new Error("Task worktree path already exists without CoCodex ownership");
+  mkdirSync(dirname(requestedWorktreePath), { recursive: true });
+  const physicalWorktreeParent = physicalPath(dirname(requestedWorktreePath));
+  const parentRelative = relative(physicalWorktreeRoot, physicalWorktreeParent);
+  if (parentRelative === ".." || parentRelative.startsWith(`..${sep}`)) {
+    throw new Error("Task worktree parent escapes the local worktree root");
+  }
   const reason = `CoCodex task ${task.id}`;
   requireGit(git, [
     "-C", repositoryRoot, "worktree", "add", "--lock", "--reason", reason,
-    "-b", branch, worktreePath, baseCommit,
+    "-b", branch, requestedWorktreePath, baseCommit,
   ], "Git could not create the task worktree");
+  const worktreePath = physicalPath(requestedWorktreePath);
+  const finalRelative = relative(physicalWorktreeRoot, worktreePath);
+  if (finalRelative === ".." || finalRelative.startsWith(`..${sep}`)) {
+    throw new Error("Created task worktree escapes the local worktree root");
+  }
 
   const workspaceRef = ["worktrees", task.projectId, agentComponent, task.id].join("/");
   const entry: WorktreeOwnership["tasks"][string] = {

@@ -114,15 +114,22 @@ function runDpapi(operation: "protect" | "unprotect", value: Buffer, purpose: st
   });
   let result = invoke();
   // Windows can transiently refuse a process launch when multiple isolated
-  // Client/Server tests start together. Retry only a no-exit-code spawn failure;
-  // cryptographic or parse failures still fail closed below.
-  if (!result.success && !result.exitedDueToTimeout && result.exitCode === null) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  // Client/Server tests start together. Retry only no-exit-code process
+  // failures; cryptographic, timeout, and parse failures still fail closed.
+  for (const delay of [100, 250]) {
+    if (result.success || result.exitedDueToTimeout || result.exitCode !== null) break;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
     result = invoke();
   }
   if (!result.success || result.exitedDueToTimeout) {
+    const category = result.exitedDueToTimeout
+      ? "timeout"
+      : result.exitCode === null ? "no-exit-code" : "process-exit";
+    const exitCode = result.exitCode === null ? "none" : String(result.exitCode);
+    const stderrPresent = result.stderr.byteLength > 0 ? "yes" : "no";
     throw new Error(
-      `Windows user-bound secret ${operation === "protect" ? "protection" : "unprotection"} failed`,
+      `Windows user-bound secret ${operation === "protect" ? "protection" : "unprotection"} failed`
+      + ` (category=${category}, exitCode=${exitCode}, timedOut=${result.exitedDueToTimeout ? "yes" : "no"}, stderrPresent=${stderrPresent})`,
     );
   }
   const output = result.stdout.toString().trim();

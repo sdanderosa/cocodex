@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,9 +11,43 @@ import {
   recordPrivateMailboxRemoteReceipt,
   savePrivateMailbox,
 } from "../src/cocodex/private-mailbox";
-import { inboundPrivateEnvelope } from "../src/cocodex/session";
+import { inboundPrivateEnvelope, privateMailboxReconciliationCursor } from "../src/cocodex/session";
 
 describe("CoCodex private mailbox cursor", () => {
+  test("requests the recovery snapshot before flushing reconnect outbox work", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "cocodex", "session.ts"), "utf8");
+    const listenerAt = source.indexOf('connected.addEventListener("message", listener)');
+    const subscribeAt = source.indexOf("subscribePrivateMailbox();", listenerAt);
+    const flushAt = source.indexOf("const flushedEvents = await flush();", listenerAt);
+    expect(listenerAt).toBeGreaterThan(-1);
+    expect(subscribeAt).toBeGreaterThan(listenerAt);
+    expect(flushAt).toBeGreaterThan(subscribeAt);
+  });
+
+  test("persists a low reconciliation cursor until an accepted outbound row is observed", () => {
+    const deviceId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    const mailbox = recordPrivateMailboxReceipt(emptyPrivateMailbox(deviceId), {
+      messageId: crypto.randomUUID(),
+      sequence: 3,
+    });
+    const history = {
+      entries: [{
+        messageId,
+        senderDeviceId: deviceId,
+        recipientDeviceId: crypto.randomUUID(),
+        localCiphertext: Buffer.alloc(48, 7).toString("base64url"),
+        clientCreatedAt: "2027-01-01T00:00:00.000Z",
+        deliveryState: "accepted" as const,
+        serverSequence: 2,
+        acceptedAt: "2027-01-01T00:00:01.000Z",
+      }],
+    };
+    expect(privateMailboxReconciliationCursor(deviceId, mailbox, history)).toBe(1);
+    const observed = recordPrivateMailboxReceipt(mailbox, { messageId, sequence: 2 });
+    expect(privateMailboxReconciliationCursor(deviceId, observed, history)).toBe(3);
+  });
+
   test("persists an atomic cursor and bounded message receipts", () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-private-mailbox-"));
     try {

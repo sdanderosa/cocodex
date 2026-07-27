@@ -14,7 +14,7 @@
     "build": "bun build ./src/cli.ts --compile --outfile ./dist/cocodex-server"
   },
   "dependencies": {
-    "@cocodex/protocol": "workspace:*",
+    "@cocodex/protocol": "0.1.0-alpha.1",
     "selfsigned": "5.5.0",
     "yjs": "13.6.31"
   },

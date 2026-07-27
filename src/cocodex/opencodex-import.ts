@@ -118,7 +118,11 @@ export class OpenCodexImportError extends Error {
 function canonicalRoot(path: string, label: string): string {
   const trimmed = path.trim();
   if (!trimmed) throw new OpenCodexImportError(`${label} must be a non-empty path`);
-  return resolve(expandUserPath(trimmed));
+  const requested = resolve(expandUserPath(trimmed));
+  if (safeLstat(requested)?.isSymbolicLink()) {
+    throw new OpenCodexImportError(`${label} must not be a symbolic link`);
+  }
+  return physicalPath(requested, label);
 }
 
 function defaultTargetOpenCodexHome(): string {
@@ -172,12 +176,18 @@ function assertDirectory(path: string, label: string, allowMissing: boolean): vo
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new OpenCodexImportError(`${label} must be a real directory`);
 }
 
-function physicalPath(path: string): string {
+function physicalPath(path: string, label = "OpenCodex import path"): string {
   let current = resolve(path);
   const suffix: string[] = [];
   for (;;) {
     const stat = safeLstat(current);
-    if (stat) return resolve(realpathSync.native(current), ...suffix);
+    if (stat) {
+      try {
+        return resolve(realpathSync.native(current), ...suffix);
+      } catch {
+        throw new OpenCodexImportError(`${label} could not be resolved safely`);
+      }
+    }
     const parent = dirname(current);
     if (parent === current) return resolve(path);
     suffix.unshift(basename(current));

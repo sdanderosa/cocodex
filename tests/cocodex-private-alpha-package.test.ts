@@ -65,6 +65,9 @@ describe("CoCodex private-alpha distribution", () => {
 
   test("verifies the exact archive checksum before invoking npm", () => {
     const source = readFileSync(join(import.meta.dir, "..", "scripts", "Install-CoCodex.ps1"), "utf8");
+    expect(source).not.toContain("Get-FileHash");
+    expect(source).toContain("[System.Security.Cryptography.SHA256]::Create()");
+    expect(source).toContain("[System.IO.File]::OpenRead($Path)");
     const checksumAt = source.indexOf('$verifiedHash = Assert-BundleFileChecksum $archive $checksum "package archive"');
     const installAt = source.indexOf("& $npm install --prefix");
     expect(checksumAt).toBeGreaterThan(-1);

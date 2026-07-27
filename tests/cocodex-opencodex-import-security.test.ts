@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,43 @@ function rootsFixture(): { source: string; codex: string; state: string } {
 }
 
 describe("CoCodex OpenCodex import adversarial boundaries", () => {
+  test("uses a stable physical root through an ancestor alias but rejects an aliased root entry", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-opencodex-import-alias-"));
+    const physicalParent = join(root, "physical");
+    const source = join(physicalParent, "source");
+    const aliasParent = join(root, "alias-parent");
+    const state = join(root, "state");
+    roots.push(root);
+    mkdirSync(source, { recursive: true });
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(source, "config.json"), "{}\n");
+    symlinkSync(physicalParent, aliasParent, process.platform === "win32" ? "junction" : "dir");
+
+    const throughAncestorAlias = createOpenCodexImportPlan({
+      sourceOpenCodexHome: join(aliasParent, "source"),
+      targetOpenCodexHome: join(state, "opencodex"),
+    });
+    expect(throughAncestorAlias.sourceOpenCodexHome).toBe(realpathSync.native(source));
+
+    const rootAlias = join(root, "source-alias");
+    symlinkSync(source, rootAlias, process.platform === "win32" ? "junction" : "dir");
+    expect(() => createOpenCodexImportPlan({
+      sourceOpenCodexHome: rootAlias,
+      targetOpenCodexHome: join(state, "other-target"),
+    })).toThrow(/must not be a symbolic link/);
+  });
+
+  test("reports a broken ancestor alias without exposing a raw filesystem error", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-opencodex-import-broken-alias-"));
+    roots.push(root);
+    const broken = join(root, "broken");
+    symlinkSync(join(root, "missing"), broken, process.platform === "win32" ? "junction" : "dir");
+    expect(() => createOpenCodexImportPlan({
+      sourceOpenCodexHome: join(broken, "source"),
+      targetOpenCodexHome: join(root, "target"),
+    })).toThrow("OpenCodex import source could not be resolved safely");
+  });
+
   test("rejects a forged plan path instead of copying an unauthorized file", () => {
     const { source, state } = rootsFixture();
     const plan = createOpenCodexImportPlan({ sourceOpenCodexHome: source, targetOpenCodexHome: join(state, "opencodex"), includeSecrets: true });

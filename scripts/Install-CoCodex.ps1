@@ -97,7 +97,17 @@ function Read-BoundedJson([string]$Path, [int64]$MaxBytes, [string]$Label) {
 }
 
 function Get-FileSha256([string]$Path) {
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $digest = $sha256.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($digest)).Replace("-", "")
+    } finally {
+        if ($sha256) { $sha256.Dispose() }
+        if ($stream) { $stream.Dispose() }
+    }
 }
 
 function Assert-InstalledPackage([string]$Prefix, [string]$ExpectedVersion, [string]$ExpectedShrinkwrapSha256) {

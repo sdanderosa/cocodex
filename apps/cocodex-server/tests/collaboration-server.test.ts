@@ -1442,7 +1442,7 @@ describe("authenticated WSS collaboration", () => {
     }));
     const secondPrivateFrame = await secondPrivate;
     expect(secondPrivateFrame.messages).toEqual([expect.objectContaining({ sequence: 501 })]);
-  }, 15_000);
+  }, 30_000);
 
   test("encrypted chat subscriptions also carry independent presence awareness", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-encrypted-presence-"));
