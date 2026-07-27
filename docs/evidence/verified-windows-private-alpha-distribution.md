@@ -4,8 +4,8 @@
 - Branch: `feat/cocodex-foundation`
 - Base commit: `1c323a20`
 - Implementation commit: recorded by the commit containing this file
-- Status: hardened source gates passed; the operator artifact is accepted only
-  after the clean-commit build and exact installed lifecycle both pass
+- Status: hardened clean-commit build and exact installed lifecycle passed;
+  final GitHub publication remains maintainer-dispatch-only
 
 ## Artifact under test
 
@@ -24,6 +24,9 @@ distribution security review. No pre-commit digest is an operator artifact.
 The final clean-commit archive records its own SHA-256, source commit/tree, GUI
 digest, and dependency-lock digest in the same manually approved GitHub
 artifact. Operators must use those values from that downloaded bundle.
+The accepted application archive SHA-256 is
+`37f91be08b4972a937d596c0af40de50a7b0d94c2968f37cf1692b2a1403e7d7`;
+`RELEASE.json` binds it to the final source commit containing this evidence.
 
 ## Focused package tests
 
@@ -62,8 +65,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -SkipPathUpdate
 ```
 
-Exit status `0` for the pre-review archive. npm added 126 packages and all five
-commands passed. The hardened follow-up additionally rejects a wrong
+Exit status `0` for the pre-review archive. The final locked-root install used
+Node 24.14.0 and pinned npm 10.9.4, added 127 packages, and all five commands
+passed. The hardened follow-up additionally rejects a wrong
 checksum-valid package before npm, pins the complete npm dependency graph, and
 requires exact installed package/lock identity. The release workflow repeats
 the exact installed lifecycle on both the minimum supported Node 22.12 runtime
@@ -83,14 +87,16 @@ commands exited `0`. `ocx update` exited `1` before any upstream update and
 reported that `@sdanderosa/cocodex` is not connected to the
 `@bitkyc08/opencodex` release feed.
 
-With isolated `OPENCODEX_HOME` and `CODEX_HOME`, the installed `ocx start`
+The final installed-tree verifier accepted 124 installed dependencies and
+rejected anything outside the shrinkwrap. With isolated `OPENCODEX_HOME` and
+`CODEX_HOME`, the installed `ocx start`
 command served:
 
 ```text
-GET http://127.0.0.1:54247/healthz
+GET http://127.0.0.1:50228/healthz
 200 {"status":"ok","service":"opencodex","version":"0.1.0-alpha.1",...}
 
-GET http://127.0.0.1:54247/
+GET http://127.0.0.1:50228/
 200 (961-byte GUI entry document)
 ```
 
@@ -103,16 +109,16 @@ The installed Server initialized an isolated state root and listened on one
 reserved TLS port. Runtime evidence:
 
 ```text
-initial PID: 41664
-GET https://127.0.0.1:61107/healthz
+initial PID: 45808
+GET https://127.0.0.1:50241/healthz
 200 {"ok":true,"service":"cocodex-server","protocol":1}
 
-restart PID: 45772
+restart PID: 49988
 PID changed: true
-GET https://127.0.0.1:61107/healthz
+GET https://127.0.0.1:50241/healthz
 200 {"ok":true,"service":"cocodex-server","protocol":1}
 
-stop: {"stopped":true,"pid":45772}
+stop: {"stopped":true,"pid":49988}
 status after stop: "running":false
 ```
 

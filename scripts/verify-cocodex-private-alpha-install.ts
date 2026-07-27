@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -167,6 +168,9 @@ const clientHome = join(root, "client");
 const serverHome = join(root, "server");
 const openCodexHome = join(root, "opencodex");
 const codexHome = join(root, "codex");
+for (const directory of [clientHome, serverHome, openCodexHome, codexHome]) {
+  mkdirSync(directory);
+}
 const env = {
   ...process.env,
   COCODEX_HOME: clientHome,
