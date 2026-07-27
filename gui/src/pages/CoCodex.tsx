@@ -7,6 +7,7 @@ import {
 } from "../cocodex-private-contact-state";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
+import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
 import {
   confirmProjectMemberRemoval,
   clearRecoveredProjectSecurity,
@@ -1113,15 +1114,32 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
 
   const sendPrompt = async (event: FormEvent) => {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || !projectId || !chatId) return;
-    setDraft("");
+    const submission = buildCoCodexComposerSubmission({
+      projectId,
+      chatId,
+      agentId,
+      chatDraft: draft,
+      sharedPrompt,
+      inputArtifactIds: selectedArtifactIds,
+    });
+    if (!submission) return;
+    const submittedPromptScope = submission.source === "shared-prompt"
+      ? `${projectId}:${chatId}`
+      : "";
+    const submittedPromptText = submission.source === "shared-prompt"
+      ? ensurePromptDocument(projectId, chatId).getText("prompt")
+      : undefined;
     try {
-      await command(agentId.trim()
-        ? { type: "agent.request", projectId, chatId, agentId: agentId.trim(), prompt: content, inputArtifactIds: selectedArtifactIds }
-        : { type: "chat.send", projectId, chatId, content });
+      await command(submission.command);
+      if (submission.source === "chat-draft") {
+        setDraft(current => current === submission.submittedValue ? "" : current);
+      } else if (submittedPromptText
+        && promptProject.current === submittedPromptScope
+        && submittedPromptText.toString() === submission.submittedValue) {
+        submittedPromptText.doc?.transact(() =>
+          submittedPromptText.delete(0, submittedPromptText.length));
+      }
     } catch (error) {
-      setDraft(content);
       setNotice(error instanceof Error ? error.message : String(error));
     }
   };
@@ -1972,13 +1990,18 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 {visibleAgents.filter(agent => agent.enabled).map(agent =>
                   <option key={agent.id} value={agent.id}>{agent.name} · {agent.hostDisplayName}</option>)}
               </select>
-              <textarea className="input" value={draft} onChange={event => setDraft(event.target.value)}
+              <textarea className="input" value={agentId.trim() ? sharedPrompt : draft}
+                onChange={event => {
+                  if (agentId.trim()) editSharedPrompt(event.target.value);
+                  else setDraft(event.target.value);
+                }}
                 placeholder={agentId
                   ? t("cocodex.composer.agent", { agent: visibleAgents.find(agent => agent.id === agentId)?.name ?? agentId })
                   : t("cocodex.composer.chat")} rows={3}
                 disabled={status.state !== "connected" || selectedProjectLocked} />
               <button className="btn btn-primary"
-                disabled={!draft.trim() || status.state !== "connected" || selectedProjectLocked}>
+                disabled={!(agentId.trim() ? sharedPrompt : draft).trim()
+                  || status.state !== "connected" || selectedProjectLocked}>
                 {agentId ? <><IconBot /> {t("cocodex.agent.run")}</> : t("cocodex.send")}
               </button>
             </form>

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import * as Y from "yjs";
 
 const root = resolve(import.meta.dir, "..");
 const bun = resolve(root, "node_modules/bun/bin/bun.exe");
@@ -527,6 +528,56 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === subK),
     ]);
 
+    const promptSubS = randomUUID();
+    const promptSubK = randomUUID();
+    stephen.send({ id: promptSubS, type: "prompt.subscribe", projectId: project.id });
+    kai.send({ id: promptSubK, type: "prompt.subscribe", projectId: project.id });
+    await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "prompt.snapshot" && line.frame.requestId === promptSubS),
+      waitFor(kai, line => line.frame?.type === "prompt.snapshot" && line.frame.requestId === promptSubK),
+    ]);
+    const stephenPromptDoc = new Y.Doc();
+    const kaiPromptDoc = new Y.Doc();
+    stephenPromptDoc.getText("prompt").insert(0, "Lucas workspace");
+    kaiPromptDoc.getText("prompt").insert(0, "inspect ");
+    const stephenPromptUpdateId = randomUUID();
+    const kaiPromptUpdateId = randomUUID();
+    stephen.send({
+      id: randomUUID(),
+      type: "prompt.update",
+      projectId: project.id,
+      updateId: stephenPromptUpdateId,
+      update: Buffer.from(Y.encodeStateAsUpdate(stephenPromptDoc)).toString("base64"),
+    });
+    kai.send({
+      id: randomUUID(),
+      type: "prompt.update",
+      projectId: project.id,
+      updateId: kaiPromptUpdateId,
+      update: Buffer.from(Y.encodeStateAsUpdate(kaiPromptDoc)).toString("base64"),
+    });
+    const [stephenSawStephen, stephenSawKai, kaiSawStephen, kaiSawKai] = await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "prompt.update"
+        && line.frame.updateId === stephenPromptUpdateId),
+      waitFor(stephen, line => line.frame?.type === "prompt.update"
+        && line.frame.updateId === kaiPromptUpdateId),
+      waitFor(kai, line => line.frame?.type === "prompt.update"
+        && line.frame.updateId === stephenPromptUpdateId),
+      waitFor(kai, line => line.frame?.type === "prompt.update"
+        && line.frame.updateId === kaiPromptUpdateId),
+    ]);
+    for (const event of [stephenSawStephen, stephenSawKai]) {
+      Y.applyUpdate(stephenPromptDoc, Buffer.from(event.frame.update, "base64"));
+    }
+    for (const event of [kaiSawStephen, kaiSawKai]) {
+      Y.applyUpdate(kaiPromptDoc, Buffer.from(event.frame.update, "base64"));
+    }
+    const mergedSharedPrompt = kaiPromptDoc.getText("prompt").toString();
+    expect(stephenPromptDoc.getText("prompt").toString()).toBe(mergedSharedPrompt);
+    expect(mergedSharedPrompt).toContain("inspect ");
+    expect(mergedSharedPrompt).toContain("Lucas workspace");
+    traceCheckpoint("concurrent shared prompt converged");
+
     const contextGetS = randomUUID();
     const contextGetK = randomUUID();
     stephen.send({ id: contextGetS, type: "context.get", projectId: project.id });
@@ -571,7 +622,7 @@ describe("three-process CoCodex private alpha", () => {
       type: "agent.request",
       projectId: project.id,
       agentId: lucasAgentId,
-      prompt: "inspect Lucas workspace",
+      prompt: mergedSharedPrompt,
     });
     kai.send({
       id: "task-angela",
@@ -618,6 +669,8 @@ describe("three-process CoCodex private alpha", () => {
     ]));
     expect(lucasRuntime.prompt).toContain("at most 3 co-agents concurrently");
     expect(lucasRuntime.prompt).toContain("gpt-5.6-luna");
+    expect(lucasRuntime.prompt).toContain("inspect ");
+    expect(lucasRuntime.prompt).toContain("Lucas workspace");
     expect(angelaRuntime.args).toEqual(expect.arrayContaining([
       "--model", "gpt-5.6-sol",
       "model_reasoning_effort=\"xhigh\"",

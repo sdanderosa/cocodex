@@ -154,6 +154,14 @@ the protected local outbox and replayed after reconnect. The private mailbox
 keeps a separate bounded receipt cursor so sender-visible status survives a
 Server restart without coupling it to the ciphertext message cursor.
 
+The agent composer uses that selected chat's merged Yjs text as its prompt
+source whenever an agent is selected. The independent chat draft is used only
+when no agent is selected. A successful dispatch clears the shared prompt only
+if it is still byte-for-byte the value that was submitted, so a concurrent
+remote or local edit made during handoff is not erased. Changing artifact
+selection after submission likewise cannot mutate the dispatched request. See
+ADR 0044.
+
 Presence is deliberately ephemeral. The client publishes a normalized mouse
 cursor plus a bounded prompt caret/selection and typing flag; local state keeps
 those channels merged, batches typing updates, clears typing after idle/blur,
