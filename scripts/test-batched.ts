@@ -85,10 +85,12 @@ export async function spawnWithTreeTimeout(
         process.kill(-child.pid, "SIGKILL");
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        // macOS can report EPERM rather than ESRCH when the parent exits during
-        // the grace period. Accept it only after Bun has observed that exit;
-        // the descendant-level regression test still verifies the whole tree.
-        if (code !== "ESRCH" && !(code === "EPERM" && child.exitCode !== null)) throw error;
+        if (code !== "ESRCH" && code !== "EPERM") throw error;
+        // macOS can deny the final negative-PID group signal even for a group
+        // created by this process. Fall back to the owned parent without
+        // swallowing a direct-kill failure. The descendant regression test
+        // independently proves that the earlier group SIGTERM cleared the tree.
+        if (code === "EPERM" && child.exitCode === null) child.kill("SIGKILL");
       }
     }
     await child.exited;
