@@ -23,6 +23,7 @@ const SAFE_TEST_ENVIRONMENT_KEYS = new Set([
   "PATH",
   "PATHEXT",
   "PROCESSOR_ARCHITECTURE",
+  "PSMODULEPATH",
   "PROGRAMDATA",
   "PROGRAMFILES",
   "PROGRAMFILES(X86)",
@@ -57,7 +58,7 @@ export function sanitizedTestEnvironment(
 function validatedWindowsProfile(source: Record<string, string | undefined>): string | undefined {
   const candidate = (
     source.OCX_TEST_ISOLATED_ENV === "1"
-      ? source.OCX_TEST_DPAPI_USERPROFILE
+      ? source.OCX_TEST_WINDOWS_USERPROFILE
       : source.USERPROFILE
   )?.trim();
   return candidate
@@ -74,9 +75,27 @@ export function isolatedWorkerEnvironment(
   const profile = process.platform === "win32" ? validatedWindowsProfile(source) : undefined;
   if (profile) {
     sanitized.OCX_TEST_ISOLATED_ENV = "1";
-    sanitized.OCX_TEST_DPAPI_USERPROFILE = profile;
+    sanitized.OCX_TEST_WINDOWS_USERPROFILE = profile;
   }
   return sanitized;
+}
+
+export function windowsTestProcessEnvironment(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const child = { ...source };
+  const profile = process.platform === "win32" && source.OCX_TEST_ISOLATED_ENV === "1"
+    ? validatedWindowsProfile(source)
+    : undefined;
+  delete child.OCX_TEST_ISOLATED_ENV;
+  delete child.OCX_TEST_WINDOWS_USERPROFILE;
+  if (!profile) return child;
+  const parsed = win32.parse(profile);
+  child.USERPROFILE = profile;
+  child.HOME = profile;
+  child.HOMEDRIVE = parsed.root.slice(0, 2);
+  child.HOMEPATH = profile.slice(2) || "\\";
+  return child;
 }
 
 export function testTimeoutArgs(
@@ -102,10 +121,10 @@ export function createIsolatedTestEnvironment(
   const originalWindowsProfile = process.platform === "win32"
     ? validatedWindowsProfile(baseEnv)
     : undefined;
-  const dpapiProfileBridge = originalWindowsProfile
+  const windowsProfileBridge = originalWindowsProfile
     ? {
         OCX_TEST_ISOLATED_ENV: "1",
-        OCX_TEST_DPAPI_USERPROFILE: originalWindowsProfile,
+        OCX_TEST_WINDOWS_USERPROFILE: originalWindowsProfile,
       }
     : {};
 
@@ -113,7 +132,7 @@ export function createIsolatedTestEnvironment(
     root,
     env: {
       ...sanitizedTestEnvironment(baseEnv),
-      ...dpapiProfileBridge,
+      ...windowsProfileBridge,
       HOME: root,
       USERPROFILE: root,
       OPENCODEX_HOME: opencodexHome,

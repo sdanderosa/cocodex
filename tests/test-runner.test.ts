@@ -6,6 +6,7 @@ import {
   isolatedWorkerEnvironment,
   sanitizedTestEnvironment,
   testTimeoutArgs,
+  windowsTestProcessEnvironment,
 } from "../scripts/test";
 import {
   batchItems,
@@ -31,7 +32,7 @@ describe("test runner isolation", () => {
         OPENCODEX_HOME: join(isolated.root, ".opencodex"),
         CODEX_HOME: join(isolated.root, ".codex"),
       });
-      expect(isolated.env.OCX_TEST_DPAPI_USERPROFILE).toBe(
+      expect(isolated.env.OCX_TEST_WINDOWS_USERPROFILE).toBe(
         process.platform === "win32" ? "C:\\Users\\real-profile" : undefined,
       );
       expect(isolated.env.OCX_TEST_ISOLATED_ENV).toBe(
@@ -43,6 +44,26 @@ describe("test runner isolation", () => {
       isolated.cleanup();
     }
     expect(existsSync(isolated.root)).toBe(false);
+  });
+
+  test("restores the real profile only for explicit Windows subprocess tests", () => {
+    const child = windowsTestProcessEnvironment({
+      USERPROFILE: "C:\\isolated-test-home",
+      HOME: "C:\\isolated-test-home",
+      OCX_TEST_ISOLATED_ENV: "1",
+      OCX_TEST_WINDOWS_USERPROFILE: "C:\\Users\\runneradmin",
+    });
+    expect(child.OCX_TEST_ISOLATED_ENV).toBeUndefined();
+    expect(child.OCX_TEST_WINDOWS_USERPROFILE).toBeUndefined();
+    expect(child).toMatchObject(process.platform === "win32" ? {
+      USERPROFILE: "C:\\Users\\runneradmin",
+      HOME: "C:\\Users\\runneradmin",
+      HOMEDRIVE: "C:",
+      HOMEPATH: "\\Users\\runneradmin",
+    } : {
+      USERPROFILE: "C:\\isolated-test-home",
+      HOME: "C:\\isolated-test-home",
+    });
   });
 
   test("partitions every inherited test exactly once", () => {

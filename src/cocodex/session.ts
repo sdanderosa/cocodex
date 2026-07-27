@@ -60,7 +60,7 @@ import {
 } from "./identity";
 import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox, queuedEvents } from "./outbox";
 import type { ClientPaths } from "./paths";
-import { prepareTaskWorkspace } from "./task-worktree";
+import { prepareTaskWorkspace, samePhysicalPath } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import {
@@ -3610,8 +3610,8 @@ export async function runJsonLineSession(
               stderr: "ignore",
             });
             if (git.exitCode !== 0) throw new Error("Git-worktree mode requires a Git repository");
-            const gitRoot = realpathSync(new TextDecoder().decode(git.stdout).trim());
-            if (gitRoot !== canonicalWorkspace) {
+            const gitRoot = new TextDecoder().decode(git.stdout).trim();
+            if (!samePhysicalPath(gitRoot, canonicalWorkspace)) {
               throw new Error("Git-worktree mode requires the repository root, not a subdirectory");
             }
           }

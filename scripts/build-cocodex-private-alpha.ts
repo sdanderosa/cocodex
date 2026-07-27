@@ -284,7 +284,9 @@ export function assertShrinkwrap(manifest: Record<string, any>, version: string)
     if (typeof entry.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) {
       throw new Error(`Shrinkwrap dependency is missing SHA-512 integrity: ${path}`);
     }
-    if (entry.hasInstallScript === true && path !== "node_modules/bun") {
+    const approvedInstallScript = path === "node_modules/bun"
+      || path === "node_modules/@primno/dpapi";
+    if (entry.hasInstallScript === true && !approvedInstallScript) {
       throw new Error(`Shrinkwrap contains an unapproved lifecycle script: ${path}`);
     }
     const dependencyName = path.split("node_modules/").at(-1);

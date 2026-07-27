@@ -8,6 +8,7 @@ import {
   assertShrinkwrap,
   privateAlphaPackageJson,
 } from "../scripts/build-cocodex-private-alpha";
+import { windowsTestProcessEnvironment } from "../scripts/test";
 
 const roots: string[] = [];
 
@@ -35,6 +36,7 @@ describe("CoCodex private-alpha distribution", () => {
     expect(packaged.dependencies).toEqual({
       "@bufbuild/protobuf": "2.12.1",
       "@modelcontextprotocol/sdk": "1.29.0",
+      "@primno/dpapi": "2.0.1",
       bun: "1.3.14",
       "libsodium-wrappers-sumo": "0.8.2",
       selfsigned: "5.5.0",
@@ -118,7 +120,12 @@ describe("CoCodex private-alpha distribution", () => {
       "-NpmPrefix",
       join(root, "prefix"),
       "-SkipPathUpdate",
-    ], { stdout: "pipe", stderr: "pipe", windowsHide: true });
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      env: windowsTestProcessEnvironment(),
+    });
     const [exitCode, stderr] = await Promise.all([
       child.exited,
       new Response(child.stderr).text(),
@@ -197,7 +204,12 @@ describe("CoCodex private-alpha distribution", () => {
       "-NpmPrefix",
       join(root, "prefix"),
       "-SkipPathUpdate",
-    ], { stdout: "pipe", stderr: "pipe", windowsHide: true });
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+      env: windowsTestProcessEnvironment(),
+    });
     const [exitCode, stderr] = await Promise.all([
       child.exited,
       new Response(child.stderr).text(),
@@ -224,7 +236,8 @@ describe("CoCodex private-alpha distribution", () => {
     expect(builder).toContain('["status", "--porcelain=v1", "--untracked-files=all"]');
     expect(builder).toContain("GITHUB_SHA does not match the checked-out commit");
     expect(builder).toContain("entry.hasInstallScript === true");
-    expect(builder).toContain('path !== "node_modules/bun"');
+    expect(builder).toContain('path === "node_modules/bun"');
+    expect(builder).toContain('path === "node_modules/@primno/dpapi"');
     expect(builder).toContain("Shrinkwrap dependency does not match bun.lock");
     expect(builder).toContain("Source provenance changed while building the private-alpha GUI");
   });

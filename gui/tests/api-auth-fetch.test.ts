@@ -19,12 +19,15 @@ test("API authentication never crosses the GUI origin", async () => {
       return new Response(null, { status: url.includes("evil.example") ? 401 : 200 });
     },
   };
-  Object.assign(globalThis, {
-    window: fakeWindow,
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, value: fakeWindow },
     sessionStorage: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
-      removeItem: (key: string) => storage.delete(key),
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
+      },
     },
   });
 

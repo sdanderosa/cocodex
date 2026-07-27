@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, win32 } from "node:path";
+import { dirname, resolve } from "node:path";
 import { hardenSecretDir, hardenSecretPath } from "./windows-secret-acl";
 
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -18,6 +18,24 @@ const MAX_ENVELOPE_BYTES = 1_600_000;
 const ENVELOPE_VERSION = 1;
 const DPAPI_PROTECTION = "windows-dpapi-current-user";
 const FILESYSTEM_PROTECTION = "filesystem-user-only";
+
+interface NativeDpapiBindings {
+  protectData(data: Uint8Array, entropy: Uint8Array, scope: "CurrentUser"): Uint8Array;
+  unprotectData(data: Uint8Array, entropy: Uint8Array, scope: "CurrentUser"): Uint8Array;
+}
+
+let nativeDpapi: NativeDpapiBindings | undefined;
+try {
+  if (process.platform === "win32" && process.arch === "x64") {
+    nativeDpapi = require("@primno/dpapi/prebuilds/win32-x64/@primno+dpapi.node");
+  } else if (process.platform === "win32" && process.arch === "arm64") {
+    nativeDpapi = require("@primno/dpapi/prebuilds/win32-arm64/@primno+dpapi.node");
+  }
+} catch {
+  // Loading errors may contain installation paths or native diagnostics.
+  // Keep the boundary fail-closed and report only the sanitized category.
+  nativeDpapi = undefined;
+}
 
 interface ProtectedSecretEnvelope {
   version: 1;
@@ -70,99 +88,27 @@ function entropy(purpose: string): Buffer {
     .digest();
 }
 
-function powershellExecutable(): string {
-  return `${process.env.SystemRoot?.trim() || "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-}
-
-export function dpapiChildEnvironment(
-  source: Record<string, string | undefined> = process.env,
-): Record<string, string | undefined> {
-  const child: Record<string, string | undefined> = {
-    ...source,
-    SystemRoot: source.SystemRoot || "C:\\Windows",
-    WINDIR: source.WINDIR || source.SystemRoot || "C:\\Windows",
-  };
-  const isolatedTestEnvironment = source.OCX_TEST_ISOLATED_ENV === "1";
-  const testProfile = source.OCX_TEST_DPAPI_USERPROFILE?.trim();
-  delete child.OCX_TEST_ISOLATED_ENV;
-  delete child.OCX_TEST_DPAPI_USERPROFILE;
-  if (!isolatedTestEnvironment) return child;
-  if (!testProfile) return child;
-  if (!win32.isAbsolute(testProfile) || /[\u0000-\u001f]/.test(testProfile)) {
-    throw new Error("Windows DPAPI test profile bridge is invalid");
-  }
-  const parsed = win32.parse(testProfile);
-  child.USERPROFILE = testProfile;
-  child.HOME = testProfile;
-  if (/^[A-Za-z]:\\$/.test(parsed.root)) {
-    child.HOMEDRIVE = parsed.root.slice(0, 2);
-    child.HOMEPATH = testProfile.slice(2) || "\\";
-  }
-  return child;
-}
-
-function encodedPowerShell(operation: "protect" | "unprotect"): string {
-  const method = operation === "protect" ? "Protect" : "Unprotect";
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    "Add-Type -AssemblyName System.Security",
-    "$lines = [Console]::In.ReadToEnd().Split([char]10)",
-    "if ($lines.Length -lt 2) { throw 'invalid protected-secret input' }",
-    "$purpose = [Convert]::FromBase64String($lines[0].Trim())",
-    "$value = [Convert]::FromBase64String($lines[1].Trim())",
-    `$result = [Security.Cryptography.ProtectedData]::${method}($value, $purpose, [Security.Cryptography.DataProtectionScope]::CurrentUser)`,
-    "[Console]::Out.Write([Convert]::ToBase64String($result))",
-  ].join("\r\n");
-  return Buffer.from(script, "utf16le").toString("base64");
-}
-
 function runDpapi(operation: "protect" | "unprotect", value: Buffer, purpose: string): Buffer {
-  const input = `${entropy(purpose).toString("base64")}\n${value.toString("base64")}\n`;
-  const invoke = () => Bun.spawnSync([
-    powershellExecutable(),
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-EncodedCommand",
-    encodedPowerShell(operation),
-  ], {
-    stdin: Buffer.from(input, "ascii"),
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 15_000,
-    windowsHide: true,
-    env: dpapiChildEnvironment(),
-  });
-  let result = invoke();
-  // Windows can transiently refuse a process launch when multiple isolated
-  // Client/Server tests start together. Retry only no-exit-code process
-  // failures; cryptographic, timeout, and parse failures still fail closed.
-  for (const delay of [100, 250]) {
-    if (result.success || result.exitedDueToTimeout || result.exitCode !== null) break;
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-    result = invoke();
-  }
-  if (!result.success || result.exitedDueToTimeout) {
-    const category = result.exitedDueToTimeout
-      ? "timeout"
-      : result.exitCode === null ? "no-exit-code" : "process-exit";
-    const exitCode = result.exitCode === null ? "none" : String(result.exitCode);
-    const stderrPresent = result.stderr.byteLength > 0 ? "yes" : "no";
+  if (!nativeDpapi) {
     throw new Error(
       `Windows user-bound secret ${operation === "protect" ? "protection" : "unprotection"} failed`
-      + ` (category=${category}, exitCode=${exitCode}, timedOut=${result.exitedDueToTimeout ? "yes" : "no"}, stderrPresent=${stderrPresent})`,
+      + " (category=native-unavailable)",
     );
   }
-  const output = result.stdout.toString().trim();
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(output)) {
-    throw new Error(`Windows user-bound secret ${operation === "protect" ? "protection" : "unprotection"} returned invalid data`);
+  try {
+    const result = operation === "protect"
+      ? nativeDpapi.protectData(value, entropy(purpose), "CurrentUser")
+      : nativeDpapi.unprotectData(value, entropy(purpose), "CurrentUser");
+    const output = Buffer.from(result);
+    return operation === "protect"
+      ? assertProtectedPayloadBounds(output)
+      : assertSecretBounds(output);
+  } catch {
+    throw new Error(
+      `Windows user-bound secret ${operation === "protect" ? "protection" : "unprotection"} failed`
+      + " (category=native-operation)",
+    );
   }
-  const decoded = Buffer.from(output, "base64");
-  return operation === "protect"
-    ? assertProtectedPayloadBounds(decoded)
-    : assertSecretBounds(decoded);
 }
 
 function encodeEnvelope(secret: Buffer, purpose: string): string {

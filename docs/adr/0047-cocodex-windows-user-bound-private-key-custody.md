@@ -36,13 +36,14 @@ Store only a strict versioned envelope containing:
 - a purpose-bound plaintext digest used only after successful DPAPI
   authentication to detect implementation or storage corruption.
 
-The file remains protected with the existing current-user NTFS ACL. Invoke the
-Windows PowerShell path derived from the process's `SystemRoot` as an absolute
-executable path, with a fixed encoded script and no shell interpolation. Key material crosses only the child
-process's standard input/output pipes and never appears in command arguments,
-environment variables, logs, or diagnostic text. Run non-interactively and
-fail closed on timeout, process failure, malformed output, wrong purpose,
-wrong platform, ciphertext modification, or digest mismatch.
+The file remains protected with the existing current-user NTFS ACL. Invoke
+`CryptProtectData` and `CryptUnprotectData` through the exact
+`@primno/dpapi` 2.0.1 N-API binding. The prebuilt binding is embedded in the
+compiled Windows Client and Server, so key material does not cross a shell,
+command-line, environment-variable, or helper-process boundary. Fail closed
+when the native binding is unavailable, native protection fails, the purpose
+is wrong, the platform is wrong, ciphertext is modified, or the digest does
+not match.
 
 Normal Client startup unwraps the Ed25519 device-signing key and the separate
 X25519 messaging and project-wrap keys into resident process memory. Normal
@@ -63,8 +64,8 @@ the active root nor a newly restored root contains raw private-key PEM.
 Cache a successfully unwrapped secret only inside the current process and only
 while the exact protected file bytes and purpose still match. Every read still
 rehardens, bounds, and reads the file before consulting that cache. This avoids
-repeated helper processes during one Client/Server lifetime without accepting
-changed or oversized storage.
+repeated native unprotection during one Client/Server lifetime without
+accepting changed or oversized storage.
 
 The current non-Windows compatibility path retains the existing user-only
 filesystem boundary and labels its envelope `filesystem-user-only`. It is not
@@ -74,11 +75,14 @@ hardware-backed adapter before claiming equivalent custody.
 
 ## Reference and licensing decision
 
-Microsoft's documented `CryptProtectData`/`ProtectedData` model is the platform
+Microsoft's documented `CryptProtectData` model is the platform
 security primitive: `CurrentUser` normally decrypts only for the same Windows
 logon on the same machine, while any process already running as that user may
-request decryption. CoCodex uses the API through Windows' installed
-PowerShell/.NET Framework and distributes no Microsoft source or binary.
+request decryption. CoCodex reuses `@primno/dpapi` 2.0.1 and its
+`node-gyp-build` 4.8.4 loader. Both are MIT-licensed, their notices are
+preserved in `THIRD_PARTY_NOTICES.md`, and the exact versions are locked in
+the root lockfile and private-alpha shrinkwrap. No Microsoft source or binary
+is copied.
 
 Syncthing remains the open-source architectural reference for permanent
 cryptographic device identity, explicit fingerprints, and rejecting unknown
@@ -86,8 +90,11 @@ devices. It is MPL-2.0 and remains concept-only; no Syncthing key-storage code
 is copied. CoCodex differs by maintaining separate keys per protocol role and
 wrapping their exportable alpha representation with DPAPI.
 
-No new dependency, cryptographic algorithm, or CoCodex-designed encryption
-scheme is introduced.
+No new cryptographic algorithm or CoCodex-designed encryption scheme is
+introduced. The native dependency replaces the previous PowerShell/.NET
+adapter after real Windows CI showed that repeated Windows PowerShell children
+could hang under constrained runners even though DPAPI itself remained
+available.
 
 ## Security consequences
 

@@ -66,10 +66,13 @@ directions around restart.
 
 Every command exited `0`:
 
-- complete CoCodex: `165 pass`, `0 fail`, `1514 expect()` calls across 36
-  files;
-- inherited OpenCodex: all 347 files completed across 14 fresh isolated
-  workers in 406.8 seconds.
+- standalone compiled DPAPI packaging: `1 pass`, `0 fail`, `6 expect()` calls;
+- agent safety CLI: `1 pass`, `0 fail`;
+- three-process private alpha: `1 pass`, `0 fail`, `290 expect()` calls;
+- complete CoCodex contract: `175 pass`, `0 fail`, `2020 expect()` calls
+  across 37 files;
+- inherited OpenCodex: all 349 files completed across 14 fresh isolated
+  workers.
 
 ## Static, production, GUI, and privacy evidence
 
@@ -85,8 +88,8 @@ cd gui
 ..\node_modules\.bin\bun.exe run build
 ```
 
-Every command exited `0`: the Server bundled and compiled 370 modules; the
-Client bundled and compiled 151 modules; privacy scanning passed; and the GUI
+Every command exited `0`: the Server bundled and compiled 371 modules; the
+Client bundled and compiled 152 modules; privacy scanning passed; and the GUI
 reported `122 pass`, `0 fail`, `579 expect()` calls. GUI lint had zero errors
 and retained the existing unrelated `use-app-route-state.ts` exhaustive-deps
 warning; i18n lint and the TypeScript/Vite production build passed.
@@ -94,16 +97,17 @@ warning; i18n lint and the TypeScript/Vite production build passed.
 ## Security and licensing review
 
 An independent security review checked the storage, migration, backup/restore,
-process boundary, tests, and documentation. Its confirmed findings were
+native boundary, tests, and documentation. Its confirmed findings were
 repaired: deterministic cursor coverage, bounded envelope reads, restored TLS
-relationship validation, narrow DPAPI retry behavior, payload bounds, and
-precise trust-boundary language. No production raw-private-key persistence
-bypass was found.
+relationship validation, payload bounds, and precise trust-boundary language.
+No production raw-private-key persistence bypass was found.
 
-The design uses the Windows DPAPI already supplied by the operating system and
-adds no dependency or copied source. The architecture reference and ADR record
-the Microsoft platform reference and the Syncthing concepts used for permanent
-device identity; no GPL or MPL implementation code was copied.
+The design uses Windows DPAPI through exact `@primno/dpapi` 2.0.1 and
+`node-gyp-build` 4.8.4 dependencies. Both are MIT-licensed, their notices are
+preserved, and the audited private-alpha shrinkwrap includes their exact
+integrity records. The architecture reference and ADR record the Microsoft
+platform reference and the Syncthing concepts used for permanent device
+identity; no GPL or MPL implementation code was copied.
 
 ## Primary files
 
@@ -113,6 +117,7 @@ device identity; no GPL or MPL implementation code was copied.
 - `apps/cocodex-server/src/identity.ts`
 - `apps/cocodex-server/src/tls.ts`
 - `apps/cocodex-server/src/recovery-backup.ts`
+- `tests/cocodex-compiled-dpapi-standalone.test.ts`
 - `tests/cocodex-local-protected-secret.test.ts`
 - `tests/cocodex-private-mailbox.test.ts`
 - `tests/cocodex-private-alpha-process.test.ts`

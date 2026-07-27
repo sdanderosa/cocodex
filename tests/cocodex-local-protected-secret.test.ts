@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  dpapiChildEnvironment,
   protectedSecretStorageKind,
   readProtectedSecret,
   writeProtectedSecret,
@@ -28,30 +27,6 @@ function temporaryRoot(prefix: string): string {
 }
 
 describe("CoCodex local private-key custody", () => {
-  test("restores the real Windows profile only for the fixed DPAPI child", () => {
-    const child = dpapiChildEnvironment({
-      SystemRoot: "C:\\Windows",
-      USERPROFILE: "C:\\isolated-test-home",
-      HOME: "C:\\isolated-test-home",
-      OCX_TEST_ISOLATED_ENV: "1",
-      OCX_TEST_DPAPI_USERPROFILE: "C:\\Users\\runneradmin",
-    });
-    expect(child).toMatchObject({
-      USERPROFILE: "C:\\Users\\runneradmin",
-      HOME: "C:\\Users\\runneradmin",
-      HOMEDRIVE: "C:",
-      HOMEPATH: "\\Users\\runneradmin",
-    });
-    expect(dpapiChildEnvironment({
-      USERPROFILE: "C:\\production-profile",
-      OCX_TEST_DPAPI_USERPROFILE: "C:\\Users\\ignored-test-profile",
-    }).USERPROFILE).toBe("C:\\production-profile");
-    expect(() => dpapiChildEnvironment({
-      OCX_TEST_ISOLATED_ENV: "1",
-      OCX_TEST_DPAPI_USERPROFILE: "..\\relative-profile",
-    })).toThrow("DPAPI test profile bridge is invalid");
-  });
-
   test("round-trips a purpose-bound secret without plaintext on Windows disk", () => {
     const root = temporaryRoot("cocodex-protected-secret-");
     const path = join(root, "secret.json");

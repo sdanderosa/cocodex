@@ -112,7 +112,7 @@ function physicalPathKey(path: string): string {
   return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
-function samePhysicalPath(left: string, right: string): boolean {
+export function samePhysicalPath(left: string, right: string): boolean {
   const leftStatus = statSync(resolve(left));
   const rightStatus = statSync(resolve(right));
   if (leftStatus.ino !== 0 && leftStatus.dev === rightStatus.dev && leftStatus.ino === rightStatus.ino) {
