@@ -13,7 +13,7 @@ import {
   discoverRootTests,
   spawnWithTreeTimeout,
 } from "../scripts/test-batched";
-import { isProcessAlive, killProxy } from "../src/lib/process-control";
+import { isProcessAlive, killProxy, waitForExit } from "../src/lib/process-control";
 
 describe("test runner isolation", () => {
   test("redirects user homes to a disposable root", () => {
@@ -129,7 +129,7 @@ describe("test runner isolation", () => {
       expect(outcome.timedOut).toBe(true);
       grandchildPid = Number(readFileSync(pidPath, "utf8"));
       expect(Number.isSafeInteger(grandchildPid)).toBe(true);
-      expect(isProcessAlive(grandchildPid)).toBe(false);
+      expect(waitForExit(grandchildPid, 2_000)).toBe(true);
     } finally {
       if (grandchildPid > 0 && isProcessAlive(grandchildPid)) killProxy(grandchildPid);
       isolated.cleanup();

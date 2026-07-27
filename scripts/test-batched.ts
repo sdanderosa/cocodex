@@ -84,7 +84,11 @@ export async function spawnWithTreeTimeout(
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        // macOS can report EPERM rather than ESRCH when the parent exits during
+        // the grace period. Accept it only after Bun has observed that exit;
+        // the descendant-level regression test still verifies the whole tree.
+        if (code !== "ESRCH" && !(code === "EPERM" && child.exitCode !== null)) throw error;
       }
     }
     await child.exited;
