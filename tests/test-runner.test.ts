@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createIsolatedTestEnvironment,
+  isolatedWorkerEnvironment,
   sanitizedTestEnvironment,
   testTimeoutArgs,
 } from "../scripts/test";
@@ -15,7 +16,13 @@ import { isProcessAlive, killProxy } from "../src/lib/process-control";
 
 describe("test runner isolation", () => {
   test("redirects user homes to a disposable root", () => {
-    const isolated = createIsolatedTestEnvironment({ PATH: "/test/bin", HOME: "/real/home" });
+    const topLevel = {
+      PATH: "/test/bin",
+      HOME: "/real/home",
+      USERPROFILE: "C:\\Users\\real-profile",
+    };
+    const worker = isolatedWorkerEnvironment(topLevel);
+    const isolated = createIsolatedTestEnvironment(worker);
     try {
       expect(isolated.env).toMatchObject({
         PATH: "/test/bin",
@@ -24,6 +31,12 @@ describe("test runner isolation", () => {
         OPENCODEX_HOME: join(isolated.root, ".opencodex"),
         CODEX_HOME: join(isolated.root, ".codex"),
       });
+      expect(isolated.env.OCX_TEST_DPAPI_USERPROFILE).toBe(
+        process.platform === "win32" ? "C:\\Users\\real-profile" : undefined,
+      );
+      expect(isolated.env.OCX_TEST_ISOLATED_ENV).toBe(
+        process.platform === "win32" ? "1" : undefined,
+      );
       expect(existsSync(isolated.env.OPENCODEX_HOME!)).toBe(true);
       expect(existsSync(isolated.env.CODEX_HOME!)).toBe(true);
     } finally {

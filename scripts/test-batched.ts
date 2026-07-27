@@ -2,7 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killProxy } from "../src/lib/process-control";
-import { createIsolatedTestEnvironment, sanitizedTestEnvironment } from "./test";
+import { createIsolatedTestEnvironment, isolatedWorkerEnvironment } from "./test";
 
 export interface TestBatchFailure {
   batch: number;
@@ -79,6 +79,12 @@ export async function spawnWithTreeTimeout(
         process.kill(-child.pid, "SIGTERM");
       } catch {
         if (child.exitCode === null) child.kill("SIGTERM");
+      }
+      await Promise.race([child.exited, Bun.sleep(500)]);
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
       }
     }
     await child.exited;
@@ -222,7 +228,7 @@ if (import.meta.main) {
           {
             cwd: join(import.meta.dir, ".."),
             env: {
-              ...sanitizedTestEnvironment(process.env),
+              ...isolatedWorkerEnvironment(process.env),
               OCX_TEST_BATCH_WORKER: "1",
               OCX_TEST_BATCH_START: String(start + 1),
               OCX_TEST_BATCH_END: String(end),

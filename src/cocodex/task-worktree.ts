@@ -113,6 +113,11 @@ function physicalPathKey(path: string): string {
 }
 
 function samePhysicalPath(left: string, right: string): boolean {
+  const leftStatus = statSync(resolve(left));
+  const rightStatus = statSync(resolve(right));
+  if (leftStatus.ino !== 0 && leftStatus.dev === rightStatus.dev && leftStatus.ino === rightStatus.ino) {
+    return true;
+  }
   return physicalPathKey(left) === physicalPathKey(right);
 }
 

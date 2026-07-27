@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
@@ -978,7 +978,7 @@ describe("CoCodex encrypted project context session", () => {
     expect(policy).toMatchObject({
       projectId: project.id,
       agentId: configured.agentId,
-      workspaceRoot: repository,
+      workspaceRoot: realpathSync.native(repository),
       workspaceMode: "git-worktree",
       accessProfile: "project-only",
     });

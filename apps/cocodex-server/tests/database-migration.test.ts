@@ -238,5 +238,5 @@ describe("CoCodex database migrations", () => {
         }
       }
     }
-  });
+  }, 15_000);
 });

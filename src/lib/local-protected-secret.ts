@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, win32 } from "node:path";
 import { hardenSecretDir, hardenSecretPath } from "./windows-secret-acl";
 
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -74,6 +74,33 @@ function powershellExecutable(): string {
   return `${process.env.SystemRoot?.trim() || "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 }
 
+export function dpapiChildEnvironment(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const child: Record<string, string | undefined> = {
+    ...source,
+    SystemRoot: source.SystemRoot || "C:\\Windows",
+    WINDIR: source.WINDIR || source.SystemRoot || "C:\\Windows",
+  };
+  const isolatedTestEnvironment = source.OCX_TEST_ISOLATED_ENV === "1";
+  const testProfile = source.OCX_TEST_DPAPI_USERPROFILE?.trim();
+  delete child.OCX_TEST_ISOLATED_ENV;
+  delete child.OCX_TEST_DPAPI_USERPROFILE;
+  if (!isolatedTestEnvironment) return child;
+  if (!testProfile) return child;
+  if (!win32.isAbsolute(testProfile) || /[\u0000-\u001f]/.test(testProfile)) {
+    throw new Error("Windows DPAPI test profile bridge is invalid");
+  }
+  const parsed = win32.parse(testProfile);
+  child.USERPROFILE = testProfile;
+  child.HOME = testProfile;
+  if (/^[A-Za-z]:\\$/.test(parsed.root)) {
+    child.HOMEDRIVE = parsed.root.slice(0, 2);
+    child.HOMEPATH = testProfile.slice(2) || "\\";
+  }
+  return child;
+}
+
 function encodedPowerShell(operation: "protect" | "unprotect"): string {
   const method = operation === "protect" ? "Protect" : "Unprotect";
   const script = [
@@ -106,11 +133,7 @@ function runDpapi(operation: "protect" | "unprotect", value: Buffer, purpose: st
     stderr: "pipe",
     timeout: 15_000,
     windowsHide: true,
-    env: {
-      ...process.env,
-      SystemRoot: process.env.SystemRoot || "C:\\Windows",
-      WINDIR: process.env.WINDIR || process.env.SystemRoot || "C:\\Windows",
-    },
+    env: dpapiChildEnvironment(),
   });
   let result = invoke();
   // Windows can transiently refuse a process launch when multiple isolated

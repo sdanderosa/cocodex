@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
 export interface IsolatedTestEnvironment {
   root: string;
@@ -54,6 +54,31 @@ export function sanitizedTestEnvironment(
   return sanitized;
 }
 
+function validatedWindowsProfile(source: Record<string, string | undefined>): string | undefined {
+  const candidate = (
+    source.OCX_TEST_ISOLATED_ENV === "1"
+      ? source.OCX_TEST_DPAPI_USERPROFILE
+      : source.USERPROFILE
+  )?.trim();
+  return candidate
+    && win32.isAbsolute(candidate)
+    && !/[\u0000-\u001f]/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+export function isolatedWorkerEnvironment(
+  source: Record<string, string | undefined>,
+): Record<string, string> {
+  const sanitized = sanitizedTestEnvironment(source);
+  const profile = process.platform === "win32" ? validatedWindowsProfile(source) : undefined;
+  if (profile) {
+    sanitized.OCX_TEST_ISOLATED_ENV = "1";
+    sanitized.OCX_TEST_DPAPI_USERPROFILE = profile;
+  }
+  return sanitized;
+}
+
 export function testTimeoutArgs(
   env: Record<string, string | undefined> = process.env,
 ): string[] {
@@ -74,11 +99,21 @@ export function createIsolatedTestEnvironment(
   const codexHome = join(root, ".codex");
   mkdirSync(opencodexHome, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
+  const originalWindowsProfile = process.platform === "win32"
+    ? validatedWindowsProfile(baseEnv)
+    : undefined;
+  const dpapiProfileBridge = originalWindowsProfile
+    ? {
+        OCX_TEST_ISOLATED_ENV: "1",
+        OCX_TEST_DPAPI_USERPROFILE: originalWindowsProfile,
+      }
+    : {};
 
   return {
     root,
     env: {
       ...sanitizedTestEnvironment(baseEnv),
+      ...dpapiProfileBridge,
       HOME: root,
       USERPROFILE: root,
       OPENCODEX_HOME: opencodexHome,
