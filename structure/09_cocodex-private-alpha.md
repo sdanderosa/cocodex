@@ -55,6 +55,18 @@ protocol authority model or expose the local OpenCodex proxy.
 
 ## Local private-message history
 
+Private contacts come from the Server's bounded approved-device directory.
+The Server distributes public certificate metadata only; the resident Client
+verifies the certificate and joins it to the explicit local fingerprint trust
+store only after an independently confirmed fingerprint matches the current
+directory entry. The GUI receives a safe contact projection and never a
+certificate or public-key payload. A protected, bounded public-certificate
+cache is re-verified on restart and bound to the Server authority so known
+recipients remain usable for offline ciphertext queueing without crossing an
+authority transfer. A terminal revoked-recipient rejection marks only that
+encrypted-history entry as not sent and cannot head-of-line block later
+durable events. Discovery is not authorization. See ADR 0036.
+
 The Client owns a bounded `private-history.json` protected with the same
 device-state ACL and atomic-write boundary as other sensitive local state. It
 contains ciphertext only. Received messages retain their recipient ciphertext;

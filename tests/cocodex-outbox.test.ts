@@ -348,4 +348,68 @@ describe("CoCodex durable offline outbox", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("rejects only a revoked-recipient private send and continues draining later work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-revoked-private-outbox-"));
+    const paths = clientPaths(root);
+    const privateFrame = {
+      version: 1 as const,
+      type: "private.send" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      recipientDeviceId: randomUUID(),
+      ciphertext: Buffer.alloc(80, 7).toString("base64url"),
+      clientCreatedAt: "2030-01-01T00:00:00.000Z",
+    };
+    const chatFrame = {
+      version: 1 as const,
+      type: "chat.send" as const,
+      requestId: randomUUID(),
+      projectId: randomUUID(),
+      eventId: randomUUID(),
+      content: "later durable work",
+      clientCreatedAt: "2030-01-01T00:00:01.000Z",
+    };
+    const rejected: Array<{ requestId: string; reason: string }> = [];
+    class Socket {
+      private listeners = new Set<(event: MessageEvent) => void>();
+      addEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.add(listener);
+      }
+      removeEventListener(type: string, listener: (event: MessageEvent) => void) {
+        if (type === "message") this.listeners.delete(listener);
+      }
+      send(value: string) {
+        const sent = JSON.parse(value) as { type: string; requestId: string };
+        queueMicrotask(() => this.listeners.forEach(listener => listener({
+          data: JSON.stringify(sent.type === "private.send"
+            ? {
+              version: 1,
+              type: "error",
+              requestId: sent.requestId,
+              error: "Private-message device is not approved",
+            }
+            : {
+              version: 1,
+              type: "chat.accepted",
+              requestId: sent.requestId,
+            }),
+        } as MessageEvent)));
+      }
+    }
+    try {
+      enqueueDurableEvent(paths, privateFrame);
+      enqueueDurableEvent(paths, chatFrame);
+      expect(await flushDurableOutbox(new Socket() as unknown as WebSocket, paths, {
+        onTerminalRejection: (frame, reason) => rejected.push({ requestId: frame.requestId, reason }),
+      })).toBe(1);
+      expect(rejected).toEqual([{
+        requestId: privateFrame.requestId,
+        reason: "Private-message device is not approved",
+      }]);
+      expect(queuedEvents(paths)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

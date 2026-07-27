@@ -112,6 +112,8 @@
 .cocodex-composer .btn { align-self: center; display: inline-flex; gap: 6px; }
 .cocodex-composer .btn svg { width: 14px; height: 14px; }
 .cocodex-private-list { flex: 1; min-height: 220px; overflow-y: auto; padding: 12px; }
+.cocodex-private-contact { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; }
+.cocodex-private-contact small { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); }
 .cocodex-private-list article { border-left: 2px solid #8b5cf6; padding: 8px 10px; margin-bottom: 10px; background: var(--raised); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; }
 .cocodex-private-form { border-top: 1px solid var(--border); padding: 12px; display: grid; gap: 8px; }
 .cocodex-key-input { font-family: var(--mono); font-size: var(--text-caption); }

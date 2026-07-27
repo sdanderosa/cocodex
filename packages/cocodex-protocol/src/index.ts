@@ -20,6 +20,8 @@ export {
 export {
   clientFrameSchema,
   projectServerFrameSchema,
+  privateContactViewSchema,
+  privateContactSnapshotFrameSchema,
   privateSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
@@ -60,6 +62,8 @@ export {
   type ChatEvent,
   type ClientFrame,
   type ProjectServerFrame,
+  type PrivateContactView,
+  type PrivateContactSnapshotFrame,
   type PrivateMessageEnvelope,
   type PrivateSnapshotFrame,
   type PrivateAcceptedFrame,

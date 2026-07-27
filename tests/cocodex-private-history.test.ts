@@ -9,6 +9,7 @@ import {
   emptyPrivateHistory,
   loadPrivateHistory,
   markPrivateHistoryEntryQueued,
+  rejectPrivateHistoryEntry,
   reconcileStagedPrivateHistory,
   recordPrivateHistoryEntry,
   savePrivateHistory,
@@ -187,5 +188,27 @@ describe("CoCodex encrypted local private history", () => {
       expect.objectContaining({ messageId: queuedId, deliveryState: "queued" }),
     ]);
     expect(markPrivateHistoryEntryQueued(state, queuedId)).toBe(state);
+  });
+
+  test("records a terminal recipient rejection without accepting or deleting ciphertext history", () => {
+    const localDeviceId = randomUUID();
+    const messageId = randomUUID();
+    const state = recordPrivateHistoryEntry(emptyPrivateHistory(localDeviceId), {
+      messageId,
+      senderDeviceId: localDeviceId,
+      recipientDeviceId: randomUUID(),
+      localCiphertext: Buffer.alloc(48, 8).toString("base64url"),
+      clientCreatedAt: "2030-01-01T00:00:00.000Z",
+      deliveryState: "queued",
+      serverSequence: null,
+      acceptedAt: null,
+    });
+    const rejected = rejectPrivateHistoryEntry(state, messageId, "Private-message device is not approved");
+    expect(rejected.entries).toEqual([expect.objectContaining({
+      messageId,
+      deliveryState: "rejected",
+      rejectionReason: "Private-message device is not approved",
+    })]);
+    expect(rejected.entries[0]?.localCiphertext).toBe(state.entries[0]?.localCiphertext);
   });
 });

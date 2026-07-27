@@ -158,6 +158,22 @@ export interface CoCodexGuiStatus {
 function withoutSensitiveServerPayloads(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, any>;
+  if (record.source === "private-contacts" && Array.isArray(record.contacts)) {
+    return {
+      source: "private-contacts",
+      contacts: record.contacts.map((candidate: unknown) => {
+        const contact = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          deviceId: contact.deviceId,
+          displayName: contact.displayName,
+          fingerprint: contact.fingerprint,
+          trusted: contact.trusted === true,
+        };
+      }),
+    };
+  }
   if (record.source === "private" && record.message && typeof record.message === "object") {
     const message = record.message as Record<string, unknown>;
     return {
@@ -174,6 +190,13 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           ? { direction: message.direction }
           : {}),
         ...(typeof message.restored === "boolean" ? { restored: message.restored } : {}),
+        ...(message.deliveryState === "staged" || message.deliveryState === "queued"
+          || message.deliveryState === "accepted" || message.deliveryState === "rejected"
+          ? { deliveryState: message.deliveryState }
+          : {}),
+        ...(typeof message.rejectionReason === "string"
+          ? { rejectionReason: message.rejectionReason }
+          : {}),
       },
     };
   }
@@ -388,6 +411,9 @@ export class CoCodexGuiBridge {
     }
     if (typeof command.type !== "string" || !ALLOWED_COMMANDS.has(command.type)) {
       throw new Error("Unsupported CoCodex GUI command");
+    }
+    if (command.type === "private.send" && "recipientKeyCertificate" in command) {
+      throw new Error("The GUI must resolve private contacts inside the resident Client");
     }
     const id = typeof command.id === "string" && command.id.length > 0
       ? command.id

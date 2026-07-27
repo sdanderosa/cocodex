@@ -40,9 +40,22 @@ describe("CoCodex GUI bridge", () => {
           clientCreatedAt: "2030-01-01T00:00:00.000Z",
           direction: "sent",
           restored: true,
+          deliveryState: "rejected",
+          rejectionReason: "Private-message device is not approved",
           localCiphertext: "LOCAL_HISTORY_CIPHERTEXT_CANARY",
           signature: "LOCAL_HISTORY_SIGNATURE_CANARY",
         },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "private-contacts",
+        contacts: [{
+          deviceId: "contact-device",
+          displayName: "Kai",
+          fingerprint: "AAAA-BBBB",
+          trusted: true,
+          deviceKeyCertificate: "PRIVATE_CONTACT_CERTIFICATE_CANARY",
+          messagingPublicKeyPem: "PRIVATE_CONTACT_PUBLIC_KEY_CANARY",
+        }],
       })}\n`);
       output.write(`${JSON.stringify({
         source: "server",
@@ -206,6 +219,17 @@ describe("CoCodex GUI bridge", () => {
     expect(bridge.command({ type: "agent.full-computer.enable", confirm: true }).accepted).toBe(true);
     expect(bridge.command({ type: "agent.full-computer.disable" }).accepted).toBe(true);
     expect(bridge.command({ type: "private.read", messageId: "message" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "private.send",
+      recipientDeviceId: "contact-device",
+      text: "safe message",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "private.send",
+      recipientDeviceId: "contact-device",
+      recipientKeyCertificate: "renderer-supplied-certificate",
+      text: "unsafe message",
+    })).toThrow("resolve private contacts");
     bridge.stop();
     await Bun.sleep(5);
 
@@ -243,6 +267,8 @@ describe("CoCodex GUI bridge", () => {
         clientCreatedAt: "2030-01-01T00:00:00.000Z",
         direction: "sent",
         restored: true,
+        deliveryState: "rejected",
+        rejectionReason: "Private-message device is not approved",
       },
     });
     const privateReceiptEvent = bridge.eventsAfter(0).events
@@ -260,6 +286,17 @@ describe("CoCodex GUI bridge", () => {
           acceptedAt: "2030-01-01T00:00:00.000Z",
         },
       },
+    });
+    const privateContactsEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "private-contacts");
+    expect(privateContactsEvent?.value).toEqual({
+      source: "private-contacts",
+      contacts: [{
+        deviceId: "contact-device",
+        displayName: "Kai",
+        fingerprint: "AAAA-BBBB",
+        trusted: true,
+      }],
     });
     const keyEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "project.key.result");
@@ -293,6 +330,8 @@ describe("CoCodex GUI bridge", () => {
     expect(rendererEvents).not.toContain("DEVICE_CERTIFICATE_CANARY");
     expect(rendererEvents).not.toContain("UNKNOWN_CIPHERTEXT_CANARY");
     expect(rendererEvents).not.toContain("MALFORMED_PROJECT_LIST_CANARY");
+    expect(rendererEvents).not.toContain("PRIVATE_CONTACT_CERTIFICATE_CANARY");
+    expect(rendererEvents).not.toContain("PRIVATE_CONTACT_PUBLIC_KEY_CANARY");
     expect(rendererEvents).not.toContain("PRIVATE_WORKSPACE_CANARY");
     expect(rendererEvents).not.toContain("SENDER_KEY_CANARY");
     expect(rendererEvents).not.toContain("SIGNATURE_FIELD_CANARY");

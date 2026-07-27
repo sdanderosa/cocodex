@@ -10,6 +10,10 @@ import type { ClientPaths } from "./paths";
 
 type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "private.receipt.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" }>;
 
+export interface FlushDurableOutboxOptions {
+  onTerminalRejection?: (frame: DurableFrame, reason: string) => void;
+}
+
 interface OutboxFile {
   version: 1;
   events: DurableFrame[];
@@ -120,7 +124,11 @@ export async function drainDurableOutbox(
   return delivered;
 }
 
-export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths): Promise<number> {
+export async function flushDurableOutbox(
+  socket: WebSocket,
+  paths: ClientPaths,
+  options: FlushDurableOutboxOptions = {},
+): Promise<number> {
   return drainDurableOutbox(paths, frame => new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => finish(new Error("Timed out waiting for outbox acknowledgement")), 10_000);
     const finish = (error?: Error) => {
@@ -144,6 +152,15 @@ export async function flushDurableOutbox(socket: WebSocket, paths: ClientPaths):
         if ("projectId" in frame
           && normalizedMessage.includes("device is not an approved project member")) {
           discardQueuedProjectEvents(paths, frame.projectId);
+        } else if (frame.type === "private.send"
+          && normalizedMessage.includes("private-message device is not approved")) {
+          // A revoked or deleted recipient can never accept this immutable
+          // ciphertext envelope. Drop only this message and continue draining
+          // later durable work instead of permanently head-of-line blocking it.
+          discardQueuedEvent(paths.outbox, frame.requestId);
+          options.onTerminalRejection?.(frame, message);
+          finish();
+          return;
         } else if ((frame.type === "context.update" || frame.type === "project.context.update") && message.includes("revision conflict")) {
           discardQueuedEvent(paths.outbox, frame.requestId);
         } else if (frame.type === "project.context.update" && message.includes("replay conflict")) {

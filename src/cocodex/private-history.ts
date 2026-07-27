@@ -26,7 +26,8 @@ const privateHistoryEntrySchema = z.object({
   recipientDeviceId: z.uuid(),
   localCiphertext: localCiphertextSchema,
   clientCreatedAt: z.iso.datetime(),
-  deliveryState: z.enum(["staged", "queued", "accepted"]),
+  deliveryState: z.enum(["staged", "queued", "accepted", "rejected"]),
+  rejectionReason: z.string().min(1).max(500).optional(),
   serverSequence: z.number().int().positive().nullable(),
   acceptedAt: z.iso.datetime().nullable(),
 }).strict();
@@ -43,7 +44,8 @@ export interface PrivateHistoryEntry {
   recipientDeviceId: string;
   localCiphertext: string;
   clientCreatedAt: string;
-  deliveryState: "staged" | "queued" | "accepted";
+  deliveryState: "staged" | "queued" | "accepted" | "rejected";
+  rejectionReason?: string;
   serverSequence: number | null;
   acceptedAt: string | null;
 }
@@ -119,11 +121,12 @@ export function recordPrivateHistoryEntry(
   }
   const entries = [...state.entries, parsed];
   if (entries.length > MAX_HISTORY_ENTRIES) {
-    const acceptedIndex = entries.findIndex(item => item.deliveryState === "accepted");
-    if (acceptedIndex < 0) {
+    const terminalIndex = entries.findIndex(item =>
+      item.deliveryState === "accepted" || item.deliveryState === "rejected");
+    if (terminalIndex < 0) {
       throw new Error("Private history is full of unaccepted messages");
     }
-    entries.splice(acceptedIndex, 1);
+    entries.splice(terminalIndex, 1);
   }
   return {
     ...state,
@@ -173,6 +176,32 @@ export function markPrivateHistoryEntryQueued(
   }
   const entries = [...state.entries];
   entries[index] = { ...existing, deliveryState: "queued" };
+  return { ...state, entries };
+}
+
+export function rejectPrivateHistoryEntry(
+  state: PrivateHistoryState,
+  messageId: string,
+  reason: string,
+): PrivateHistoryState {
+  const index = state.entries.findIndex(entry => entry.messageId === messageId);
+  if (index < 0) return state;
+  const existing = state.entries[index]!;
+  if (existing.deliveryState === "accepted") {
+    throw new Error("An accepted private-history message cannot be rejected");
+  }
+  if (existing.senderDeviceId !== state.deviceId) {
+    throw new Error("Only a local outgoing private message can be rejected");
+  }
+  const rejectionReason = reason.trim().slice(0, 500);
+  if (!rejectionReason) throw new Error("Private-history rejection requires a reason");
+  if (existing.deliveryState === "rejected" && existing.rejectionReason === rejectionReason) return state;
+  const entries = [...state.entries];
+  entries[index] = {
+    ...existing,
+    deliveryState: "rejected",
+    rejectionReason,
+  };
   return { ...state, entries };
 }
 

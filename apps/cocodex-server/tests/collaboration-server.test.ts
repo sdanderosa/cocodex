@@ -8,6 +8,7 @@ import * as Y from "yjs";
 import {
   agentDefinitionSigningTranscript,
   agentRequestSigningTranscript,
+  createDeviceKeyCertificate,
   decodeInvitation,
   enrollmentSigningTranscript,
   usageReportSigningTranscript,
@@ -129,7 +130,7 @@ function nextFrame(
     }, 5_000);
     const onMessage = (event: MessageEvent) => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
-      if (frame.type === "error") {
+      if (frame.type === "error" && expectedType !== "error") {
         clearTimeout(timeout);
         socket.removeEventListener("message", onMessage);
         reject(new Error(String(frame.error)));
@@ -209,6 +210,102 @@ function usageReport(deviceId: string, revision = 1): UsageReport {
 }
 
 describe("authenticated WSS collaboration", () => {
+  test("discovers only verified approved private contacts and removes revoked peers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-private-contacts-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false);
+    const kaiSocket = await connect(server.port, kai, fingerprint, false);
+    const stephenCertificate = createDeviceKeyCertificate(stephen.id, {
+      publicKeyPem: stephen.publicKey,
+      privateKeyPem: stephen.privateKey,
+      messagingPublicKeyPem: stephen.messagingPublicKey,
+    });
+    const kaiCertificate = createDeviceKeyCertificate(kai.id, {
+      publicKeyPem: kai.publicKey,
+      privateKeyPem: kai.privateKey,
+      messagingPublicKeyPem: kai.messagingPublicKey,
+    });
+    const stephenSeesKai = nextFrame(stephenSocket, "private.contact.snapshot", frame =>
+      (frame.contacts as Array<Record<string, unknown>>)?.some(contact => contact.deviceId === kai.id));
+    const kaiSeesStephen = nextFrame(kaiSocket, "private.contact.snapshot", frame =>
+      (frame.contacts as Array<Record<string, unknown>>)?.some(contact => contact.deviceId === stephen.id));
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: stephenCertificate,
+    }));
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: kaiCertificate,
+    }));
+    expect((await stephenSeesKai).contacts).toEqual([expect.objectContaining({
+      deviceId: kai.id,
+      displayName: "Kai",
+      fingerprint: publicKeyFingerprint(kai.publicKey),
+      deviceKeyCertificate: kaiCertificate,
+    })]);
+    expect((await kaiSeesStephen).contacts).toEqual([expect.objectContaining({
+      deviceId: stephen.id,
+      displayName: "Stephen",
+      fingerprint: publicKeyFingerprint(stephen.publicKey),
+      deviceKeyCertificate: stephenCertificate,
+    })]);
+
+    await Bun.sleep(1_050);
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: stephenCertificate,
+    }));
+    const certificateRateLimited = nextFrame(stephenSocket, "error", frame =>
+      String(frame.error).includes("publication rate limit"));
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: stephenCertificate,
+    }));
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "device.key-certificate.publish",
+      requestId: randomUUID(),
+      certificate: stephenCertificate,
+    }));
+    expect((await certificateRateLimited).error).toContain("publication rate limit");
+
+    const requestId = randomUUID();
+    const explicit = nextFrame(stephenSocket, "private.contact.snapshot", frame =>
+      frame.requestId === requestId);
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.contact.list",
+      requestId,
+    }));
+    expect((await explicit).contacts).toHaveLength(1);
+
+    const removed = nextFrame(stephenSocket, "private.contact.snapshot", frame =>
+      Array.isArray(frame.contacts) && frame.contacts.length === 0);
+    expect(revokeDevice(db, publicKeyFingerprint(kai.publicKey))).toBeTrue();
+    expect((await removed).contacts).toEqual([]);
+  });
+
   test("creates a signed self-hosted agent over WSS and rejects spoofed authority", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-"));
     roots.push(root);

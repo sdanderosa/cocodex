@@ -173,6 +173,22 @@ receipt before local decryption. Receipt state is metadata only and does not
 change the single-device sealed-box limitations documented in ADRs 0014,
 0022, and 0034.
 
+The private panel discovers other approved CoCodex devices from the
+authoritative Server directory. It shows a person's display name and enrolled
+fingerprint, but the display name is never identity. The resident Client
+verifies the peer's self-signed device certificate and retains its public
+messaging key outside the renderer. Select the contact, compare the
+fingerprint through a separate trusted channel, enter the independently
+confirmed value, and choose **Verify** once; subsequent sends need only the
+selected contact. The resident rejects a trust request that does not match the
+current approved directory entry. Pending, revoked, certificate-less, and
+local devices are excluded.
+The verified public directory is cached in protected `private-contacts.json`
+and re-verified at startup. It is bound to the local device, Server identity,
+and authority epoch, so a known contact remains available for encrypted
+offline queueing after a Client restart but is invalidated on authority
+transfer or accidental repoint. See ADR 0036.
+
 Each successfully opened message is also retained in
 `private-history.json` as ciphertext only. A sender creates a second self-sealed
 local copy; only the recipient ciphertext enters the durable outbox and Server.

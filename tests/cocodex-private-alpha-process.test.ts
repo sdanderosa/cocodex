@@ -278,6 +278,34 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(stephen, line => line.source === "session" && line.state === "connected"),
       waitFor(kai, line => line.source === "session" && line.state === "connected"),
     ]);
+    const [stephenContacts, kaiContacts] = await Promise.all([
+      waitFor(stephen, line => line.source === "private-contacts"
+        && line.contacts?.some((contact: any) => contact.deviceId === kaiDevice.id)),
+      waitFor(kai, line => line.source === "private-contacts"
+        && line.contacts?.some((contact: any) => contact.deviceId === stephenDevice.id)),
+    ]);
+    expect(stephenContacts.contacts).toContainEqual(expect.objectContaining({
+      deviceId: kaiDevice.id,
+      displayName: "Kai",
+      fingerprint: kaiDevice.fingerprint,
+    }));
+    expect(kaiContacts.contacts).toContainEqual(expect.objectContaining({
+      deviceId: stephenDevice.id,
+      displayName: "Stephen",
+      fingerprint: stephenDevice.fingerprint,
+    }));
+    expect(JSON.stringify([stephenContacts, kaiContacts])).not.toContain("deviceKeyCertificate");
+    const mismatchedTrustRequest = randomUUID();
+    kai.send({
+      id: mismatchedTrustRequest,
+      type: "device.trust",
+      deviceId: stephenDevice.id,
+      fingerprint: kaiDevice.fingerprint,
+    });
+    const mismatchedTrust = await waitFor(kai, line =>
+      line.source === "control" && line.id === mismatchedTrustRequest);
+    expect(mismatchedTrust.ok).toBeFalse();
+    expect(mismatchedTrust.error).toContain("current approved directory");
     const configureResidentAgent = async (
       resident: Resident,
       command: Record<string, unknown>,
@@ -540,7 +568,6 @@ describe("three-process CoCodex private alpha", () => {
       id: randomUUID(),
       type: "private.send",
       recipientDeviceId: stephenDevice.id,
-      recipientKeyCertificate: stephenKeyCertificate,
       text: privateCanary,
     });
     const privateDelivery = await waitFor(stephen, line => line.source === "private" && line.message?.text === privateCanary);
@@ -877,14 +904,12 @@ describe("three-process CoCodex private alpha", () => {
       id: offlinePrivateRequestS,
       type: "private.send",
       recipientDeviceId: stephenDevice.id,
-      recipientKeyCertificate: stephenKeyCertificate,
       text: offlinePrivateS,
     });
     stephen.send({
       id: offlinePrivateRequestK,
       type: "private.send",
       recipientDeviceId: kaiDevice.id,
-      recipientKeyCertificate: kaiKeyCertificate,
       text: offlinePrivateK,
     });
     await Promise.all([
@@ -1013,7 +1038,7 @@ describe("three-process CoCodex private alpha", () => {
       COCODEX_ACCOUNT_FIXTURE: "kai-account",
       CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
     });
-    const [offlineRestoredMessage, offlineRestoredRead] = await Promise.all([
+    const [offlineRestoredMessage, offlineRestoredRead, offlineRestoredContacts] = await Promise.all([
       waitFor(kai, line => line.source === "private"
         && line.message?.messageId === privateMessageId
         && line.message?.text === privateCanary
@@ -1022,11 +1047,78 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(kai, line => line.source === "private-receipt"
         && line.receipt?.messageId === privateMessageId
         && line.receipt?.receipt === "read"),
+      waitFor(kai, line => line.source === "private-contacts"
+        && line.contacts?.some((contact: any) =>
+          contact.deviceId === stephenDevice.id && contact.trusted === true)),
     ]);
     expect(offlineRestoredMessage.message.serverSequence).toBeGreaterThan(0);
     expect(offlineRestoredRead.receipt.senderDeviceId).toBe(kaiDevice.id);
+    expect(JSON.stringify(offlineRestoredContacts)).not.toContain("deviceKeyCertificate");
+    const cachedContactCanary = "private send from cached contact while server is down";
+    const cachedContactRequest = randomUUID();
+    kai.send({
+      id: cachedContactRequest,
+      type: "private.send",
+      recipientDeviceId: stephenDevice.id,
+      text: cachedContactCanary,
+    });
+    const cachedQueued = await waitFor(kai, line => line.source === "control"
+      && line.id === cachedContactRequest
+      && line.ok === true
+      && line.queued === true);
+    const afterRevocationChat = "later work drains after cached recipient revocation";
+    const afterRevocationChatRequest = randomUUID();
+    kai.send({
+      id: afterRevocationChatRequest,
+      type: "chat.send",
+      projectId: project.id,
+      content: afterRevocationChat,
+    });
+    await waitFor(kai, line => line.source === "control"
+      && line.id === afterRevocationChatRequest
+      && line.ok === true
+      && line.queued === true);
+    const cachedContactOutbox = readFileSync(join(kaiRoot, "outbox.json"), "utf8");
+    expect(cachedContactOutbox).not.toContain(cachedContactCanary);
+    expect(cachedContactOutbox).toContain("\"type\": \"private.send\"");
     kai.send({ id: "stop-offline-k", type: "shutdown" });
     await kai.process.exited;
+    residents.splice(residents.indexOf(kai), 1);
+
+    await run(serverExe, [
+      "revoke", "--fingerprint", stephenDevice.fingerprint, "--state-root", serverRoot,
+    ]);
+    server = startServer();
+    await waitFor(server, line => line.ready === true);
+    kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
+      CODEX_CLI_PATH: fixtureExe,
+      COCODEX_ACCOUNT_FIXTURE: "kai-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    const rejectedCachedSend = await waitFor(kai, line => line.source === "private"
+      && line.message?.messageId === cachedQueued.messageId
+      && line.message?.deliveryState === "rejected");
+    expect(rejectedCachedSend.message.rejectionReason).toContain("not approved");
+    await waitFor(kai, line => line.source === "session"
+      && line.state === "connected"
+      && line.flushedEvents >= 1);
+    const afterRevocationSubscribe = randomUUID();
+    kai.send({
+      id: afterRevocationSubscribe,
+      type: "chat.subscribe",
+      projectId: project.id,
+      afterSequence: 0,
+    });
+    await waitFor(kai, line => line.frame?.type === "chat.snapshot"
+      && line.frame.requestId === afterRevocationSubscribe
+      && line.frame.events?.some((event: any) => event.content === afterRevocationChat));
+    expect(readFileSync(join(kaiRoot, "outbox.json"), "utf8")).not.toContain(cachedQueued.messageId);
+    kai.send({ id: "stop-revocation-k", type: "shutdown" });
+    await kai.process.exited;
+    residents.splice(residents.indexOf(kai), 1);
+    server.process.kill();
+    await server.process.exited;
+    residents.splice(residents.indexOf(server), 1);
 
     const db = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
     const ciphertext = db.query("SELECT ciphertext FROM private_messages").get() as { ciphertext: string };

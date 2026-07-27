@@ -44,6 +44,10 @@ const requestId = z.uuid();
 const projectId = z.uuid();
 const deviceId = z.uuid();
 const privateMessageId = z.uuid();
+const deviceFingerprint = z.string().regex(
+  /^[0-9A-F]{4}(?:-[0-9A-F]{4}){15}$/,
+  "Device fingerprint must be canonical grouped SHA-256",
+);
 const agentModelId = z.string().trim().regex(
   /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/,
   "Agent model IDs may contain only letters, numbers, dot, underscore, colon, slash, and hyphen",
@@ -312,6 +316,11 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     requestId,
     afterSequence: z.number().int().nonnegative(),
     afterReceiptSequence: z.number().int().nonnegative().default(0),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    type: z.literal("private.contact.list"),
+    requestId,
   }).strict(),
   z.object({
     version: z.literal(1),
@@ -746,6 +755,20 @@ export const privateSnapshotFrameSchema = z.object({
   receipts: z.array(privateReceiptEnvelopeSchema).max(500).default([]),
 }).strict();
 
+export const privateContactViewSchema = z.object({
+  deviceId,
+  displayName: z.string().trim().min(1).max(80),
+  fingerprint: deviceFingerprint,
+  deviceKeyCertificate: z.string().min(256).max(8_192),
+}).strict();
+
+export const privateContactSnapshotFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.contact.snapshot"),
+  requestId: requestId.optional(),
+  contacts: z.array(privateContactViewSchema).max(128),
+}).strict();
+
 export const privateAcceptedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("private.accepted"),
@@ -773,6 +796,7 @@ export const privateReceiptFrameSchema = z.object({
 }).strict();
 
 export const privateServerFrameSchema = z.discriminatedUnion("type", [
+  privateContactSnapshotFrameSchema,
   privateSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
@@ -781,6 +805,8 @@ export const privateServerFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
+export type PrivateContactView = z.infer<typeof privateContactViewSchema>;
+export type PrivateContactSnapshotFrame = z.infer<typeof privateContactSnapshotFrameSchema>;
 export type PrivateMessageEnvelope = z.infer<typeof privateMessageEnvelopeSchema>;
 export type PrivateSnapshotFrame = z.infer<typeof privateSnapshotFrameSchema>;
 export type PrivateAcceptedFrame = z.infer<typeof privateAcceptedFrameSchema>;

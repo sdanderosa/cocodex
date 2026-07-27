@@ -14,6 +14,7 @@ import {
   type EncryptedAgentTask,
   type ChatEvent,
   type FileReferencePlaintext,
+  type PrivateContactView,
   type ProjectMemberView,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -51,6 +52,13 @@ import { prepareTaskWorkspace } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
 import {
+  loadPrivateContactSnapshot,
+  safePrivateContacts,
+  savePrivateContactSnapshot,
+  verifyPrivateContactSnapshot,
+  type CachedPrivateContact,
+} from "./private-contacts";
+import {
   deferPrivateMailboxMessage,
   hasPrivateMailboxReceipt,
   loadPrivateMailbox,
@@ -65,6 +73,7 @@ import {
   acknowledgePrivateHistoryEntry,
   loadPrivateHistory,
   markPrivateHistoryEntryQueued,
+  rejectPrivateHistoryEntry,
   reconcileStagedPrivateHistory,
   recordPrivateHistoryEntry,
   savePrivateHistory,
@@ -242,6 +251,20 @@ export async function runJsonLineSession(
   const privateRemoteReceipts = new Map<string, PrivateMailboxRemoteReceipt>(
     privateMailbox.remoteReceipts.map(receipt => [`${receipt.messageId}:${receipt.receipt}`, receipt]),
   );
+  let privateContacts = new Map<string, CachedPrivateContact>();
+  try {
+    privateContacts = verifyPrivateContactSnapshot(
+      loadPrivateContactSnapshot(paths.privateContacts, connection.deviceId, {
+        serverIdentityFingerprint: publicKeyFingerprint(connection.serverIdentityPublicKeyPem),
+        serverEpoch: connection.serverEpoch,
+      }),
+      connection.deviceId,
+    );
+  } catch {
+    // This cache is optional public material. A schema, device, or authority
+    // mismatch invalidates it without preventing local/offline OpenCodex use.
+    // A fresh authenticated directory snapshot will replace it on reconnect.
+  }
   const queuedPrivateReadReceipts = new Set<string>();
   // Decrypted private text is retained only in this resident process. It is
   // never written to the mailbox or sent anywhere until the host explicitly
@@ -700,7 +723,20 @@ export async function runJsonLineSession(
     // A connection can disappear while an outbox flush is in flight. Recover
     // the serialization chain so that a transient failure cannot permanently
     // prevent later reconnects from draining durable events.
-    flushChain = flushChain.catch(() => 0).then(() => flushDurableOutbox(socket!, paths));
+    flushChain = flushChain.catch(() => 0).then(() => flushDurableOutbox(socket!, paths, {
+      onTerminalRejection: (frame, reason) => {
+        if (frame.type !== "private.send") return;
+        privateHistory = rejectPrivateHistoryEntry(privateHistory, frame.messageId, reason);
+        savePrivateHistory(paths.privateHistory, privateHistory);
+        privateContacts.delete(frame.recipientDeviceId);
+        emitPrivateContacts();
+        const rejected = privateHistory.entries.find(entry => entry.messageId === frame.messageId);
+        const decrypted = decryptedPrivateMessages.get(frame.messageId);
+        if (rejected && decrypted) {
+          rememberDecryptedPrivateMessage(rejected, decrypted.text, false);
+        }
+      },
+    }));
     return flushChain;
   };
   const queuePrivateReceipt = (messageId: string, receipt: "delivered" | "read"): boolean => {
@@ -760,7 +796,8 @@ export async function runJsonLineSession(
 
   const rememberDecryptedPrivateMessage = (
     entry: Pick<PrivateHistoryEntry,
-      "messageId" | "senderDeviceId" | "recipientDeviceId" | "clientCreatedAt" | "acceptedAt" | "serverSequence">,
+      "messageId" | "senderDeviceId" | "recipientDeviceId" | "clientCreatedAt" | "acceptedAt"
+      | "serverSequence" | "deliveryState" | "rejectionReason">,
     text: string,
     restored: boolean,
   ): void => {
@@ -789,6 +826,8 @@ export async function runJsonLineSession(
         text,
         direction: entry.senderDeviceId === connection.deviceId ? "sent" : "received",
         restored,
+        deliveryState: entry.deliveryState,
+        ...(entry.rejectionReason ? { rejectionReason: entry.rejectionReason } : {}),
       },
     });
   };
@@ -837,6 +876,25 @@ export async function runJsonLineSession(
     for (const receipt of privateMailbox.remoteReceipts) {
       emit({ source: "private-receipt", receipt });
     }
+  };
+
+  const emitPrivateContacts = (): void => {
+    const trustedDevices = loadTrustedDevices(paths.trustedDevices);
+    emit({
+      source: "private-contacts",
+      contacts: safePrivateContacts(privateContacts, trustedDevices),
+    });
+  };
+
+  const acceptPrivateContactSnapshot = (contacts: PrivateContactView[]): void => {
+    const next = verifyPrivateContactSnapshot(contacts, connection.deviceId);
+    savePrivateContactSnapshot(paths.privateContacts, connection.deviceId, {
+      serverIdentityFingerprint: publicKeyFingerprint(connection.serverIdentityPublicKeyPem),
+      serverEpoch: connection.serverEpoch,
+    }, contacts);
+    privateContacts.clear();
+    for (const [deviceId, contact] of next) privateContacts.set(deviceId, contact);
+    emitPrivateContacts();
   };
 
   const openPrivateEnvelope = async (message: PrivateMailboxMessage): Promise<void> => {
@@ -1725,6 +1783,7 @@ export async function runJsonLineSession(
 
   await replayPrivateHistory();
   replayPrivateReceipts();
+  emitPrivateContacts();
 
   const session = maintainAuthenticatedClient(paths, async connected => {
     socket = connected;
@@ -1748,7 +1807,8 @@ export async function runJsonLineSession(
           return;
         }
       }
-      if (frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message"
+      if (frame.type === "private.contact.snapshot"
+        || frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message"
         || frame.type === "private.receipt.accepted" || frame.type === "private.receipt") {
         try { frame = privateServerFrameSchema.parse(frame) as Record<string, any>; }
         catch (error) {
@@ -1789,6 +1849,17 @@ export async function runJsonLineSession(
       }
       if (frame.type === "project.chat.snapshot" || frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
         void openEncryptedChatFrame(frame);
+        return;
+      }
+      if (frame.type === "private.contact.snapshot") {
+        try {
+          acceptPrivateContactSnapshot(frame.contacts as PrivateContactView[]);
+        } catch (error) {
+          emitError({
+            source: "private-contacts",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         return;
       }
       if (frame.type === "project.list.result" && Array.isArray(frame.projects)) {
@@ -2104,6 +2175,7 @@ export async function runJsonLineSession(
               const legacyRuntime = !currentStore || (currentStore.version === 1 && Boolean(existing));
               const runtime = agentRuntimePaths(paths, policy.agentId, legacyRuntime);
               trustDevice(paths.trustedDevices, pending.trustedRequesterDeviceId, pending.trustedRequesterFingerprint);
+              emitPrivateContacts();
               if (!existing) configureAgentSafety(runtime.safety, policy);
               if (!currentStore || (currentStore.version === 1 && existing)) {
                 saveLocalAgentPolicy(paths.agentPolicy, policy);
@@ -2154,6 +2226,11 @@ export async function runJsonLineSession(
       type: "device.key-certificate.publish",
       requestId: randomUUID(),
       certificate: createDeviceKeyCertificate(connection.deviceId, identity),
+    });
+    send({
+      version: 1,
+      type: "private.contact.list",
+      requestId: randomUUID(),
     });
     for (const pending of pendingAgentConfigurations.values()) {
       try { send(pending.frame); }
@@ -3030,7 +3107,12 @@ export async function runJsonLineSession(
         } else if (command.type === "device.trust") {
           const deviceId = String(command.deviceId);
           const fingerprint = String(command.fingerprint);
+          const contact = privateContacts.get(deviceId);
+          if (!contact || contact.fingerprint !== fingerprint) {
+            throw new Error("Private-contact verification does not match the current approved directory");
+          }
           trustDevice(paths.trustedDevices, deviceId, fingerprint);
+          emitPrivateContacts();
           privateProcessing = privateProcessing
             .then(async () => {
               await retryDeferredPrivateMessages();
@@ -3060,9 +3142,10 @@ export async function runJsonLineSession(
           const messageId = String(command.messageId ?? randomUUID());
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
           const recipientDeviceId = String(command.recipientDeviceId);
-          const certificate = verifyDeviceKeyCertificate(String(command.recipientKeyCertificate), recipientDeviceId);
+          const contact = privateContacts.get(recipientDeviceId);
+          if (!contact) throw new Error("Recipient is not an approved private contact");
           const trustedFingerprint = loadTrustedDevices(paths.trustedDevices)[recipientDeviceId];
-          if (!trustedFingerprint || trustedFingerprint !== certificate.fingerprint) {
+          if (!trustedFingerprint || trustedFingerprint !== contact.fingerprint) {
             throw new Error("Recipient device key certificate does not match the trusted fingerprint");
           }
           const plaintext = {
@@ -3077,7 +3160,7 @@ export async function runJsonLineSession(
               plaintext,
               identity.privateKeyPem,
               identity.publicKeyPem,
-              certificate.messagingPublicKeyPem,
+              contact.messagingPublicKeyPem,
             ),
             sealSignedPrivateMessage(
               plaintext,

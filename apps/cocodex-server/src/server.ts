@@ -12,6 +12,7 @@ import {
   agentTaskListFrameSchema,
   projectMemberListFrameSchema,
   projectKeyRotationRequiredFrameSchema,
+  privateContactSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
   privateReceiptAcceptedFrameSchema,
@@ -50,6 +51,7 @@ import {
   privateMessagesAfter,
   privateReceiptsAfter,
 } from "./private-messages";
+import { listPrivateContacts, privateContactDirectoryRevision } from "./private-contacts";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
@@ -82,6 +84,8 @@ const AUTHORIZATION_SWEEP_INTERVAL_MS = 1_000;
 const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
+const MAX_PRIVATE_CONTACT_LISTS_PER_SECOND = 10;
+const MAX_DEVICE_CERTIFICATE_PUBLISHES_PER_SECOND = 2;
 const MAX_PRESENCE_MEMBERS = 128;
 const PRESENCE_TTL_MS = 15_000;
 
@@ -181,6 +185,9 @@ export function startCoCodexServer(
   const presenceUpdateTimes = new Map<string, number[]>();
   const presenceProjectUpdateTimes = new Map<string, number[]>();
   const privateReceiptTimes = new Map<string, number[]>();
+  const privateContactListTimes = new Map<string, number[]>();
+  const deviceCertificatePublishTimes = new Map<string, number[]>();
+  let privateContactRevision = privateContactDirectoryRevision(db);
   const presencePruneIntervalMs = Math.min(5_000, Math.max(1_000, Math.floor(PRESENCE_TTL_MS / 3)));
   let unauthenticatedSocketCount = 0;
   const unauthenticatedByIp = new Map<string, number>();
@@ -232,6 +239,29 @@ export function startCoCodexServer(
     }
   }
 
+  function sendPrivateContactSnapshot(
+    socket: ServerWebSocket<SocketData>,
+    deviceId: string,
+    requestId?: string,
+  ): void {
+    const device = deviceForAuthentication(db, deviceId);
+    if (!device || device.status !== "approved") return;
+    socket.send(JSON.stringify(privateContactSnapshotFrameSchema.parse({
+      version: 1,
+      type: "private.contact.snapshot",
+      ...(requestId ? { requestId } : {}),
+      contacts: listPrivateContacts(db, deviceId),
+    })));
+  }
+
+  function broadcastPrivateContacts(): void {
+    privateContactRevision = privateContactDirectoryRevision(db);
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (deviceId) sendPrivateContactSnapshot(socket, deviceId);
+    }
+  }
+
   function allowPrivateReceipt(deviceId: string): boolean {
     const now = Date.now();
     const recent = (privateReceiptTimes.get(deviceId) ?? []).filter(timestamp => now - timestamp < 1_000);
@@ -241,6 +271,32 @@ export function startCoCodexServer(
     }
     recent.push(now);
     privateReceiptTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowPrivateContactList(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (privateContactListTimes.get(deviceId) ?? [])
+      .filter(timestamp => now - timestamp < 1_000);
+    if (recent.length >= MAX_PRIVATE_CONTACT_LISTS_PER_SECOND) {
+      privateContactListTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    privateContactListTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowDeviceCertificatePublish(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (deviceCertificatePublishTimes.get(deviceId) ?? [])
+      .filter(timestamp => now - timestamp < 1_000);
+    if (recent.length >= MAX_DEVICE_CERTIFICATE_PUBLISHES_PER_SECOND) {
+      deviceCertificatePublishTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    deviceCertificatePublishTimes.set(deviceId, recent);
     return true;
   }
 
@@ -726,6 +782,9 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "device.key-certificate.publish") {
+            if (!allowDeviceCertificatePublish(deviceId)) {
+              throw new Error("Device key-certificate publication rate limit exceeded");
+            }
             const verified = verifyDeviceKeyCertificate(message.certificate, deviceId);
             const enrolled = devicePublicKeys(db, deviceId);
             if (verified.fingerprint !== enrolled.fingerprint
@@ -734,10 +793,12 @@ export function startCoCodexServer(
               || verified.projectWrapPublicKeyPem !== enrolled.projectWrapPublicKeyPem) {
               throw new Error("Device key certificate does not match enrolled keys");
             }
-            db.query(`
+            const published = db.query(`
               UPDATE devices SET device_key_certificate = ?
               WHERE id = ? AND status = 'approved'
-            `).run(message.certificate, deviceId);
+                AND (device_key_certificate IS NULL OR device_key_certificate <> ?)
+            `).run(message.certificate, deviceId, message.certificate);
+            if (published.changes === 1) broadcastPrivateContacts();
             return;
           }
           if (message.type === "project.member.list") {
@@ -1147,6 +1208,13 @@ export function startCoCodexServer(
               messages: privateMessagesAfter(db, deviceId, message.afterSequence),
               receipts: privateReceiptsAfter(db, deviceId, message.afterReceiptSequence),
             })));
+            return;
+          }
+          if (message.type === "private.contact.list") {
+            if (!allowPrivateContactList(deviceId)) {
+              throw new Error("Private contact-list rate limit exceeded");
+            }
+            sendPrivateContactSnapshot(socket, deviceId, requestId);
             return;
           }
           if (message.type === "private.send") {
@@ -1694,6 +1762,8 @@ export function startCoCodexServer(
         socket.close(1008, "Device authorization was revoked");
       }
     }
+    const revision = privateContactDirectoryRevision(db);
+    if (revision !== privateContactRevision) broadcastPrivateContacts();
   }, AUTHORIZATION_SWEEP_INTERVAL_MS);
   return {
     hostname: server.hostname ?? config.hostname,

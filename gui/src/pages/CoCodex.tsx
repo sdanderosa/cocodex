@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as Y from "yjs";
+import {
+  independentlyConfirmedFingerprintMatches,
+  privateTimelineForContact,
+  reconcilePrivateContactSelection,
+} from "../cocodex-private-contact-state";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import {
   confirmProjectMemberRemoval,
@@ -61,6 +66,8 @@ interface PrivateMessage {
   serverSequence?: number;
   direction?: "sent" | "received";
   restored?: boolean;
+  deliveryState?: "staged" | "queued" | "accepted" | "rejected";
+  rejectionReason?: string;
 }
 
 interface PrivateReceipt {
@@ -78,6 +85,13 @@ interface AgentApproval {
   agentId: string;
   requesterDeviceId: string;
   prompt: string;
+}
+
+interface PrivateContact {
+  deviceId: string;
+  displayName: string;
+  fingerprint: string;
+  trusted: boolean;
 }
 
 type AgentStatus = "offline" | "available" | "queued" | "working" | "completed" | "failed";
@@ -222,6 +236,7 @@ interface SessionValue {
   error?: unknown;
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
+  contacts?: PrivateContact[];
   frame?: {
     type?: string;
     projectId?: string;
@@ -414,6 +429,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
   const [privateReceipts, setPrivateReceipts] = useState<Record<string, "sent" | "delivered" | "read">>({});
+  const [privateContacts, setPrivateContacts] = useState<PrivateContact[]>([]);
   const [privateSearch, setPrivateSearch] = useState("");
   const [presence, setPresence] = useState<PresenceMember[]>([]);
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
@@ -450,9 +466,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [invite, setInvite] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [recipientDeviceId, setRecipientDeviceId] = useState("");
-  const [recipientFingerprint, setRecipientFingerprint] = useState("");
-  const [recipientKey, setRecipientKey] = useState("");
   const [privateDraft, setPrivateDraft] = useState("");
+  const [privateVerificationFingerprint, setPrivateVerificationFingerprint] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const cursor = useRef(0);
@@ -664,6 +679,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             ) || left.messageId.localeCompare(right.messageId));
         });
       }
+      if (value?.source === "private-contacts" && Array.isArray(value.contacts)) {
+        const contacts = value.contacts as PrivateContact[];
+        setPrivateContacts(contacts);
+        setRecipientDeviceId(previous => reconcilePrivateContactSelection(previous, contacts));
+      }
       if (value?.source === "private-receipt" && value.receipt?.messageId) {
         setPrivateReceipts(previous => {
           const current = previous[value.receipt!.messageId];
@@ -824,14 +844,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const sendPrivate = async (event: FormEvent) => {
     event.preventDefault();
     const text = privateDraft.trim();
-    if (!text) return;
+    const contact = privateContacts.find(item => item.deviceId === recipientDeviceId);
+    if (!text || !contact) return;
+    if (!contact.trusted) {
+      setNotice(t("cocodex.private.verifyBeforeSending"));
+      return;
+    }
     setPrivateDraft("");
     try {
-      await command({ type: "device.trust", deviceId: recipientDeviceId.trim(), fingerprint: recipientFingerprint.trim() });
       await command({
         type: "private.send",
-        recipientDeviceId: recipientDeviceId.trim(),
-        recipientKeyCertificate: recipientKey.trim(),
+        recipientDeviceId: contact.deviceId,
         text,
       });
     } catch (error) {
@@ -844,6 +867,25 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     try {
       await command({ type: "agent.approval", taskId, approved });
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const verifyPrivateContact = async (contact: PrivateContact) => {
+    if (!independentlyConfirmedFingerprintMatches(privateVerificationFingerprint, contact.fingerprint)) {
+      setNotice(t("cocodex.private.verificationMismatch"));
+      return;
+    }
+    try {
+      await command({
+        type: "device.trust",
+        deviceId: contact.deviceId,
+        fingerprint: contact.fingerprint,
+      });
+      setPrivateVerificationFingerprint("");
+      setPrivateContacts(previous => previous.map(item =>
+        item.deviceId === contact.deviceId ? { ...item, trusted: true } : item));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -1071,10 +1113,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
-  const normalizedPrivateSearch = privateSearch.trim().toLocaleLowerCase();
-  const visiblePrivateMessages = normalizedPrivateSearch
-    ? privateMessages.filter(message => message.text.toLocaleLowerCase().includes(normalizedPrivateSearch))
-    : privateMessages;
+  const selectedPrivateContact = privateContacts.find(contact => contact.deviceId === recipientDeviceId);
+  const selectedPrivateMessages = privateTimelineForContact(
+    privateMessages,
+    selectedPrivateContact?.deviceId ?? "",
+    "",
+  );
+  const visiblePrivateMessages = privateTimelineForContact(
+    privateMessages,
+    selectedPrivateContact?.deviceId ?? "",
+    privateSearch,
+  );
 
   return (
     <div className="cocodex-page">
@@ -1521,9 +1570,54 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </form>
             </section>
             <div className="cocodex-section-head">
-              <div><strong>{t("cocodex.private.title")}</strong><small>{t("cocodex.private.encrypted")}</small></div>
+              <div>
+                <strong>{selectedPrivateContact?.displayName ?? t("cocodex.private.title")}</strong>
+                <small>{t("cocodex.private.encrypted")}</small>
+              </div>
               <IconLock />
             </div>
+            <select
+              className="input"
+              value={recipientDeviceId}
+              onChange={event => {
+                setRecipientDeviceId(event.target.value);
+                setPrivateVerificationFingerprint("");
+              }}
+              aria-label={t("cocodex.private.contact")}
+            >
+              <option value="">{t("cocodex.private.selectContact")}</option>
+              {privateContacts.map(contact => (
+                <option key={contact.deviceId} value={contact.deviceId}>
+                  {contact.displayName}{contact.trusted ? "" : ` — ${t("cocodex.private.unverified")}`}
+                </option>
+              ))}
+            </select>
+            {selectedPrivateContact && (
+              <div className="cocodex-private-contact">
+                <small>{selectedPrivateContact.fingerprint}</small>
+                {!selectedPrivateContact.trusted && (
+                  <>
+                    <small>{t("cocodex.private.verifyInstructions")}</small>
+                    <input
+                      className="input"
+                      value={privateVerificationFingerprint}
+                      onChange={event => setPrivateVerificationFingerprint(event.target.value)}
+                      placeholder={t("cocodex.private.verificationFingerprint")}
+                      aria-label={t("cocodex.private.verificationFingerprint")}
+                      autoComplete="off"
+                    />
+                    <button className="btn btn-ghost" type="button"
+                      disabled={!independentlyConfirmedFingerprintMatches(
+                        privateVerificationFingerprint,
+                        selectedPrivateContact.fingerprint,
+                      )}
+                      onClick={() => void verifyPrivateContact(selectedPrivateContact)}>
+                      {t("cocodex.private.verify")}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <input
               className="input"
               type="search"
@@ -1535,10 +1629,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             <div className="cocodex-private-list">
               {visiblePrivateMessages.map(message => (
                 <article key={message.messageId}>
-                  <strong>{message.senderDeviceId === status.deviceId ? t("cocodex.you") : message.senderDeviceId.slice(0, 8)}</strong>
+                  <strong>{message.senderDeviceId === status.deviceId
+                    ? t("cocodex.you")
+                    : selectedPrivateContact?.displayName ?? message.senderDeviceId.slice(0, 8)}</strong>
                   <p>{message.text}</p>
-                  {privateReceipts[message.messageId] && <small>
-                    {privateReceipts[message.messageId] === "read"
+                  {(message.deliveryState === "rejected" || privateReceipts[message.messageId]) && <small>
+                    {message.deliveryState === "rejected"
+                      ? `${t("cocodex.private.rejected")}: ${message.rejectionReason ?? t("cocodex.private.rejectedUnknown")}`
+                      : privateReceipts[message.messageId] === "read"
                       ? t("cocodex.private.read")
                       : privateReceipts[message.messageId] === "delivered"
                         ? t("cocodex.private.delivered")
@@ -1552,19 +1650,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 </article>
               ))}
               {!visiblePrivateMessages.length && <p className="muted">
-                {privateMessages.length ? t("cocodex.private.noSearchResults") : t("cocodex.private.empty")}
+                {selectedPrivateMessages.length ? t("cocodex.private.noSearchResults") : t("cocodex.private.empty")}
               </p>}
             </div>
             <form className="cocodex-private-form" onSubmit={sendPrivate}>
-              <input className="input" value={recipientDeviceId} onChange={event => setRecipientDeviceId(event.target.value)}
-                placeholder={t("cocodex.private.device")} required />
-              <input className="input" value={recipientFingerprint} onChange={event => setRecipientFingerprint(event.target.value)}
-                placeholder={t("cocodex.private.fingerprint")} required />
-              <textarea className="input cocodex-key-input" value={recipientKey} onChange={event => setRecipientKey(event.target.value)}
-                placeholder={t("cocodex.private.key")} required rows={3} />
               <textarea className="input" value={privateDraft} onChange={event => setPrivateDraft(event.target.value)}
-                placeholder={t("cocodex.private.message")} required rows={2} />
-              <button className="btn btn-ghost" disabled={!status.running}>{t("cocodex.private.send")}</button>
+                placeholder={t("cocodex.private.message")} required rows={2}
+                disabled={!selectedPrivateContact?.trusted} />
+              <button className="btn btn-ghost"
+                disabled={!status.running || !selectedPrivateContact?.trusted}>
+                {t("cocodex.private.send")}
+              </button>
             </form>
           </aside>
         </div>

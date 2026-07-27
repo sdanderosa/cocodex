@@ -78,6 +78,18 @@ cocodex-server project-add-member --project PROJECT_ID --owner-device OWNER_ID -
 Invites are single-use and short-lived. Approval is explicit; revocation is
 checked on every authenticated connection and project operation.
 
+Approved Clients publish a self-signed public device-key certificate after
+proof-of-possession authentication. The `private.contact.list` WSS request
+returns only other approved certificate-bearing devices. Pending, revoked,
+certificate-less, and requesting devices are excluded. The Server broadcasts
+an updated bounded snapshot when the directory changes, while the Client
+independently verifies certificate signature, device ID, enrolled fingerprint,
+and local explicit trust before encrypting. Device private keys never enter
+the directory or Server.
+Identical certificate re-publication is idempotent, publication and explicit
+directory requests are independently rate-limited, and only a stored
+certificate transition triggers a directory broadcast.
+
 ## Backup, transfer, and health
 
 ```powershell

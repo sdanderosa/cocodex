@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import {
   canonicalEd25519PublicKey,
+  createDeviceKeyCertificate,
   agentListFrameSchema,
   agentReadyAcceptedFrameSchema,
   agentTaskListFrameSchema,
@@ -20,6 +21,7 @@ import {
   projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
   privateAcceptedFrameSchema,
+  privateContactSnapshotFrameSchema,
   privateMessageFrameSchema,
   privateReceiptAcceptedFrameSchema,
   privateReceiptFrameSchema,
@@ -726,6 +728,46 @@ describe("CoCodex protocol", () => {
       message: { ...envelope, sequence: 0 },
     })).toThrow();
     expect(() => clientFrameSchema.parse({ ...receiptSend, receipt: "seen" })).toThrow();
+  });
+
+  test("strictly bounds private-contact discovery without treating names as identity", () => {
+    const signing = generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const messaging = generateKeyPairSync("x25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const deviceId = crypto.randomUUID();
+    const request = {
+      version: 1 as const,
+      type: "private.contact.list" as const,
+      requestId: crypto.randomUUID(),
+    };
+    expect(clientFrameSchema.parse(request)).toEqual(request);
+    const frame = {
+      version: 1 as const,
+      type: "private.contact.snapshot" as const,
+      requestId: request.requestId,
+      contacts: [{
+        deviceId,
+        displayName: "Stephen",
+        fingerprint: publicKeyFingerprint(signing.publicKey),
+        deviceKeyCertificate: createDeviceKeyCertificate(deviceId, {
+          publicKeyPem: signing.publicKey,
+          privateKeyPem: signing.privateKey,
+          messagingPublicKeyPem: messaging.publicKey,
+        }),
+      }],
+    };
+    expect(privateContactSnapshotFrameSchema.parse(frame)).toEqual(frame);
+    expect(privateServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(() => privateContactSnapshotFrameSchema.parse({
+      ...frame,
+      contacts: [{ ...frame.contacts[0], fingerprint: "Stephen" }],
+    })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...request, displayName: "Stephen" })).toThrow();
   });
   test("strictly validates the authoritative agent roster", () => {
     const projectId = crypto.randomUUID();

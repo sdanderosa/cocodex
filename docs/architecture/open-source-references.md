@@ -36,7 +36,13 @@ reviewed again before release.
   local-agent-executes pattern.
 - **Device identity:** independently adapt Syncthing's cryptographic
   fingerprint and explicit trust model using Ed25519 identities protected by
-  the operating system.
+  the operating system. The Server now distributes a bounded directory of
+  other approved certificate-bearing devices, but discovery never implies
+  trust: the resident Client verifies the self-signed certificate and the
+  local user must independently confirm and enter its enrolled fingerprint
+  before encryption. The protected contact cache is bound to the authenticated
+  Server authority, and raw certificates remain outside the renderer. See ADR
+  0036.
 - **Collaborative text:** use Yjs 13.6.31 now for bounded, persisted
   shared prompt text; keep Hocuspocus as a transport/awareness reference until
   its extra service surface is justified.
@@ -53,7 +59,8 @@ reviewed again before release.
   until a supported Bun/package persistence path exists. Do not claim forward
   secrecy, rotation, or full multi-device messaging; do not invent a cipher or
   use AGPL libsignal in an MIT-only build. The exact boundary and migration
-  conditions are recorded in ADR 0014, ADR 0022, ADR 0034, and ADR 0035.
+  conditions are recorded in ADR 0014, ADR 0022, ADR 0034, ADR 0035, and ADR
+  0036.
   Receipt metadata
   uses the authenticated WSS session and server-side recipient binding; it is
   not a second cryptographic protocol. Decrypted private text exists only in
