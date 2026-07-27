@@ -131,14 +131,24 @@ certificate transition triggers a directory broadcast.
 ## Backup, transfer, and health
 
 ```powershell
-cocodex-server backup --output backup.json
-cocodex-server restore --input backup.json
+cocodex-server backup --output backup.json `
+  --passphrase-file backup-passphrase.txt
+cocodex-server restore --input backup.json `
+  --passphrase-file backup-passphrase.txt --state-root C:\CoCodex\recovered
 cocodex-server migrate
 ```
 
-The legacy `transfer-export`/`transfer-import` pair is an encrypted,
-identity-bound snapshot for restoring the same server state. For a real
-authority handoff to a new machine, prepare the destination first:
+The version-2 recovery archive encrypts and authenticates the complete stopped
+Server state: normalized configuration, checkpointed SQLite database, Server
+Ed25519 identity, and TLS identity. A successful restore over existing Server
+state preserves that previous root in the reported `rollbackPath`; inspect the
+restored Server before deliberately removing it. Use a high-entropy passphrase
+stored separately. `COCODEX_BACKUP_PASSPHRASE` is supported for automation,
+but `--passphrase-file` avoids placing it in process arguments or shell history.
+
+Recovery preserves the same authority identity, epoch, endpoint, and TLS pin.
+Never run the original and recovered roots together. For a planned move,
+endpoint change, or ownership handoff, prepare a distinct destination instead:
 
 ```powershell
 cocodex-server transfer-prepare --public-host NEW_PUBLIC_HOST --port 19463 `
@@ -166,8 +176,11 @@ project membership, chronological chat, and private ciphertext, updates both
 client endpoint/TLS pins, and reconnects both clients at the next authority
 epoch before checking the retired-source fence.
 
-Never place a passphrase directly in shell history for a real deployment—prefer
-`--passphrase-file` with a protected file. The health endpoint is
+The older `transfer-export` form without `--target-request` remains a
+same-identity encrypted database-transfer compatibility surface; it is not a
+complete disaster-recovery archive. Never place a passphrase directly in shell
+history for a real deployment—prefer `--passphrase-file` with a protected
+file. The health endpoint is
 `GET /healthz`; authenticated admin status is `GET /v1/admin/status` with the
 initialization token:
 

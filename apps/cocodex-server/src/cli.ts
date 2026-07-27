@@ -4,11 +4,13 @@ import { randomUUID } from "node:crypto";
 import {
   createEncryptedAuthorityServerTransfer,
   createEncryptedServerTransfer,
-  createServerBackup,
   restoreEncryptedAuthorityServerTransfer,
   restoreEncryptedServerTransfer,
-  restoreServerBackup,
 } from "./backup";
+import {
+  createEncryptedServerRecoveryBackup,
+  restoreEncryptedServerRecoveryBackup,
+} from "./recovery-backup";
 import { createDefaultConfig, loadConfig, saveConfig } from "./config";
 import { openDatabase } from "./database";
 import { bootstrapApproveDevice, devicePublicKeys, listDevices, revokeDevice } from "./enrollment";
@@ -45,10 +47,14 @@ function configureWindowsFirewall(port: number): "created" | "manual-required" |
   return result.exitCode === 0 ? "created" : "manual-required";
 }
 
-function requiredPassphrase(): string {
+function requiredPassphrase(purpose: "backup" | "transfer"): string {
   const file = option("--passphrase-file");
-  const value = file ? readFileSync(file, "utf8").trim() : process.env.COCODEX_TRANSFER_PASSPHRASE?.trim();
-  if (!value) throw new Error("Set COCODEX_TRANSFER_PASSPHRASE or provide --passphrase-file");
+  const environmentValue = purpose === "backup"
+    ? process.env.COCODEX_BACKUP_PASSPHRASE?.trim()
+    : process.env.COCODEX_TRANSFER_PASSPHRASE?.trim();
+  const value = file ? readFileSync(file, "utf8").trim() : environmentValue;
+  const variable = purpose === "backup" ? "COCODEX_BACKUP_PASSPHRASE" : "COCODEX_TRANSFER_PASSPHRASE";
+  if (!value) throw new Error(`Set ${variable} or provide --passphrase-file`);
   return value;
 }
 
@@ -80,8 +86,8 @@ Usage:
   cocodex-server restart [--state-root PATH]
   cocodex-server status [--state-root PATH]
   cocodex-server network-diagnose [--port PORT] [--state-root PATH]
-  cocodex-server backup --output FILE [--state-root PATH]
-  cocodex-server restore --input FILE [--state-root PATH]
+  cocodex-server backup --output FILE [--passphrase-file FILE] [--state-root PATH]
+  cocodex-server restore --input FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server transfer-export --output FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server transfer-prepare --public-host HOST --port PORT --output FILE [--state-root PATH]
   cocodex-server transfer-export --target-request FILE --output FILE [--passphrase-file FILE] [--state-root PATH]
@@ -247,16 +253,41 @@ async function run(): Promise<void> {
     case "backup": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const backup = createServerBackup(paths, identity, requiredOption("--output"));
-      console.log(JSON.stringify({ backedUp: true, createdAt: backup.createdAt, databaseSha256: backup.databaseSha256 }));
+      const backup = createEncryptedServerRecoveryBackup(
+        paths,
+        identity,
+        requiredOption("--output"),
+        requiredPassphrase("backup"),
+      );
+      console.log(JSON.stringify({
+        backedUp: true,
+        encrypted: true,
+        completeServerState: true,
+        createdAt: backup.createdAt,
+        serverFingerprint: backup.serverFingerprint,
+        serverEpoch: backup.serverEpoch,
+        payloadSha256: backup.payloadSha256,
+      }));
       return;
     }
     case "restore": {
       requireStopped(paths);
-      const identity = loadServerIdentity(paths);
-      const backup = restoreServerBackup(paths, identity, requiredOption("--input"));
+      const restored = restoreEncryptedServerRecoveryBackup(
+        paths,
+        requiredOption("--input"),
+        requiredPassphrase("backup"),
+      );
       openDatabase(paths.database).close();
-      console.log(JSON.stringify({ restored: true, createdAt: backup.createdAt, databaseSha256: backup.databaseSha256 }));
+      console.log(JSON.stringify({
+        restored: true,
+        encrypted: true,
+        completeServerState: true,
+        createdAt: restored.archive.createdAt,
+        serverFingerprint: restored.archive.serverFingerprint,
+        serverEpoch: restored.archive.serverEpoch,
+        payloadSha256: restored.archive.payloadSha256,
+        rollbackPath: restored.rollbackPath,
+      }));
       return;
     }
     case "transfer-export": {
@@ -264,11 +295,11 @@ async function run(): Promise<void> {
       const identity = loadServerIdentity(paths);
       const targetRequestPath = option("--target-request");
       if (!targetRequestPath) {
-        const transfer = createEncryptedServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase());
+        const transfer = createEncryptedServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase("transfer"));
         console.log(JSON.stringify({ transferred: true, direction: "export", encrypted: true, legacyIdentityBound: true, serverEpoch: transfer.serverEpoch, databaseSha256: transfer.databaseSha256 }));
         return;
       }
-      const transfer = createEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase(), transferTarget(targetRequestPath));
+      const transfer = createEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--output"), requiredPassphrase("transfer"), transferTarget(targetRequestPath));
       console.log(JSON.stringify({
         transferred: true,
         direction: "export",
@@ -286,7 +317,7 @@ async function run(): Promise<void> {
     case "transfer-import": {
       requireStopped(paths);
       const identity = loadServerIdentity(paths);
-      const transfer = restoreEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--input"), requiredPassphrase());
+      const transfer = restoreEncryptedAuthorityServerTransfer(paths, identity, requiredOption("--input"), requiredPassphrase("transfer"));
       console.log(JSON.stringify({
         transferred: true,
         direction: "import",

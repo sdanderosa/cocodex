@@ -5,42 +5,137 @@ import { join } from "node:path";
 import {
   createEncryptedAuthorityServerTransfer,
   createEncryptedServerTransfer,
-  createServerBackup,
   restoreEncryptedAuthorityServerTransfer,
   restoreEncryptedServerTransfer,
-  restoreServerBackup,
 } from "../src/backup";
+import {
+  createEncryptedServerRecoveryBackup,
+  restoreEncryptedServerRecoveryBackup,
+} from "../src/recovery-backup";
+import { createDefaultConfig, loadConfig, saveConfig } from "../src/config";
 import { openDatabase } from "../src/database";
-import { createServerIdentity } from "../src/identity";
+import { createServerIdentity, loadServerIdentity } from "../src/identity";
 import { serverPaths } from "../src/paths";
 import { initializeServerAuthority, serverAuthorityStatus, serverEpoch } from "../src/server-state";
 import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
 import { serverTransferTargetSchema } from "@cocodex/protocol";
 
 describe("CoCodex Server backups", () => {
-  test("creates an identity-bound snapshot and rejects tampering", async () => {
-    const root = mkdtempSync(join(tmpdir(), "cocodex-backup-"));
+  test("encrypts complete Server state and restores it atomically with rollback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-recovery-"));
     try {
-      const paths = serverPaths(root);
-      openDatabase(paths.database).close();
-      const identity = createServerIdentity(paths);
-      const backupPath = join(root, "state.cocodex-backup.json");
-      const backup = createServerBackup(paths, identity, backupPath);
-      expect(backup.databaseSha256.length).toBe(64);
+      const sourcePaths = serverPaths(join(root, "source"));
+      const sourceConfig = createDefaultConfig(
+        sourcePaths,
+        "recovery.example.test",
+        19463,
+        "RECOVERY-ADMIN-CANARY",
+      );
+      const adminHashCanary = "ab".repeat(32);
+      sourceConfig.adminTokenHash = adminHashCanary;
+      saveConfig(sourcePaths, sourceConfig);
+      const identity = createServerIdentity(sourcePaths);
+      await createTlsIdentity(sourcePaths, "recovery.example.test");
+      const sourceDb = openDatabase(sourcePaths.database);
+      initializeServerAuthority(sourceDb, identity.fingerprint, "active");
+      sourceDb.query(`INSERT INTO audit_events
+        (event_type, actor_device_id, subject_id, occurred_at, details_json)
+        VALUES ('recovery-canary', NULL, NULL, ?, ?)`)
+        .run(new Date().toISOString(), '{"value":"RECOVERY-DATABASE-CANARY"}');
+      sourceDb.close();
+
+      const backupPath = join(root, "state.cocodex-recovery.json");
+      const backup = createEncryptedServerRecoveryBackup(
+        sourcePaths,
+        identity,
+        backupPath,
+        "correct horse battery staple",
+      );
+      expect(backup.payloadSha256.length).toBe(64);
       expect(backup.serverEpoch).toBe(1);
       expect(existsSync(backupPath)).toBeTrue();
+      const encoded = readFileSync(backupPath, "utf8");
+      expect(encoded).not.toContain("PRIVATE KEY");
+      expect(encoded).not.toContain("RECOVERY-DATABASE-CANARY");
+      expect(encoded).not.toContain("RECOVERY-ADMIN-CANARY");
+      expect(encoded).not.toContain(adminHashCanary);
 
-      const decoded = JSON.parse(readFileSync(backupPath, "utf8"));
-      decoded.databaseBase64 = Buffer.from("tampered").toString("base64");
+      const wrongDestination = serverPaths(join(root, "wrong-passphrase"));
+      expect(() => restoreEncryptedServerRecoveryBackup(
+        wrongDestination,
+        backupPath,
+        "wrong passphrase",
+      )).toThrow("passphrase");
+      expect(existsSync(wrongDestination.root)).toBeFalse();
+
+      const decoded = JSON.parse(encoded);
+      decoded.ciphertext = `${decoded.ciphertext[0] === "A" ? "B" : "A"}${decoded.ciphertext.slice(1)}`;
       const tamperedPath = join(root, "tampered.json");
       writeFileSync(tamperedPath, JSON.stringify(decoded));
-      expect(() => restoreServerBackup(paths, identity, tamperedPath)).toThrow("checksum mismatch");
+      expect(() => restoreEncryptedServerRecoveryBackup(
+        serverPaths(join(root, "tampered-destination")),
+        tamperedPath,
+        "correct horse battery staple",
+      )).toThrow("damaged");
 
-      const restored = restoreServerBackup(paths, identity, backupPath);
-      expect(restored.serverFingerprint).toBe(identity.fingerprint);
-      const restoredDb = openDatabase(paths.database);
-      expect(restoredDb).toBeDefined();
+      const destinationPaths = serverPaths(join(root, "destination"));
+      const restored = restoreEncryptedServerRecoveryBackup(
+        destinationPaths,
+        backupPath,
+        "correct horse battery staple",
+      );
+      expect(restored.rollbackPath).toBeNull();
+      expect(loadServerIdentity(destinationPaths).fingerprint).toBe(identity.fingerprint);
+      expect(tlsCertificateFingerprint(destinationPaths.tlsCertificate))
+        .toBe(tlsCertificateFingerprint(sourcePaths.tlsCertificate));
+      expect(loadConfig(destinationPaths)).toMatchObject({
+        publicHost: "recovery.example.test",
+        port: 19463,
+        tlsCertificate: destinationPaths.tlsCertificate,
+        tlsPrivateKey: destinationPaths.tlsPrivateKey,
+        adminTokenHash: adminHashCanary,
+      });
+      const restoredDb = openDatabase(destinationPaths.database);
+      expect(serverAuthorityStatus(restoredDb)).toBe("active");
+      expect(serverEpoch(restoredDb)).toBe(1);
+      expect(restoredDb.query(
+        "SELECT details_json AS details FROM audit_events WHERE event_type = 'recovery-canary'",
+      ).get()).toEqual({ details: '{"value":"RECOVERY-DATABASE-CANARY"}' });
       restoredDb.close();
+
+      const replacementPaths = serverPaths(join(root, "replacement"));
+      saveConfig(replacementPaths, createDefaultConfig(replacementPaths, "localhost", 20463));
+      const replacedIdentity = createServerIdentity(replacementPaths);
+      await createTlsIdentity(replacementPaths, "localhost");
+      const replacementDb = openDatabase(replacementPaths.database);
+      initializeServerAuthority(replacementDb, replacedIdentity.fingerprint, "active");
+      replacementDb.close();
+      const replaced = restoreEncryptedServerRecoveryBackup(
+        replacementPaths,
+        backupPath,
+        "correct horse battery staple",
+      );
+      expect(replaced.rollbackPath).not.toBeNull();
+      expect(existsSync(replaced.rollbackPath!)).toBeTrue();
+      expect(loadServerIdentity(replacementPaths).fingerprint).toBe(identity.fingerprint);
+      expect(loadServerIdentity(serverPaths(replaced.rollbackPath!)).fingerprint)
+        .toBe(replacedIdentity.fingerprint);
+
+      const rogueTlsPaths = serverPaths(join(root, "rogue-tls"));
+      await createTlsIdentity(rogueTlsPaths, "recovery.example.test");
+      writeFileSync(
+        sourcePaths.tlsPrivateKey,
+        readFileSync(rogueTlsPaths.tlsPrivateKey),
+        { mode: 0o600 },
+      );
+      const invalidBackupPath = join(root, "invalid-key-pair.json");
+      expect(() => createEncryptedServerRecoveryBackup(
+        sourcePaths,
+        identity,
+        invalidBackupPath,
+        "correct horse battery staple",
+      )).toThrow("TLS private key does not match");
+      expect(existsSync(invalidBackupPath)).toBeFalse();
     } finally {
       for (let attempt = 0; attempt < 40; attempt += 1) {
         try { rmSync(root, { recursive: true, force: true }); break; }
