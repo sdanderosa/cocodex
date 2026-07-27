@@ -50,6 +50,7 @@ import {
   type LocalAgentSafetyState,
 } from "./agent-safety";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
+import { runLocalCodexTurn } from "./local-codex";
 import { reportAgentExecution } from "./agent-execution-client";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
 import {
@@ -341,6 +342,7 @@ export async function runJsonLineSession(
   const localAgentPolicies = new Map<string, LocalAgentPolicy>();
   const localAgentSafeties = new Map<string, LocalAgentSafetyState>();
   const localAgentBridges = new Map<string, LocalAgentBridgeHandle>();
+  const localCodexRuns = new Map<string, AbortController>();
   const projectLocks = new Map<string, ProjectLockState>();
   const localAgentWorkerRuns = new Map<string, Promise<void>>();
   const localAgentWorkerSockets = new Map<string, WebSocket>();
@@ -3089,6 +3091,7 @@ export async function runJsonLineSession(
         if (!command || typeof command.type !== "string") throw new Error("Command type is required");
         if (command.type === "shutdown") {
           emit({ source: "control", id: command.id, ok: true });
+          for (const localRun of localCodexRuns.values()) localRun.abort();
           controller.abort();
           socket?.close();
           break;
@@ -3099,7 +3102,71 @@ export async function runJsonLineSession(
             throw new Error(`Project is locked: ${lock.reason ?? "shared changes are paused"}`);
           }
         }
-        if (command.type === "device.approval.list") {
+        if (command.type === "local.codex.run") {
+          const commandId = String(command.id ?? randomUUID());
+          const outputId = commandId;
+          if (localCodexRuns.has(commandId)) {
+            throw new Error("A local Codex run already uses this request ID");
+          }
+          const runController = new AbortController();
+          localCodexRuns.set(commandId, runController);
+          emit({ source: "control", id: outputId, ok: true, local: true, state: "started" });
+          void runLocalCodexTurn({
+            workspaceRoot: String(command.workspaceRoot ?? ""),
+            prompt: String(command.prompt ?? ""),
+            model: command.model === undefined ? undefined : String(command.model),
+            effort: command.effort as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined,
+            signal: runController.signal,
+            onOutput: content => emit({
+              source: "local-codex",
+              id: outputId,
+              local: true,
+              final: false,
+              status: "running",
+              content,
+            }),
+            onUsage: usage => {
+              emit({ source: "local-usage", deviceId: connection.deviceId, agentId: "local-codex", usage });
+              publishUsage({
+                requests: usageReport.requests + 1,
+                inputTokens: usageReport.inputTokens + (usage.inputTokens ?? 0),
+                cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
+                outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
+                reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
+              });
+            },
+          }).then(result => {
+            emit({
+              source: "local-codex",
+              id: outputId,
+              taskId: result.taskId,
+              local: true,
+              final: true,
+              status: "completed",
+              content: result.output.at(-1) ?? "Local Codex completed without textual output.",
+              workspaceRoot: result.workspaceRoot,
+              model: result.model,
+              effort: result.effort,
+            });
+          }, error => {
+            emit({
+              source: "local-codex",
+              id: outputId,
+              local: true,
+              final: true,
+              status: runController.signal.aborted ? "cancelled" : "failed",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }).finally(() => {
+            if (localCodexRuns.get(commandId) === runController) localCodexRuns.delete(commandId);
+          });
+        } else if (command.type === "local.codex.cancel") {
+          const targetId = String(command.targetId ?? "");
+          const active = localCodexRuns.get(targetId);
+          if (!active) throw new Error("Local Codex run is not active");
+          active.abort();
+          emit({ source: "control", id: command.id, ok: true, targetId, cancelled: true });
+        } else if (command.type === "device.approval.list") {
           send({
             version: 1,
             type: "device.approval.list",
@@ -4345,6 +4412,8 @@ export async function runJsonLineSession(
     }
   } finally {
     for (const finish of pendingAgentApprovals.values()) finish(false);
+    for (const localRun of localCodexRuns.values()) localRun.abort();
+    localCodexRuns.clear();
     for (const timer of pendingProjectCreationRetryTimers.values()) clearTimeout(timer);
     pendingProjectCreationRetryTimers.clear();
     controller.abort();

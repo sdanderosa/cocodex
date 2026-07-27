@@ -263,3 +263,8 @@ existing private messages.
 - Server restart with per-device FIFO queue recovery and global authoritative
   event order
 - Local OpenCodex request success while collaboration is offline
+
+The last failure case is now exercised by ADR 0043's compiled-process path:
+Kai's resident Client invokes the existing official Codex adapter after the
+CoCodex Server has terminated, while a SQLite before/after check proves that
+the local turn never became a Server-routed task.

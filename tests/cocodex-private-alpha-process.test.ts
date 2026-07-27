@@ -972,13 +972,59 @@ describe("three-process CoCodex private alpha", () => {
 
     traceCheckpoint("stopping first server");
     server.process.kill();
-    await server.process.exited;
+    const stoppedServerExitCode = await server.process.exited;
+    expect(typeof stoppedServerExitCode).toBe("number");
     traceCheckpoint("first server stopped");
     residents.splice(residents.indexOf(server), 1);
     await Promise.all([
       waitFor(stephen, line => line.source === "session" && line.state === "disconnected"),
       waitFor(kai, line => line.source === "session" && line.state === "disconnected"),
     ]);
+    const taskCountBeforeLocal = (() => {
+      const offlineDb = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
+      try {
+        return (offlineDb.query("SELECT COUNT(*) AS count FROM agent_tasks").get() as { count: number }).count;
+      } finally {
+        offlineDb.close();
+      }
+    })();
+    const localCodexRequest = randomUUID();
+    const localCodexPrompt = "LOCAL-OFFLINE-CODEX-continuity-check";
+    kai.send({
+      id: localCodexRequest,
+      type: "local.codex.run",
+      workspaceRoot: kaiWorkspace,
+      prompt: localCodexPrompt,
+      model: "gpt-5.6-sol",
+      effort: "medium",
+    });
+    expect(await waitFor(kai, line => line.source === "control"
+      && line.id === localCodexRequest)).toMatchObject({
+      ok: true,
+      local: true,
+      state: "started",
+    });
+    const localCodexResult = await waitFor(kai, line => line.source === "local-codex"
+      && line.id === localCodexRequest && line.final === true);
+    expect(localCodexResult).toMatchObject({
+      local: true,
+      status: "completed",
+      content: expect.stringContaining(localCodexPrompt),
+    });
+    expect(readFileSync(join(kaiWorkspace, "kai-account-execution.json"), "utf8"))
+      .toContain(localCodexPrompt);
+    expect(typeof stoppedServerExitCode).toBe("number");
+    const taskCountAfterLocal = (() => {
+      const offlineDb = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
+      try {
+        return (offlineDb.query("SELECT COUNT(*) AS count FROM agent_tasks").get() as { count: number }).count;
+      } finally {
+        offlineDb.close();
+      }
+    })();
+    expect(taskCountAfterLocal).toBe(taskCountBeforeLocal);
+    expect(kai.process.pid).toBe(kaiPid);
+    traceCheckpoint("Kai completed local Codex while collaboration server was offline");
     const offlineS = randomUUID();
     const offlineK = randomUUID();
     stephen.send({ id: offlineS, type: "chat.send", projectId: project.id, content: "Stephen offline queued" });
@@ -1078,7 +1124,7 @@ describe("three-process CoCodex private alpha", () => {
     );
     expect(recoveredUsage.frame.reports).toEqual(expect.arrayContaining([
       expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 6 }) }),
-      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 3 }) }),
+      expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 4 }) }),
     ]));
 
     traceCheckpoint("restarting Stephen client for private history");

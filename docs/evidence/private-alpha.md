@@ -1670,3 +1670,21 @@ the Server is exact-replayed across a same-resident transport reconnect, but
 that pending action is not yet stored in a protected client outbox across a
 Client process crash. It is not counted as durable offline invitation-action
 delivery in this checkpoint.
+
+## Offline host-local Codex continuity checkpoint (2026-07-27)
+
+The mandatory three-process harness now executes an official Codex turn on
+Kai's still-running Client while the separate CoCodex Server process is
+confirmed terminated. The Client uses Kai's isolated account fixture and
+workspace, streams the local result, writes the runtime fixture's filesystem
+marker, and increments Kai's protected local usage summary. A read-only SQLite
+before/after check proves that no authoritative Server task was created.
+
+The same resident Kai and Stephen Client PIDs then queue shared and encrypted
+private messages, reconnect after Server restart, and recover those events in
+order. The focused process run passed with `1 pass`, `0 fail`, and `280
+expect()` calls. `bun run test:cocodex` passed with `156 pass`, `0 fail`, and
+`1434 expect()` calls across 35 files. `typecheck:cocodex`, the separate Client
+build, and the privacy scan each exited `0`.
+
+See ADR 0043 and `docs/evidence/offline-local-codex-continuity.md`.

@@ -51,6 +51,7 @@ import {
   rollbackOpenCodexImport,
   summarizeOpenCodexImportPlan,
 } from "./opencodex-import";
+import { runLocalCodexTurn } from "./local-codex";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -143,6 +144,25 @@ async function run(): Promise<void> {
         verificationPhrase: connection.verificationPhrase,
         approvalExpiresAt: connection.approvalExpiresAt,
         approvalRequired: true,
+      }));
+      return;
+    }
+    case "local-codex": {
+      const result = await runLocalCodexTurn({
+        workspaceRoot: required("--workspace"),
+        prompt: required("--prompt"),
+        model: option("--model"),
+        effort: option("--effort") as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined,
+      });
+      console.log(JSON.stringify({
+        completed: true,
+        local: true,
+        taskId: result.taskId,
+        workspaceRoot: result.workspaceRoot,
+        model: result.model,
+        effort: result.effort,
+        output: result.output,
+        usage: result.usage ?? null,
       }));
       return;
     }
@@ -522,6 +542,7 @@ async function run(): Promise<void> {
 
 Usage:
   cocodex enroll --invite CODE --name NAME [--state-root PATH]
+  cocodex local-codex --workspace PATH --prompt TEXT [--model ID] [--effort LEVEL]
   cocodex import-opencodex --preview [--source PATH] [--target PATH] [--include-secrets]
   cocodex import-opencodex --apply [--source PATH] [--target PATH] [--include-secrets]
   cocodex import-opencodex --rollback BACKUP_DIRECTORY [--target PATH] [--target-codex PATH]

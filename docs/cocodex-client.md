@@ -417,6 +417,21 @@ client.
 
 ## Offline behavior and emergency control
 
+The CoCodex Client has a host-local official Codex path that never consults
+CoCodex Server:
+
+```powershell
+cocodex local-codex --workspace C:\Projects\NocturneLauncher `
+  --prompt "Continue the local task while collaboration is offline."
+```
+
+The resident Client uses `local.codex.run` for the same operation and
+`local.codex.cancel` for local cancellation. It resolves the installed Codex
+runtime through the existing OpenCodex runtime integration, runs shell-free
+`codex exec --json --ephemeral`, streams the result locally, and records only
+a protected local usage update. The Server receives no task, prompt, workspace
+path, or result from this path. See ADR 0043.
+
 The project owner can use **Lock project** to stop new shared changes and
 server-routed agent work. The Client signs the transition with its enrolled
 device identity and waits for authoritative Server state; the GUI cannot claim
@@ -431,7 +446,8 @@ Rejected pre-lock queued mutations are not replayed automatically after
 unlock; resubmit them explicitly against the new revision. Local OpenCodex and
 Codex behavior continues independently. See ADR 0041.
 
-When the server is offline, normal local OpenCodex use continues. The GUI shows
+When the server is offline, normal local OpenCodex and official Codex use
+continues. The GUI shows
 disconnected/reconnecting state; shared cursors and remote execution pause.
 Queued events remain local until the server returns. `shutdown` on the
 JSON-line session stops the resident collaboration process; local Codex
