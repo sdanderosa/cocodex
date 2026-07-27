@@ -139,7 +139,10 @@ async function waitForHealth(url: string, tls = false): Promise<Record<string, u
   let last = "";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, tls ? { tls: { rejectUnauthorized: false } } : undefined);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(1_000),
+        ...(tls ? { tls: { rejectUnauthorized: false } } : {}),
+      });
       last = `${response.status} ${await response.text()}`;
       if (response.ok) return JSON.parse(last.slice(last.indexOf(" ") + 1)) as Record<string, unknown>;
     } catch (error) {

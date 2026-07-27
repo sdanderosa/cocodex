@@ -249,6 +249,7 @@ describe("CoCodex private-alpha distribution", () => {
     expect(verifier).toContain(
       "for (const directory of [clientHome, serverHome, openCodexHome, codexHome])",
     );
+    expect(verifier).toContain("signal: AbortSignal.timeout(1_000)");
     expect(workflow).toContain("if: ${{ github.event_name == 'workflow_dispatch' }}");
     expect(workflow).toContain(
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
