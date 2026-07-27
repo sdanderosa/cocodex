@@ -1425,3 +1425,102 @@ post-run process/listener check found no Bun, CoCodex Client, or CoCodex Server
 process and no associated listener. ADR 0036 records the selected architecture,
 security invariants, open-source concept references, licensing decision, and
 remaining deferred messaging lifecycle work.
+
+## Atomic encrypted Co-Project creation checkpoint (2026-07-26)
+
+Feature commit:
+`ed87ebfe46839d4a1dba5f79837e267b84f69fa3`
+(`feat(cocodex): create encrypted projects atomically`).
+
+This checkpoint removes Server-CLI project pre-seeding from the mandatory
+private-alpha path. The Stephen Client now creates a named project for a
+locally fingerprint-verified Kai device, generates and stages its epoch-one
+key and exact signed request in one protected local write, and sends one
+strict `project.create` request. One Server SQLite transaction commits the
+project, complete membership, epoch, and all addressed sealed-key envelopes.
+Exact replay is idempotent and does not rebroadcast. Transient rate-limit
+errors retain the durable signed intent and key for timed or reconnect replay.
+
+Real resident/WSS recovery command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-project-encryption-session.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `82 expect()` calls.
+The first test ran one Server and isolated Stephen/Kai resident Clients over
+real TLS/WSS, created the same encrypted project on both devices, consumed the
+12-attempt creation allowance, proved the thirteenth exact intent and local key
+remained durable after a retryable error, restarted the Server, and observed
+automatic completion of that same signed request.
+
+Real three-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `260 expect()` calls.
+The harness started a separate Server process and isolated Stephen/Kai Client
+processes with distinct directories, identities, accounts, database, and
+project roots. Stephen created the project through his Client, both sides
+received addressed epoch-one keys, both agent-execution directions streamed
+through shared chat, private ciphertext worked, and restart recovery completed.
+Resident output was scanned to prove sealed project keys were not emitted.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `139 pass`, `0 fail`, `1283 expect()` calls
+across 33 files in `57.32s`. This includes protocol transcript/schema tests,
+SQLite rollback and conflicting-replay tests, authenticated WSS rate/replay
+tests, protected-store fault injection, renderer redaction, GUI bridge tests,
+resident restart recovery, and the three-process path.
+
+Full existing OpenCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; durable output ended with
+`PASS: all 343 files completed across 14 fresh workers`. No file was disabled
+or skipped. An earlier batch attempt with one unexplained worker failure and
+an empty redirected recovery attempt are not used as completion evidence; the
+subsequent complete isolated run is the evidence.
+
+Static, privacy, executable, and GUI commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run lint:i18n
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`;
+Client and Server produced separate executables. GUI tests reported
+`116 pass`, `0 fail`, and `563 expect()` calls. GUI lint retained the one
+pre-existing `use-app-route-state.ts:84` hook warning and no errors; the build
+retained the existing large-chunk advisory.
+
+The security recheck confirmed the single-write staging, signature binding,
+transaction rollback, addressed-envelope routing, replay suppression, GUI
+redaction, and retry recovery. ADR 0037 explicitly records the remaining
+private-alpha limit: a modified approved Client can add another approved device
+to a bounded unsolicited project because per-project recipient acceptance is
+deferred. The recipient will not open the envelope until it independently
+trusts the owner fingerprint, and membership alone cannot execute a command.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. The
+post-run process check found no Bun, CoCodex Client, or CoCodex Server process.

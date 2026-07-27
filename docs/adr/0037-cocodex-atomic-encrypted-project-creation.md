@@ -1,7 +1,7 @@
 # ADR 0037: Atomic encrypted Co-Project creation
 
 - Status: Accepted for the private alpha
-- Date: 2026-07-27
+- Date: 2026-07-26
 - Scope: Client-created Co-Projects, initial membership, and epoch-1 keys
 
 ## Context
