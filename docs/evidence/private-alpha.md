@@ -1331,3 +1331,97 @@ CoCodex process or listener remained after the runs. This checkpoint does not
 claim conversations, replies, reactions, edit/delete events, attachments,
 multi-device fan-out, ratchets, forward secrecy, post-compromise recovery, or
 concurrent standalone-CLI/resident writes; ADR 0035 records those limits.
+
+## Verified private-contact checkpoint (2026-07-26)
+
+Feature commit:
+`32c51dcd195145ca6e93f6de594dad3b2549afed`
+(`feat(cocodex): add verified private contacts`).
+
+This checkpoint replaces manual recipient UUID/fingerprint/certificate entry
+with a bounded Server-authoritative directory of approved certificate-bearing
+devices. The resident Client verifies each self-signed certificate, keeps raw
+certificate/key material out of the renderer, binds the protected offline
+cache to the local device and authenticated Server authority, and requires an
+independently confirmed fingerprint before local trust. Certificate publication
+is idempotent and rate-limited.
+
+The adversarial repair also covers stale offline contacts: if a cached
+recipient is revoked, the terminal Server rejection removes only that
+ciphertext frame, marks its encrypted local-history entry **Not sent**, removes
+the stale resident contact, and continues draining later durable events.
+
+Real three-process command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `259 expect()` calls in
+`13.30s`. One real Server process and isolated Stephen/Kai Client processes
+discovered each other without exposing certificates, rejected a mismatched
+trust command, sent private ciphertext in both directions, restarted and used
+the authority-bound offline cache, then revoked cached Stephen. Kai visibly
+recovered the queued private message as rejected while a later queued shared
+chat event was accepted, proving the outbox did not head-of-line block.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `135 pass`, `0 fail`, `1214 expect()` calls
+across 33 files in `54.69s`. This includes strict protocol schemas, directory
+filtering, real WSS discovery/revocation, certificate-publication throttling,
+authority-bound cache validation, terminal outbox continuation, encrypted
+history rejection state, bridge redaction, and the process harness.
+
+Full existing OpenCodex regression command:
+
+```powershell
+$env:OCX_TEST_BATCH_SIZE='5'
+$env:OCX_TEST_WORKER_SIZE='50'
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; relevant output: all `343` root test files completed across
+seven fresh workers in `255s`. The initial unisolated `bun test` attempt
+exceeded its 15-minute outer command window and is not used as evidence; the
+repository's isolated batched harness completed successfully without disabled
+or skipped files.
+
+Static, privacy, and executable commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`.
+The separate applications compiled to `dist/cocodex-client.exe` and
+`apps/cocodex-server/dist/cocodex-server.exe`.
+
+GUI commands:
+
+```powershell
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`; GUI tests reported `115 pass`, `0 fail`, and
+`560 expect()` calls. Lint retained one pre-existing
+`use-app-route-state.ts:84` hook warning and no errors. The production build
+completed with the existing large-chunk advisory.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. A
+post-run process/listener check found no Bun, CoCodex Client, or CoCodex Server
+process and no associated listener. ADR 0036 records the selected architecture,
+security invariants, open-source concept references, licensing decision, and
+remaining deferred messaging lifecycle work.
