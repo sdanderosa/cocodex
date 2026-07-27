@@ -1527,7 +1527,7 @@ post-run process check found no Bun, CoCodex Client, or CoCodex Server process.
 
 ## Explicit encrypted project invitation checkpoint (2026-07-27)
 
-Feature commit: `PENDING_FEATURE_COMMIT`.
+Feature commit: `6f139d5fbef192556fb335b2c4bb2716d60d3d7d`.
 
 This checkpoint supersedes the unsolicited-initial-membership limitation
 recorded in the preceding atomic-creation checkpoint. `project.create` is now
