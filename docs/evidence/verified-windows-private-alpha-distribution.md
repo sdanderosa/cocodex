@@ -49,6 +49,11 @@ The complete hardened CoCodex suite subsequently passed with 172 tests, 0
 failures, and 1,996 assertions. That run includes the real three-process
 Stephen/Kai private-alpha recovery test.
 
+A later loaded run exposed the mailbox-receipt poller's anomalous 10-second
+timeout versus the harness-wide 30-second bound. After aligning that bound, the
+real three-process private-alpha test passed three consecutive repetitions
+(36.6 s, 37.1 s, and 37.5 s).
+
 ## Exact installer with standard npm
 
 An isolated npm 11.6.2 runtime and Node 24.14.0 installed the earlier exact

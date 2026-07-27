@@ -156,13 +156,14 @@ async function waitForMailbox(
   path: string,
   expectedMinimumReceipts: number,
   expectedRemoteReceipt?: { messageId: string; receipt: "delivered" | "read" },
+  timeoutMs = 30_000,
 ): Promise<{
   cursor: number;
   receipts: Array<{ messageId: string; sequence: number }>;
   receiptCursor?: number;
   remoteReceipts?: Array<{ messageId: string; receipt: "delivered" | "read"; sequence: number }>;
 }> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (existsSync(path)) {
       const mailbox = JSON.parse(readFileSync(path, "utf8")) as {
