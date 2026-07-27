@@ -20,6 +20,8 @@
 - authenticated prompt presence and lifecycle hardening `203dc406`, with
   evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
   presence, and disconnected-UI hardening `76647c34`.
+- authoritative shared chats and chat-bound encrypted collaboration
+  `3bf90fe9`; see `docs/evidence/authoritative-shared-chats.md`.
 - Branch: `feat/cocodex-foundation`
 - Platform: Windows
 - Status: focused private-alpha path passes; release gate remains incomplete
