@@ -252,6 +252,8 @@ describe("server local API auth", () => {
     expect(isLoopbackHostname(undefined)).toBe(true);
     expect(isLoopbackHostname("")).toBe(true);
     expect(isLoopbackHostname("localhost")).toBe(true);
+    expect(isLoopbackHostname("tauri.localhost")).toBe(true);
+    expect(isLoopbackHostname("window.tauri.localhost")).toBe(true);
     expect(isLoopbackHostname("127.0.0.1")).toBe(true);
     expect(isLoopbackHostname("::1")).toBe(true);
     expect(isApiAuthRequired(config())).toBe(false);

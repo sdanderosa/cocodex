@@ -114,7 +114,16 @@ export function configuredApiAuthToken(_config: OcxConfig): string | undefined {
 
 export function isLoopbackHostname(hostname: string | undefined): boolean {
   const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase();
-  return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+  // Tauri 2 serves embedded assets from `http://tauri.localhost`. RFC 6761
+  // reserves the `.localhost` name space for loopback, so these origins are
+  // equivalent to the browser dashboard's localhost origin and must remain
+  // inside the local-only CORS boundary.
+  return normalized === ""
+    || normalized === "localhost"
+    || normalized.endsWith(".localhost")
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "[::1]";
 }
 
 export function isApiAuthRequired(config: OcxConfig): boolean {

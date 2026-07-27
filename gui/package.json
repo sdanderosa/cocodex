@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:info": "tauri info",
     "lint": "eslint .",
     "test": "bun test tests",
     "lint:i18n": "eslint src/pages src/components src/App.tsx src/ui.tsx",
@@ -24,6 +28,7 @@
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",

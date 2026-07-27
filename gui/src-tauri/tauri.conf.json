@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CoCodex",
+  "version": "0.1.0",
+  "identifier": "com.cocodex.desktop",
+  "build": {
+    "beforeDevCommand": "bun ../scripts/dev-tauri.ts",
+    "beforeBuildCommand": "bun run build",
+    "devUrl": "http://127.0.0.1:4179",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CoCodex",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:10100 ws://127.0.0.1:10100 ws: wss: https:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "category": "Utility",
+    "shortDescription": "A secure collaborative Codex workspace",
+    "longDescription": "CoCodex is a private collaborative workspace for shared projects, agents, and Codex sessions.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

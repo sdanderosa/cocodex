@@ -37,7 +37,11 @@ downloads or repairs a runtime on first launch and fails closed if installation
 policy omitted it. The existing `opencodex` and `ocx` commands remain
 compatibility surfaces for the inherited local proxy.
 
-The GUI remains the normal OpenCodex GUI. Open the **CoCodex** page to enroll
+The GUI is the shared React dashboard. In a source checkout it can run in a
+browser with `bun run dev:gui`, or inside the Tauri desktop shell with
+`bun run dev:tauri`. `bun run build:tauri` creates the native Windows bundle;
+the existing `build:gui` path still produces the browser/package assets. Open
+the **CoCodex** page to enroll
 the device, start the resident collaboration session, select a shared project,
 create an encrypted owner-only Co-Project, invite verified contacts, edit the
 Yjs prompt, and set the server-authoritative **Final Goal**.

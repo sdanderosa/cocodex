@@ -462,6 +462,7 @@ cd opencodex
 bun install
 bun run dev:proxy    # start the proxy API in dev mode
 bun run dev:gui      # start the dashboard dev server in another terminal
+bun run dev:tauri    # start the same dashboard in a Tauri desktop window
 bun x tsc --noEmit   # typecheck
 ```
 
@@ -473,6 +474,11 @@ the proxy API exposes `/healthz`, `/v1/responses`, `POST /v1/images/generations`
 ```bash
 bun run dev:gui
 ```
+
+The Tauri shell is a native delivery surface around the same React dashboard;
+it does not duplicate the web UI or move proxy/server authority into Rust.
+Use `bun run build:tauri` to create Windows MSI/NSIS bundles after installing
+the Rust toolchain and WebView2 prerequisites.
 
 See **[Contributing](./CONTRIBUTING.md)**.
 
