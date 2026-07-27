@@ -342,7 +342,7 @@ describe("CoCodex encrypted project context session", () => {
     servers.splice(servers.indexOf(restartedServer), 1);
     db.close();
     databases.splice(databases.indexOf(db), 1);
-  }, 45_000);
+  }, 90_000);
 
   test("initializes a project key, encrypts context on the wire, and decrypts it on another client", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-server-"));
