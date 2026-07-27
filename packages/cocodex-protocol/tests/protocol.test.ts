@@ -18,6 +18,8 @@ import {
   projectKeyInitializedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
+  projectInvitationDecisionTranscript,
+  projectInvitationSigningTranscript,
   projectMemberRemovedFrameSchema,
   projectServerFrameSchema,
   privateAcceptedFrameSchema,
@@ -262,6 +264,43 @@ describe("CoCodex protocol", () => {
     expect(clientFrameSchema.parse(createProject)).toEqual(createProject);
     expect(() => clientFrameSchema.parse({ ...createProject, extra: true })).toThrow();
     expect(() => clientFrameSchema.parse({ ...createProject, keyEpoch: 2 })).toThrow();
+    const invitation = {
+      version: 1 as const,
+      type: "project.invite.create" as const,
+      requestId: crypto.randomUUID(),
+      invitationId: crypto.randomUUID(),
+      projectId,
+      serverFingerprint: "AA:BB:CC:DD:EE:FF",
+      recipientDeviceId,
+      keyEpoch: 1,
+      envelope: keyEnvelope,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+      expiresAt: "2030-01-02T00:00:00.000Z",
+      nonce: Buffer.alloc(32, 9).toString("base64url"),
+      signature: Buffer.alloc(64, 10).toString("base64url"),
+    };
+    expect(clientFrameSchema.parse(invitation)).toEqual(invitation);
+    expect(() => clientFrameSchema.parse({ ...invitation, nonce: "not-random" })).toThrow();
+    const invitationTranscript = projectInvitationSigningTranscript({
+      ...invitation,
+      ownerDeviceId: senderDeviceId,
+    });
+    expect(invitationTranscript.equals(projectInvitationSigningTranscript({
+      ...invitation,
+      ownerDeviceId: senderDeviceId,
+    }))).toBeTrue();
+    expect(invitationTranscript.equals(projectInvitationSigningTranscript({
+      ...invitation,
+      ownerDeviceId: senderDeviceId,
+      recipientDeviceId: crypto.randomUUID(),
+    }))).toBeFalse();
+    expect(projectInvitationDecisionTranscript({
+      ...invitation,
+      ownerDeviceId: senderDeviceId,
+    }, "accept").equals(projectInvitationDecisionTranscript({
+      ...invitation,
+      ownerDeviceId: senderDeviceId,
+    }, "decline"))).toBeFalse();
     expect(clientFrameSchema.parse(contextUpdate)).toEqual(contextUpdate);
     const rotate = {
       version: 1 as const,

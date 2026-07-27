@@ -314,11 +314,56 @@ describe("three-process CoCodex private alpha", () => {
       type: "project.create",
       projectId: project.id,
       name: project.name,
-      memberDeviceIds: [kaiDevice.id],
+      memberDeviceIds: [],
+    });
+    await waitFor(stephen, line => line.source === "control" && line.id === createProjectRequest
+      && line.ok === true && line.projectId === project.id && line.created === true);
+    const beforeInvitationList = randomUUID();
+    kai.send({ id: beforeInvitationList, type: "project.list" });
+    const unauthorizedProjectList = await waitFor(kai, line =>
+      line.frame?.type === "project.list.result" && line.frame.requestId === beforeInvitationList);
+    expect(unauthorizedProjectList.frame.projects).toEqual([]);
+    const serverDatabaseBeforeAcceptance = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
+    expect(serverDatabaseBeforeAcceptance.query(`
+      SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?
+    `).get(project.id)).toEqual({ count: 1 });
+    serverDatabaseBeforeAcceptance.close();
+
+    const inviteProjectRequest = randomUUID();
+    stephen.send({
+      id: inviteProjectRequest,
+      type: "project.invite.create",
+      projectId: project.id,
+      recipientDeviceId: kaiDevice.id,
+    });
+    const incomingInvitation = await waitFor(kai, line =>
+      line.source === "project-invitations"
+      && line.invitations?.some((invitation: any) =>
+        invitation.projectId === project.id
+        && invitation.direction === "incoming"
+        && invitation.status === "pending"
+        && invitation.actionable === true));
+    const invitation = incomingInvitation.invitations.find((candidate: any) =>
+      candidate.projectId === project.id);
+    expect(await waitFor(stephen, line => line.source === "control"
+      && line.id === inviteProjectRequest && line.ok === true)).toMatchObject({
+      projectId: project.id,
+      invitationId: invitation.invitationId,
+      status: "pending",
+    });
+    expect(JSON.stringify(incomingInvitation)).not.toContain("sealedProjectKey");
+    expect(JSON.stringify(incomingInvitation)).not.toContain("ownerDeviceKeyCertificate");
+
+    const acceptInvitationRequest = randomUUID();
+    kai.send({
+      id: acceptInvitationRequest,
+      type: "project.invite.respond",
+      invitationId: invitation.invitationId,
+      decision: "accept",
     });
     await Promise.all([
-      waitFor(stephen, line => line.source === "control" && line.id === createProjectRequest
-        && line.ok === true && line.projectId === project.id && line.created === true),
+      waitFor(kai, line => line.source === "control" && line.id === acceptInvitationRequest
+        && line.ok === true && line.projectId === project.id && line.status === "accepted"),
       waitFor(kai, line => line.frame?.type === "project.changed"
         && line.frame.project?.id === project.id && line.frame.project?.role === "member"),
       waitFor(kai, line => line.source === "project-encryption"

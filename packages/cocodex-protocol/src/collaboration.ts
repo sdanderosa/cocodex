@@ -39,6 +39,16 @@ import {
   encryptedAgentResultChangedFrameSchema,
   encryptedAgentTaskFrameSchema,
 } from "./project-agent";
+import {
+  projectInvitationCancelFrameSchema,
+  projectInvitationChangedFrameSchema,
+  projectInvitationCreateFrameSchema,
+  projectInvitationCreatedFrameSchema,
+  projectInvitationListFrameSchema,
+  projectInvitationListResultFrameSchema,
+  projectInvitationRespondedFrameSchema,
+  projectInvitationRespondFrameSchema,
+} from "./project-invitation";
 
 const requestId = z.uuid();
 const projectId = z.uuid();
@@ -174,6 +184,10 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
     signature: z.string().min(64).max(256),
   }).strict(),
+  projectInvitationCreateFrameSchema,
+  projectInvitationListFrameSchema,
+  projectInvitationRespondFrameSchema,
+  projectInvitationCancelFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("device.key-certificate.publish"),
@@ -745,6 +759,10 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectListResultFrameSchema,
   projectCreatedFrameSchema,
   projectChangedFrameSchema,
+  projectInvitationListResultFrameSchema,
+  projectInvitationCreatedFrameSchema,
+  projectInvitationChangedFrameSchema,
+  projectInvitationRespondedFrameSchema,
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
   encryptedChatEventFrameSchema,

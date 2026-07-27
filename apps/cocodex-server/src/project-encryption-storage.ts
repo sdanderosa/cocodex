@@ -12,6 +12,10 @@ import {
   type SharedProject,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { removeProjectMember as removeMembership, requireProjectMembership } from "./shared-state";
+import {
+  expirePendingProjectInvitationsBeforeEpoch,
+  expirePendingProjectInvitationsForProject,
+} from "./project-invitations";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -484,16 +488,13 @@ export function createEncryptedProject(
   if (normalizedName.length < 1 || normalizedName.length > 120) {
     throw new Error("Project name must be 1-120 characters");
   }
-  if (!Array.isArray(values) || values.length < 1 || values.length > 128) {
-    throw new Error("Project creation requires 1-128 key envelopes");
+  if (!Array.isArray(values) || values.length !== 1) {
+    throw new Error("Project creation requires exactly the owner key envelope");
   }
   const envelopes = values.map(value => projectKeyEnvelopeSchema.parse(value));
   const recipientIds = envelopes.map(envelope => envelope.recipientDeviceId);
-  if (!recipientIds.includes(ownerDeviceId)) {
-    throw new Error("Project creation must include the owner device");
-  }
-  if (new Set(recipientIds).size !== recipientIds.length) {
-    throw new Error("Project creation contains duplicate recipients");
+  if (recipientIds[0] !== ownerDeviceId) {
+    throw new Error("Project creation may include only the owner device");
   }
   if (envelopes.some(envelope =>
     envelope.projectId !== projectId
@@ -520,8 +521,40 @@ export function createEncryptedProject(
   if (approved.length !== recipientIds.length) {
     throw new Error("Every project member device must be approved");
   }
+  const creationEnvelopesJson = JSON.stringify(
+    [...envelopes]
+      .sort((left, right) => left.recipientDeviceId.localeCompare(right.recipientDeviceId))
+      .map(envelope => JSON.parse(envelopeJson(envelope))),
+  );
 
   return db.transaction(() => {
+    const priorCreation = db.query(`
+      SELECT project_id AS projectId, name, owner_device_id AS ownerDeviceId,
+        envelopes_json AS envelopesJson, owner_signature AS ownerSignature
+      FROM encrypted_project_creations
+      WHERE creation_id = ?
+    `).get(creationId) as {
+      projectId: string;
+      name: string;
+      ownerDeviceId: string;
+      envelopesJson: string;
+      ownerSignature: string;
+    } | null;
+    if (priorCreation) {
+      if (priorCreation.projectId !== projectId
+        || priorCreation.name !== normalizedName
+        || priorCreation.ownerDeviceId !== ownerDeviceId
+        || priorCreation.envelopesJson !== creationEnvelopesJson
+        || priorCreation.ownerSignature !== signature) {
+        throw new Error("Project creation replay conflict");
+      }
+      return {
+        project: { id: projectId, name: normalizedName, role: "owner" as const },
+        keyEpoch: 1 as const,
+        envelopes,
+        created: false,
+      };
+    }
     const existing = db.query(`
       SELECT name, created_by_device_id AS createdByDeviceId
       FROM projects WHERE id = ?
@@ -576,6 +609,20 @@ export function createEncryptedProject(
     if (created !== initialized.created) {
       throw new Error("Project creation replay state is inconsistent");
     }
+    db.query(`
+      INSERT INTO encrypted_project_creations (
+        creation_id, project_id, name, owner_device_id,
+        envelopes_json, owner_signature, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      creationId,
+      projectId,
+      normalizedName,
+      ownerDeviceId,
+      creationEnvelopesJson,
+      signature,
+      now.toISOString(),
+    );
     return {
       project: { id: projectId, name: normalizedName, role: "owner" as const },
       keyEpoch: 1 as const,
@@ -698,6 +745,7 @@ export function rotateProjectKeyEpoch(
         ) VALUES (?, ?, ?, ?, ?, ?, 0)
       `).run(projectId, keyEpoch, rotationId, ownerDeviceId, timestamp, timestamp);
     }
+    expirePendingProjectInvitationsBeforeEpoch(db, projectId, keyEpoch, now);
     return {
       projectId,
       currentEpoch: keyEpoch,
@@ -747,6 +795,7 @@ export function removeProjectMemberAndInvalidateKeys(
       SET rotation_required = 1, updated_at = ?
       WHERE project_id = ?
     `).run(now.toISOString(), projectId);
+    expirePendingProjectInvitationsForProject(db, projectId, "key-rotation-required", now);
   });
   return cancelledTasks;
 }
@@ -943,6 +992,7 @@ export function removeProjectMemberAndRotateKeys(
       WHERE project_id = ? AND current_epoch = ?
     `).run(keyEpoch, rotationId, ownerDeviceId, timestamp, projectId, expectedEpoch);
     if (advanced.changes !== 1) throw new Error("Project key epoch changed during member removal");
+    expirePendingProjectInvitationsBeforeEpoch(db, projectId, keyEpoch, now);
     db.query(`
       INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
       VALUES ('project.key.rotated-after-removal', ?, ?, ?, ?)

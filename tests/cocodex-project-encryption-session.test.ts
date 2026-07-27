@@ -126,7 +126,7 @@ async function waitUntilConnectedViaProjectList(session: JsonSessionHarness): Pr
 }
 
 describe("CoCodex encrypted project context session", () => {
-  test("creates an atomically encrypted Co-Project from one client for a verified contact", async () => {
+  test("creates owner-only, then requires the verified recipient to accept a project invitation", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-server-"));
     const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-stephen-"));
     const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-kai-"));
@@ -188,11 +188,56 @@ describe("CoCodex encrypted project context session", () => {
       type: "project.create",
       projectId,
       name: "Nocturne Launcher",
-      memberDeviceIds: [kaiConnection.deviceId],
+      memberDeviceIds: [],
+    });
+    await stephen.waitFor(event => event.source === "control" && event.id === requestId
+      && event.ok === true && event.projectId === projectId);
+    const beforeInviteListId = randomUUID();
+    kai.send({ id: beforeInviteListId, type: "project.list" });
+    const beforeInvite = await kai.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "project.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === beforeInviteListId);
+    expect((beforeInvite.frame as Record<string, unknown>).projects).toEqual([]);
+    expect(db.query("SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?").get(projectId))
+      .toEqual({ count: 1 });
+    expect(loadProjectKeyState(kaiPaths.projectKeys, projectId)).toBeUndefined();
+
+    const inviteRequestId = randomUUID();
+    stephen.send({
+      id: inviteRequestId,
+      type: "project.invite.create",
+      projectId,
+      recipientDeviceId: kaiConnection.deviceId,
+    });
+    const incomingInvitation = await kai.waitFor(event =>
+      event.source === "project-invitations"
+      && Array.isArray(event.invitations)
+      && (event.invitations as Array<Record<string, unknown>>).some(invitation =>
+        invitation.projectId === projectId
+        && invitation.direction === "incoming"
+        && invitation.status === "pending"
+        && invitation.actionable === true));
+    const invitation = (incomingInvitation.invitations as Array<Record<string, unknown>>)
+      .find(candidate => candidate.projectId === projectId)!;
+    expect(await stephen.waitFor(event => event.source === "control"
+      && event.id === inviteRequestId && event.ok === true)).toMatchObject({
+      projectId,
+      invitationId: invitation.invitationId,
+      status: "pending",
+    });
+    expect(kai.serializedEvents()).not.toContain("sealedProjectKey");
+    expect(kai.serializedEvents()).not.toContain("ownerDeviceKeyCertificate");
+
+    const acceptRequestId = randomUUID();
+    kai.send({
+      id: acceptRequestId,
+      type: "project.invite.respond",
+      invitationId: invitation.invitationId,
+      decision: "accept",
     });
     await Promise.all([
-      stephen.waitFor(event => event.source === "control" && event.id === requestId
-        && event.ok === true && event.projectId === projectId),
+      kai.waitFor(event => event.source === "control" && event.id === acceptRequestId
+        && event.ok === true && event.projectId === projectId && event.status === "accepted"),
       kai.waitFor(event => event.source === "server"
         && (event.frame as Record<string, unknown> | undefined)?.type === "project.changed"
         && ((event.frame as Record<string, unknown>).project as Record<string, unknown> | undefined)?.id === projectId),

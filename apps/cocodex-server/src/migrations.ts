@@ -474,4 +474,42 @@ CREATE TABLE private_message_receipts (
 CREATE INDEX private_message_receipts_sender_sequence
   ON private_message_receipts(sender_device_id, sequence);`,
   },
+  {
+    version: 27,
+    sql: `
+CREATE TABLE project_invitations (
+  invitation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  server_fingerprint TEXT NOT NULL,
+  owner_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  recipient_device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 0),
+  envelope_json TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  owner_signature TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled', 'expired')),
+  response_signature TEXT,
+  responded_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX project_invitations_pending_recipient
+  ON project_invitations(project_id, recipient_device_id)
+  WHERE status = 'pending';
+CREATE INDEX project_invitations_recipient_status
+  ON project_invitations(recipient_device_id, status, expires_at, created_at);
+CREATE INDEX project_invitations_owner_status
+  ON project_invitations(owner_device_id, status, created_at);
+CREATE TABLE encrypted_project_creations (
+  creation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  owner_device_id TEXT NOT NULL REFERENCES devices(id),
+  envelopes_json TEXT NOT NULL,
+  owner_signature TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);`,
+  },
 ];

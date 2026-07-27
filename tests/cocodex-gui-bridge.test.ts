@@ -59,6 +59,31 @@ describe("CoCodex GUI bridge", () => {
         }],
       })}\n`);
       output.write(`${JSON.stringify({
+        source: "project-invitations",
+        invitations: [{
+          invitationId: "project-invitation",
+          projectId: "invited-project",
+          projectName: "Nocturne Launcher",
+          ownerDeviceId: "owner-device",
+          ownerDisplayName: "Stephen",
+          ownerFingerprint: "OWNER-FINGERPRINT",
+          recipientDeviceId: "recipient-device",
+          recipientDisplayName: "Kai",
+          recipientFingerprint: "RECIPIENT-FINGERPRINT",
+          keyEpoch: 1,
+          issuedAt: "2030-01-01T00:00:00.000Z",
+          expiresAt: "2030-01-02T00:00:00.000Z",
+          status: "pending",
+          direction: "incoming",
+          trusted: true,
+          actionable: true,
+          envelope: { sealedProjectKey: "INVITATION_SEALED_KEY_CANARY" },
+          ownerDeviceKeyCertificate: "INVITATION_CERTIFICATE_CANARY",
+          ownerSignature: "INVITATION_SIGNATURE_CANARY",
+          projectKey: "INVITATION_PLAINTEXT_KEY_CANARY",
+        }],
+      })}\n`);
+      output.write(`${JSON.stringify({
         source: "server",
         frame: {
           type: "private.receipt",
@@ -170,7 +195,22 @@ describe("CoCodex GUI bridge", () => {
       type: "project.create",
       projectId: crypto.randomUUID(),
       name: "Nocturne Launcher",
-      memberDeviceIds: ["contact-device"],
+      memberDeviceIds: [],
+    }).accepted).toBe(true);
+    expect(bridge.command({ type: "project.invite.list" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.invite.create",
+      projectId: "invited-project",
+      recipientDeviceId: "contact-device",
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.invite.respond",
+      invitationId: "project-invitation",
+      decision: "accept",
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.invite.cancel",
+      invitationId: "project-invitation",
     }).accepted).toBe(true);
     expect(bridge.command({
       type: "context.get",
@@ -254,6 +294,12 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
     expect(received.some((value: any) => value.type === "project.create"
       && value.name === "Nocturne Launcher")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.invite.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.invite.create"
+      && value.recipientDeviceId === "contact-device")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.invite.respond"
+      && value.decision === "accept")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.invite.cancel")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
@@ -319,6 +365,33 @@ describe("CoCodex GUI bridge", () => {
         projectCapable: true,
       }],
     });
+    const projectInvitationsEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "project-invitations");
+    expect(projectInvitationsEvent?.value).toEqual({
+      source: "project-invitations",
+      invitations: [{
+        invitationId: "project-invitation",
+        projectId: "invited-project",
+        projectName: "Nocturne Launcher",
+        ownerDeviceId: "owner-device",
+        ownerDisplayName: "Stephen",
+        ownerFingerprint: "OWNER-FINGERPRINT",
+        recipientDeviceId: "recipient-device",
+        recipientDisplayName: "Kai",
+        recipientFingerprint: "RECIPIENT-FINGERPRINT",
+        keyEpoch: 1,
+        issuedAt: "2030-01-01T00:00:00.000Z",
+        expiresAt: "2030-01-02T00:00:00.000Z",
+        status: "pending",
+        direction: "incoming",
+        trusted: true,
+        actionable: true,
+      }],
+    });
+    expect(JSON.stringify(projectInvitationsEvent)).not.toContain("INVITATION_SEALED_KEY_CANARY");
+    expect(JSON.stringify(projectInvitationsEvent)).not.toContain("INVITATION_CERTIFICATE_CANARY");
+    expect(JSON.stringify(projectInvitationsEvent)).not.toContain("INVITATION_SIGNATURE_CANARY");
+    expect(JSON.stringify(projectInvitationsEvent)).not.toContain("INVITATION_PLAINTEXT_KEY_CANARY");
     const keyEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "project.key.result");
     expect(keyEvent?.value).toEqual({

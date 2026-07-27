@@ -78,6 +78,10 @@ const RENDERER_FRAME_FIELDS = new Set([
 const ALLOWED_COMMANDS = new Set([
   "project.list",
   "project.create",
+  "project.invite.list",
+  "project.invite.create",
+  "project.invite.respond",
+  "project.invite.cancel",
   "project.key.get",
   "project.key.share",
   "project.key.initialize",
@@ -174,6 +178,34 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           fingerprint: contact.fingerprint,
           trusted: contact.trusted === true,
           projectCapable: contact.projectCapable === true,
+        };
+      }),
+    };
+  }
+  if (record.source === "project-invitations" && Array.isArray(record.invitations)) {
+    return {
+      source: "project-invitations",
+      invitations: record.invitations.map((candidate: unknown) => {
+        const invitation = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          invitationId: invitation.invitationId,
+          projectId: invitation.projectId,
+          projectName: invitation.projectName,
+          ownerDeviceId: invitation.ownerDeviceId,
+          ownerDisplayName: invitation.ownerDisplayName,
+          ownerFingerprint: invitation.ownerFingerprint,
+          recipientDeviceId: invitation.recipientDeviceId,
+          recipientDisplayName: invitation.recipientDisplayName,
+          recipientFingerprint: invitation.recipientFingerprint,
+          keyEpoch: invitation.keyEpoch,
+          issuedAt: invitation.issuedAt,
+          expiresAt: invitation.expiresAt,
+          status: invitation.status,
+          direction: invitation.direction,
+          trusted: invitation.trusted === true,
+          actionable: invitation.actionable === true,
         };
       }),
     };

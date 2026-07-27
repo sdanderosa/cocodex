@@ -13,6 +13,10 @@ import {
   projectMemberListFrameSchema,
   projectCreatedFrameSchema,
   projectChangedFrameSchema,
+  projectInvitationChangedFrameSchema,
+  projectInvitationCreatedFrameSchema,
+  projectInvitationListResultFrameSchema,
+  projectInvitationRespondedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   privateContactSnapshotFrameSchema,
   privateAcceptedFrameSchema,
@@ -54,6 +58,12 @@ import {
   privateReceiptsAfter,
 } from "./private-messages";
 import { listPrivateContacts, privateContactDirectoryRevision } from "./private-contacts";
+import {
+  cancelProjectInvitation,
+  createProjectInvitation,
+  listProjectInvitations,
+  respondToProjectInvitation,
+} from "./project-invitations";
 import { appendEncryptedChatEventResult, encryptedChatEventsAfter } from "./encrypted-chat";
 import { appendEncryptedPromptUpdateResult, encryptedPromptUpdatesAfter } from "./encrypted-prompt";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "./encrypted-artifacts";
@@ -838,6 +848,105 @@ export function startCoCodexServer(
                   envelope,
                 });
               }
+            }
+            return;
+          }
+          if (message.type === "project.invite.list") {
+            socket.send(JSON.stringify(projectInvitationListResultFrameSchema.parse({
+              version: 1,
+              type: "project.invite.list.result",
+              requestId,
+              invitations: listProjectInvitations(db, deviceId),
+            })));
+            return;
+          }
+          if (message.type === "project.invite.create") {
+            const result = createProjectInvitation(
+              db,
+              deviceId,
+              certificateFingerprint,
+              message,
+            );
+            socket.send(JSON.stringify(projectInvitationCreatedFrameSchema.parse({
+              version: 1,
+              type: "project.invite.created",
+              requestId,
+              invitation: result.invitation,
+              created: result.created,
+            })));
+            if (result.created) {
+              sendToDevice(result.invitation.recipientDeviceId, projectInvitationChangedFrameSchema.parse({
+                version: 1,
+                type: "project.invite.changed",
+                invitation: result.invitation,
+              }));
+            }
+            return;
+          }
+          if (message.type === "project.invite.respond") {
+            const result = respondToProjectInvitation(
+              db,
+              deviceId,
+              certificateFingerprint,
+              message.invitationId,
+              message.decision,
+              message.signature,
+            );
+            socket.send(JSON.stringify(projectInvitationRespondedFrameSchema.parse({
+              version: 1,
+              type: "project.invite.responded",
+              requestId,
+              invitation: result.invitation,
+              created: result.created,
+            })));
+            if (result.created) {
+              sendToDevice(result.invitation.ownerDeviceId, projectInvitationChangedFrameSchema.parse({
+                version: 1,
+                type: "project.invite.changed",
+                invitation: result.invitation,
+              }));
+            }
+            if (result.invitation.status === "accepted") {
+              const project = {
+                id: result.invitation.projectId,
+                name: result.invitation.projectName,
+                role: "member" as const,
+              };
+              sendToDevice(deviceId, projectChangedFrameSchema.parse({
+                version: 1,
+                type: "project.changed",
+                project,
+              }));
+              sendToDevice(deviceId, {
+                version: 1,
+                type: "project.key.changed",
+                projectId: result.invitation.projectId,
+                envelope: result.invitation.envelope,
+              });
+            }
+            return;
+          }
+          if (message.type === "project.invite.cancel") {
+            const result = cancelProjectInvitation(
+              db,
+              deviceId,
+              certificateFingerprint,
+              message.invitationId,
+              message.signature,
+            );
+            socket.send(JSON.stringify(projectInvitationRespondedFrameSchema.parse({
+              version: 1,
+              type: "project.invite.responded",
+              requestId,
+              invitation: result.invitation,
+              created: result.created,
+            })));
+            if (result.created) {
+              sendToDevice(result.invitation.recipientDeviceId, projectInvitationChangedFrameSchema.parse({
+                version: 1,
+                type: "project.invite.changed",
+                invitation: result.invitation,
+              }));
             }
             return;
           }

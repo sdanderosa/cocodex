@@ -2,15 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import {
   decodeInvitation,
+  createDeviceKeyCertificate,
   enrollmentSigningTranscript,
   projectCreationSigningTranscript,
   projectContentSigningTranscript,
   projectKeyEnvelopeSigningTranscript,
+  projectInvitationDecisionTranscript,
+  projectInvitationSigningTranscript,
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
 } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { approveDevice, createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
 import { createInvitation } from "../src/invitations";
 import {
   getEncryptedProjectContext,
@@ -24,6 +27,12 @@ import {
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "../src/project-encryption-storage";
+import {
+  cancelProjectInvitation,
+  createProjectInvitation,
+  listProjectInvitations,
+  respondToProjectInvitation,
+} from "../src/project-invitations";
 import { listEncryptedArtifacts, publishEncryptedArtifact } from "../src/encrypted-artifacts";
 import { listEncryptedFileReferences, publishEncryptedFileReference } from "../src/encrypted-file-references";
 import { addProjectMember, createProject } from "../src/shared-state";
@@ -77,6 +86,15 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): Test
     signature,
   }, now);
   expect(approveDevice(db, enrolled.fingerprint, now)).toBeTrue();
+  db.query("UPDATE devices SET device_key_certificate = ? WHERE id = ?").run(
+    createDeviceKeyCertificate(enrolled.id, {
+      publicKeyPem: signing.publicKey,
+      privateKeyPem: signing.privateKey,
+      messagingPublicKeyPem: messaging.publicKey,
+      projectWrapPublicKeyPem: projectWrap.publicKey,
+    }),
+    enrolled.id,
+  );
   return {
     id: enrolled.id,
     publicKey: signing.publicKey,
@@ -104,6 +122,36 @@ function keyEnvelope(
   return {
     ...unsigned,
     signature: sign(null, projectKeyEnvelopeSigningTranscript(unsigned), sender.privateKey).toString("base64url"),
+  };
+}
+
+function projectInvitationFrame(
+  projectId: string,
+  owner: TestDevice,
+  recipient: TestDevice,
+  now = new Date("2027-01-01T00:00:00.000Z"),
+  keyEpoch = 1,
+) {
+  const invitationId = randomUUID();
+  const envelope = keyEnvelope(projectId, owner, recipient.id, keyEpoch);
+  const input = {
+    invitationId,
+    projectId,
+    serverFingerprint: "AAAA-BBBB-CCCC-DDDD",
+    ownerDeviceId: owner.id,
+    recipientDeviceId: recipient.id,
+    keyEpoch,
+    envelope,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 60 * 60 * 1_000).toISOString(),
+    nonce: randomBytes(32).toString("base64url"),
+  };
+  return {
+    version: 1 as const,
+    type: "project.invite.create" as const,
+    requestId: randomUUID(),
+    ...input,
+    signature: sign(null, projectInvitationSigningTranscript(input), owner.privateKey).toString("base64url"),
   };
 }
 
@@ -183,13 +231,9 @@ describe("opaque project-encryption server storage", () => {
     const db = openDatabase(":memory:");
     try {
       const owner = approvedDevice(db, "Stephen");
-      const member = approvedDevice(db, "Kai");
       const projectId = randomUUID();
       const name = "Nocturne Launcher";
-      const envelopes = [
-        keyEnvelope(projectId, owner, owner.id),
-        keyEnvelope(projectId, owner, member.id),
-      ];
+      const envelopes = [keyEnvelope(projectId, owner, owner.id)];
       const signature = sign(null, projectCreationSigningTranscript({
         projectId,
         name,
@@ -206,7 +250,7 @@ describe("opaque project-encryption server storage", () => {
         created: true,
       });
       expect(db.query("SELECT role FROM project_members WHERE project_id = ? ORDER BY role DESC")
-        .all(projectId)).toEqual([{ role: "owner" }, { role: "member" }]);
+        .all(projectId)).toEqual([{ role: "owner" }]);
       expect(db.query("SELECT current_epoch AS currentEpoch FROM project_key_epochs WHERE project_id = ?")
         .get(projectId)).toEqual({ currentEpoch: 1 });
       expect(createEncryptedProject(
@@ -215,10 +259,7 @@ describe("opaque project-encryption server storage", () => {
       expect(() => createEncryptedProject(
         db, projectId, name, owner.id, randomUUID(), envelopes, signature,
       )).toThrow("already been initialized");
-      const changedEnvelopes = [
-        envelopes[0],
-        keyEnvelope(projectId, owner, member.id),
-      ];
+      const changedEnvelopes = [keyEnvelope(projectId, owner, owner.id)];
       const changedSignature = sign(null, projectCreationSigningTranscript({
         projectId,
         name,
@@ -230,7 +271,8 @@ describe("opaque project-encryption server storage", () => {
       )).toThrow("replay conflict");
 
       const rejectedProjectId = randomUUID();
-      const incomplete = [keyEnvelope(rejectedProjectId, owner, member.id)];
+      const other = approvedDevice(db, "Kai");
+      const incomplete = [keyEnvelope(rejectedProjectId, owner, other.id)];
       const rejectedSignature = sign(null, projectCreationSigningTranscript({
         projectId: rejectedProjectId,
         name: "Rejected",
@@ -239,27 +281,24 @@ describe("opaque project-encryption server storage", () => {
       }), owner.privateKey).toString("base64url");
       expect(() => createEncryptedProject(
         db, rejectedProjectId, "Rejected", owner.id, randomUUID(), incomplete, rejectedSignature,
-      )).toThrow("include the owner");
+      )).toThrow("only the owner");
       expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
         .get(rejectedProjectId)).toEqual({ count: 0 });
 
-      const revoked = approvedDevice(db, "Revoked");
-      db.query("UPDATE devices SET status = 'revoked', revoked_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), revoked.id);
       const revokedProjectId = randomUUID();
       const revokedEnvelopes = [
         keyEnvelope(revokedProjectId, owner, owner.id),
-        keyEnvelope(revokedProjectId, owner, revoked.id),
+        keyEnvelope(revokedProjectId, owner, other.id),
       ];
       const revokedSignature = sign(null, projectCreationSigningTranscript({
         projectId: revokedProjectId,
-        name: "Revoked member",
+        name: "Unsolicited member",
         ownerDeviceId: owner.id,
         envelopes: revokedEnvelopes,
       }), owner.privateKey).toString("base64url");
       expect(() => createEncryptedProject(
-        db, revokedProjectId, "Revoked member", owner.id, randomUUID(), revokedEnvelopes, revokedSignature,
-      )).toThrow("must be approved");
+        db, revokedProjectId, "Unsolicited member", owner.id, randomUUID(), revokedEnvelopes, revokedSignature,
+      )).toThrow("exactly the owner");
       expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
         .get(revokedProjectId)).toEqual({ count: 0 });
 
@@ -268,6 +307,288 @@ describe("opaque project-encryption server storage", () => {
       )).toThrow("signature");
       expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
         .get(projectId)).toEqual({ count: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("requires an addressed signed acceptance before atomically adding membership and its key", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const owner = approvedDevice(db, "Stephen");
+      const recipient = approvedDevice(db, "Kai");
+      const outsider = approvedDevice(db, "Outsider");
+      const projectId = randomUUID();
+      const ownerEnvelope = keyEnvelope(projectId, owner, owner.id);
+      const creationSignature = sign(null, projectCreationSigningTranscript({
+        projectId,
+        name: "Invitation project",
+        ownerDeviceId: owner.id,
+        envelopes: [ownerEnvelope],
+      }), owner.privateKey).toString("base64url");
+      createEncryptedProject(
+        db,
+        projectId,
+        "Invitation project",
+        owner.id,
+        randomUUID(),
+        [ownerEnvelope],
+        creationSignature,
+        now,
+      );
+
+      const frame = projectInvitationFrame(projectId, owner, recipient, now);
+      const created = createProjectInvitation(
+        db,
+        owner.id,
+        frame.serverFingerprint,
+        frame,
+        now,
+      );
+      expect(created.created).toBeTrue();
+      expect(createProjectInvitation(db, owner.id, frame.serverFingerprint, frame, now).created).toBeFalse();
+      expect(db.query("SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?")
+        .get(projectId)).toEqual({ count: 1 });
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM project_key_envelopes
+        WHERE project_id = ? AND recipient_device_id = ?
+      `).get(projectId, recipient.id)).toEqual({ count: 0 });
+      expect(listProjectInvitations(db, recipient.id, now)[0]).toMatchObject({
+        invitationId: frame.invitationId,
+        status: "pending",
+        recipientDeviceId: recipient.id,
+      });
+
+      const signingInput = {
+        invitationId: frame.invitationId,
+        projectId,
+        serverFingerprint: frame.serverFingerprint,
+        ownerDeviceId: owner.id,
+        recipientDeviceId: recipient.id,
+        keyEpoch: 1,
+        envelope: frame.envelope,
+        issuedAt: frame.issuedAt,
+        expiresAt: frame.expiresAt,
+        nonce: frame.nonce,
+      };
+      const outsiderSignature = sign(
+        null,
+        projectInvitationDecisionTranscript(signingInput, "accept"),
+        outsider.privateKey,
+      ).toString("base64url");
+      expect(() => respondToProjectInvitation(
+        db,
+        outsider.id,
+        frame.serverFingerprint,
+        frame.invitationId,
+        "accept",
+        outsiderSignature,
+        now,
+      )).toThrow("not addressed");
+      const acceptanceSignature = sign(
+        null,
+        projectInvitationDecisionTranscript(signingInput, "accept"),
+        recipient.privateKey,
+      ).toString("base64url");
+      const accepted = respondToProjectInvitation(
+        db,
+        recipient.id,
+        frame.serverFingerprint,
+        frame.invitationId,
+        "accept",
+        acceptanceSignature,
+        now,
+      );
+      expect(accepted).toMatchObject({ created: true, invitation: { status: "accepted" } });
+      expect(respondToProjectInvitation(
+        db,
+        recipient.id,
+        frame.serverFingerprint,
+        frame.invitationId,
+        "accept",
+        acceptanceSignature,
+        now,
+      ).created).toBeFalse();
+      expect(createProjectInvitation(
+        db,
+        owner.id,
+        frame.serverFingerprint,
+        frame,
+        now,
+      )).toMatchObject({ created: false, invitation: { status: "accepted" } });
+      expect(db.query(`
+        SELECT role FROM project_members WHERE project_id = ? AND device_id = ?
+      `).get(projectId, recipient.id)).toEqual({ role: "member" });
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM project_key_envelopes
+        WHERE project_id = ? AND key_epoch = 1 AND recipient_device_id = ?
+      `).get(projectId, recipient.id)).toEqual({ count: 1 });
+      expect(db.query(`
+        SELECT event_type AS eventType FROM audit_events WHERE subject_id = ?
+      `).get(frame.invitationId)).toEqual({ eventType: "project.invite.accepted" });
+
+      const secondRecipient = approvedDevice(db, "Angela");
+      const declinedFrame = projectInvitationFrame(projectId, owner, secondRecipient, now);
+      createProjectInvitation(db, owner.id, declinedFrame.serverFingerprint, declinedFrame, now);
+      const declinedInput = {
+        invitationId: declinedFrame.invitationId,
+        projectId,
+        serverFingerprint: declinedFrame.serverFingerprint,
+        ownerDeviceId: owner.id,
+        recipientDeviceId: secondRecipient.id,
+        keyEpoch: 1,
+        envelope: declinedFrame.envelope,
+        issuedAt: declinedFrame.issuedAt,
+        expiresAt: declinedFrame.expiresAt,
+        nonce: declinedFrame.nonce,
+      };
+      const declinedSignature = sign(
+        null,
+        projectInvitationDecisionTranscript(declinedInput, "decline"),
+        secondRecipient.privateKey,
+      ).toString("base64url");
+      expect(respondToProjectInvitation(
+        db,
+        secondRecipient.id,
+        declinedFrame.serverFingerprint,
+        declinedFrame.invitationId,
+        "decline",
+        declinedSignature,
+        now,
+      )).toMatchObject({ invitation: { status: "declined" } });
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM project_members WHERE project_id = ? AND device_id = ?
+      `).get(projectId, secondRecipient.id)).toEqual({ count: 0 });
+
+      const cancelRecipient = approvedDevice(db, "Sue");
+      const cancelledFrame = projectInvitationFrame(projectId, owner, cancelRecipient, now);
+      createProjectInvitation(db, owner.id, cancelledFrame.serverFingerprint, cancelledFrame, now);
+      const cancelledInput = {
+        invitationId: cancelledFrame.invitationId,
+        projectId,
+        serverFingerprint: cancelledFrame.serverFingerprint,
+        ownerDeviceId: owner.id,
+        recipientDeviceId: cancelRecipient.id,
+        keyEpoch: 1,
+        envelope: cancelledFrame.envelope,
+        issuedAt: cancelledFrame.issuedAt,
+        expiresAt: cancelledFrame.expiresAt,
+        nonce: cancelledFrame.nonce,
+      };
+      const cancelSignature = sign(
+        null,
+        projectInvitationDecisionTranscript(cancelledInput, "cancel"),
+        owner.privateKey,
+      ).toString("base64url");
+      expect(cancelProjectInvitation(
+        db,
+        owner.id,
+        cancelledFrame.serverFingerprint,
+        cancelledFrame.invitationId,
+        cancelSignature,
+        now,
+      )).toMatchObject({ invitation: { status: "cancelled" } });
+
+      const tamperRecipient = approvedDevice(db, "Tamper target");
+      const tamperedFrame = projectInvitationFrame(projectId, owner, tamperRecipient, now);
+      const tamperedSealedKey = Buffer.from(tamperedFrame.envelope.sealedProjectKey, "base64url");
+      tamperedSealedKey[0] ^= 1;
+      expect(() => createProjectInvitation(
+        db,
+        owner.id,
+        tamperedFrame.serverFingerprint,
+        {
+          ...tamperedFrame,
+          envelope: {
+            ...tamperedFrame.envelope,
+            sealedProjectKey: tamperedSealedKey.toString("base64url"),
+          },
+        },
+        now,
+      )).toThrow("envelope signature is invalid");
+      const tamperedOwnerSignature = Buffer.from(tamperedFrame.signature, "base64url");
+      tamperedOwnerSignature[0] ^= 1;
+      expect(() => createProjectInvitation(
+        db,
+        owner.id,
+        tamperedFrame.serverFingerprint,
+        { ...tamperedFrame, signature: tamperedOwnerSignature.toString("base64url") },
+        now,
+      )).toThrow("invitation signature is invalid");
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM project_invitations WHERE invitation_id = ?
+      `).get(tamperedFrame.invitationId)).toEqual({ count: 0 });
+
+      const expiringRecipient = approvedDevice(db, "Expiry target");
+      const expiringFrame = projectInvitationFrame(projectId, owner, expiringRecipient, now);
+      createProjectInvitation(db, owner.id, expiringFrame.serverFingerprint, expiringFrame, now);
+      const afterExpiry = new Date(new Date(expiringFrame.expiresAt).getTime() + 1);
+      expect(listProjectInvitations(db, expiringRecipient.id, afterExpiry)[0]).toMatchObject({
+        invitationId: expiringFrame.invitationId,
+        status: "expired",
+      });
+      expect(db.query(`
+        SELECT event_type AS eventType, details_json AS detailsJson
+        FROM audit_events WHERE subject_id = ?
+      `).get(expiringFrame.invitationId)).toEqual({
+        eventType: "project.invite.expired",
+        detailsJson: JSON.stringify({ projectId, reason: "time-window" }),
+      });
+
+      const staleRecipient = approvedDevice(db, "Stale epoch target");
+      const staleFrame = projectInvitationFrame(projectId, owner, staleRecipient, now);
+      createProjectInvitation(db, owner.id, staleFrame.serverFingerprint, staleFrame, now);
+      rotateProjectKeyEpoch(
+        db,
+        projectId,
+        owner.id,
+        1,
+        randomUUID(),
+        [
+          keyEnvelope(projectId, owner, owner.id, 2),
+          keyEnvelope(projectId, owner, recipient.id, 2),
+        ],
+        now,
+      );
+      expect(listProjectInvitations(db, staleRecipient.id, now)[0]).toMatchObject({
+        invitationId: staleFrame.invitationId,
+        status: "expired",
+      });
+      expect(createProjectInvitation(
+        db,
+        owner.id,
+        staleFrame.serverFingerprint,
+        staleFrame,
+        now,
+      )).toMatchObject({ created: false, invitation: { status: "expired" } });
+      expect(db.query(`
+        SELECT details_json AS detailsJson FROM audit_events
+        WHERE subject_id = ? AND event_type = 'project.invite.expired'
+      `).get(staleFrame.invitationId)).toEqual({
+        detailsJson: JSON.stringify({ projectId, reason: "key-epoch", minimumEpoch: 2 }),
+      });
+
+      const revokedRecipient = approvedDevice(db, "Revoked invite target");
+      const revokedFrame = projectInvitationFrame(projectId, owner, revokedRecipient, now, 2);
+      createProjectInvitation(db, owner.id, revokedFrame.serverFingerprint, revokedFrame, now);
+      const revokedFingerprint = db.query(`
+        SELECT fingerprint FROM devices WHERE id = ?
+      `).get(revokedRecipient.id) as { fingerprint: string };
+      expect(revokeDevice(db, revokedFingerprint.fingerprint, now)).toBeTrue();
+      expect(db.query(`
+        SELECT status FROM project_invitations WHERE invitation_id = ?
+      `).get(revokedFrame.invitationId)).toEqual({ status: "expired" });
+      expect(db.query(`
+        SELECT details_json AS detailsJson FROM audit_events
+        WHERE subject_id = ? AND event_type = 'project.invite.expired'
+      `).get(revokedFrame.invitationId)).toEqual({
+        detailsJson: JSON.stringify({
+          projectId,
+          reason: "device-revoked",
+          deviceId: revokedRecipient.id,
+        }),
+      });
     } finally {
       db.close();
     }

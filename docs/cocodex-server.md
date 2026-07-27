@@ -79,8 +79,10 @@ Invites are single-use and short-lived. Approval is explicit; revocation is
 checked on every authenticated connection and project operation.
 The two project CLI commands are administrative/recovery compatibility
 surfaces. The normal product flow uses the authenticated Client
-`project.create` operation, which creates the project, initial memberships,
-and encryption epoch atomically.
+`project.create` operation, which creates only the owner membership and
+encryption epoch atomically. Another device joins only through
+`project.invite.create` followed by its own signed
+`project.invite.respond` acceptance.
 
 Approved Clients publish a self-signed public device-key certificate after
 proof-of-possession authentication. The `private.contact.list` WSS request
@@ -221,21 +223,28 @@ encrypted prompts it orders and deduplicates Yjs updates without applying them;
 the clients perform the Yjs state transition after local decryption. Encrypted
 artifact rows expose only project/task/author routing metadata and timestamps.
 
-`project.create` accepts a client-generated project UUID, bounded name,
-complete owner-signed epoch-1 envelope set, and a creator signature over all
-of that meaning. The Server verifies the creator's enrolled Ed25519 key, owner
-inclusion, unique approved recipients, every envelope signature, and exact
-epoch. One immediate SQLite transaction inserts `projects`,
-`project_members`, `project_key_epochs`, and `project_key_envelopes`; any
-failure leaves none of them behind. Exact retries are idempotent, while a
-changed name, roster, request, creator, or envelope set is rejected. Connected
-members receive safe project metadata and only their addressed envelope.
-Exact replays notify only the requester; they do not rebroadcast membership or
-keys. Each authenticated device is limited to 12 creation attempts per minute
-and 128 owned projects. The private alpha treats Server-approved devices as
-eligible recipients; separate per-project invite acceptance remains required
-for broader deployments.
-See ADR 0037.
+`project.create` accepts a client-generated project UUID, bounded name, one
+owner-signed epoch-1 envelope, and a creator signature over all of that
+meaning. The Server verifies the creator's enrolled Ed25519 key, owner-only
+recipient, envelope signature, and exact epoch. One immediate SQLite
+transaction inserts `projects`, the owner `project_members` row,
+`project_key_epochs`, `project_key_envelopes`, and a durable exact-replay
+record; any failure leaves none of them behind. Later membership changes do
+not break replay of the original creation. A changed name, request, creator,
+or envelope is rejected. Each authenticated device is limited to 12 creation
+attempts per minute and 128 owned projects. See ADR 0037.
+
+`project.invite.create` is owner-only and binds the Server fingerprint,
+project, recipient device, active key epoch, exact sealed-key envelope, expiry,
+nonce, and owner signature. Server approval makes a device eligible to be
+invited, not a project member. The Server stores the pending opaque envelope
+and routes it only to owner and recipient. The addressed approved device signs
+accept or decline; acceptance inserts the member row, key envelope,
+invitation status, and audit record in one immediate transaction. Decline and
+owner cancellation add no membership. Exact create/decision replay is
+idempotent. Time expiry, device revocation, rotation-required state, and key
+epoch advancement expire pending invitations with audit records. See ADR
+0038.
 
 The first `project.key.initialize` operation is stricter than the compatibility
 `project.key.share` route. It accepts one owner-signed epoch-1 envelope for

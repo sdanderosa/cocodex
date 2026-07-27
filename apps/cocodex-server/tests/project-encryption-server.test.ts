@@ -5,10 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  createDeviceKeyCertificate,
   decodeInvitation,
   enrollmentSigningTranscript,
   projectCreationSigningTranscript,
   projectContentSigningTranscript,
+  projectInvitationDecisionTranscript,
+  projectInvitationSigningTranscript,
   projectKeyEnvelopeSigningTranscript,
   websocketAuthTranscript,
   type ProjectContentEnvelope,
@@ -52,6 +55,7 @@ interface TestDevice {
   id: string;
   privateKey: string;
   publicKey: string;
+  projectWrapPublicKey: string;
 }
 
 function approvedDevice(db: Database, fingerprint: string, displayName: string): TestDevice {
@@ -60,6 +64,10 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
   const messaging = generateKeyPairSync("x25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const projectWrap = generateKeyPairSync("x25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
@@ -77,6 +85,7 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     displayName,
     devicePublicKeyPem: pair.publicKey,
     messagingPublicKeyPem: messaging.publicKey,
+    projectWrapPublicKeyPem: projectWrap.publicKey,
   }), pair.privateKey).toString("base64url");
   const device = enrollDevice(db, {
     invitation,
@@ -85,10 +94,25 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     displayName,
     devicePublicKeyPem: pair.publicKey,
     messagingPublicKeyPem: messaging.publicKey,
+    projectWrapPublicKeyPem: projectWrap.publicKey,
     signature: enrollmentSignature,
   });
   expect(approveDevice(db, device.fingerprint)).toBeTrue();
-  return { id: device.id, privateKey: pair.privateKey, publicKey: pair.publicKey };
+  db.query("UPDATE devices SET device_key_certificate = ? WHERE id = ?").run(
+    createDeviceKeyCertificate(device.id, {
+      publicKeyPem: pair.publicKey,
+      privateKeyPem: pair.privateKey,
+      messagingPublicKeyPem: messaging.publicKey,
+      projectWrapPublicKeyPem: projectWrap.publicKey,
+    }),
+    device.id,
+  );
+  return {
+    id: device.id,
+    privateKey: pair.privateKey,
+    publicKey: pair.publicKey,
+    projectWrapPublicKey: projectWrap.publicKey,
+  };
 }
 
 function nextFrame(
@@ -244,7 +268,7 @@ function typedContentEnvelope(
 }
 
 describe("encrypted project WSS routing", () => {
-  test("creates a project over WSS, suppresses replay broadcasts, and rate-limits creation", async () => {
+  test("creates owner-only over WSS, requires signed invitation acceptance, and rate-limits replay", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-project-create-wss-"));
     roots.push(root);
     const paths = serverPaths(root);
@@ -265,10 +289,7 @@ describe("encrypted project WSS routing", () => {
 
     const projectId = randomUUID();
     const requestId = randomUUID();
-    const envelopes = [
-      keyEnvelope(projectId, owner, owner.id),
-      keyEnvelope(projectId, owner, member.id),
-    ];
+    const envelopes = [keyEnvelope(projectId, owner, owner.id)];
     const signature = sign(null, projectCreationSigningTranscript({
       projectId,
       name: "Nocturne Launcher",
@@ -286,13 +307,89 @@ describe("encrypted project WSS routing", () => {
       signature,
     };
     const ownerCreated = nextFrame(ownerSocket, "project.created");
-    const memberChanged = nextFrame(memberSocket, "project.changed");
-    const memberKeyChanged = nextFrame(memberSocket, "project.key.changed");
     ownerSocket.send(JSON.stringify(frame));
     expect(await ownerCreated).toMatchObject({
       requestId,
       project: { id: projectId, role: "owner" },
       created: true,
+    });
+    const beforeAcceptance = nextFrame(memberSocket, "project.list.result");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.list",
+      requestId: randomUUID(),
+    }));
+    expect((await beforeAcceptance).projects).toEqual([]);
+
+    const invitationEnvelope = keyEnvelope(projectId, owner, member.id);
+    const invitationInput = {
+      invitationId: randomUUID(),
+      projectId,
+      serverFingerprint: fingerprint,
+      ownerDeviceId: owner.id,
+      recipientDeviceId: member.id,
+      keyEpoch: 1,
+      envelope: invitationEnvelope,
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      nonce: randomBytes(32).toString("base64url"),
+    };
+    const inviteRequestId = randomUUID();
+    const inviteFrame = {
+      version: 1,
+      type: "project.invite.create",
+      requestId: inviteRequestId,
+      invitationId: invitationInput.invitationId,
+      projectId: invitationInput.projectId,
+      serverFingerprint: invitationInput.serverFingerprint,
+      recipientDeviceId: invitationInput.recipientDeviceId,
+      keyEpoch: invitationInput.keyEpoch,
+      envelope: invitationInput.envelope,
+      issuedAt: invitationInput.issuedAt,
+      expiresAt: invitationInput.expiresAt,
+      nonce: invitationInput.nonce,
+      signature: sign(
+        null,
+        projectInvitationSigningTranscript(invitationInput),
+        owner.privateKey,
+      ).toString("base64url"),
+    };
+    const inviteAcceptedByServer = nextFrame(ownerSocket, "project.invite.created");
+    const inviteDelivered = nextFrame(memberSocket, "project.invite.changed");
+    ownerSocket.send(JSON.stringify(inviteFrame));
+    expect(await inviteAcceptedByServer).toMatchObject({
+      requestId: inviteRequestId,
+      created: true,
+      invitation: { status: "pending", recipientDeviceId: member.id },
+    });
+    expect(await inviteDelivered).toMatchObject({
+      invitation: { invitationId: invitationInput.invitationId, status: "pending" },
+    });
+    const responseRequestId = randomUUID();
+    const responseSignature = sign(
+      null,
+      projectInvitationDecisionTranscript(invitationInput, "accept"),
+      member.privateKey,
+    ).toString("base64url");
+    const memberResponded = nextFrame(memberSocket, "project.invite.responded");
+    const memberChanged = nextFrame(memberSocket, "project.changed");
+    const memberKeyChanged = nextFrame(memberSocket, "project.key.changed");
+    const ownerInviteChanged = nextFrame(ownerSocket, "project.invite.changed");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.invite.respond",
+      requestId: responseRequestId,
+      invitationId: invitationInput.invitationId,
+      decision: "accept",
+      signature: responseSignature,
+    }));
+    expect(await memberResponded).toMatchObject({
+      requestId: responseRequestId,
+      created: true,
+      invitation: { status: "accepted" },
+    });
+    expect(await ownerInviteChanged).toMatchObject({
+      invitation: { invitationId: invitationInput.invitationId, status: "accepted" },
     });
     expect(await memberChanged).toMatchObject({ project: { id: projectId, role: "member" } });
     expect(await memberKeyChanged).toMatchObject({

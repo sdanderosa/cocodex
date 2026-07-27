@@ -1524,3 +1524,147 @@ trusts the owner fingerprint, and membership alone cannot execute a command.
 
 `git diff --check` exited `0` apart from line-ending conversion notices. The
 post-run process check found no Bun, CoCodex Client, or CoCodex Server process.
+
+## Explicit encrypted project invitation checkpoint (2026-07-27)
+
+Feature commit: `PENDING_FEATURE_COMMIT`.
+
+This checkpoint supersedes the unsolicited-initial-membership limitation
+recorded in the preceding atomic-creation checkpoint. `project.create` is now
+owner-only. Stephen's Client can select a locally fingerprint-verified,
+project-capable Kai device and issue one owner-signed, expiring,
+current-epoch invitation with an addressed sealed project-key envelope. The
+Server stores the opaque pending row but does not add Kai. Kai's resident
+Client verifies Stephen's certificate, owner and envelope signatures, local
+trust, recipient binding, Server fingerprint, epoch, and expiry before
+enabling acceptance. Kai's signed acceptance inserts membership, the key
+envelope, accepted state, and audit event in one immediate SQLite
+transaction.
+
+The lifecycle also includes signed decline and owner cancellation, exact
+create/decision replay, canonical transcript hashing, time and pending limits,
+and auditable invalidation after expiry, device revocation,
+rotation-required state, or epoch advancement. A dedicated immutable creation
+record keeps the original owner-only `project.create` replay idempotent even
+after Kai later joins. Certificates, public-key payloads, sealed project keys,
+invitation signatures, and decrypted project keys are projected out before
+renderer delivery.
+
+Focused protocol, storage, WSS, enrollment, and renderer command:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\apps\cocodex-server\tests\enrollment.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `37 pass`, `0 fail`, `463 expect()` calls.
+The named storage test
+`requires an addressed signed acceptance before atomically adding membership
+and its key` proves unauthorized-before-acceptance, outsider rejection,
+acceptance and exact replay, decline, cancel, signature/envelope tamper
+rejection, time expiry, epoch invalidation, revocation invalidation, ciphertext
+storage, rollback, and audit rows. The named WSS test
+`creates owner-only over WSS, requires signed invitation acceptance, and
+rate-limits replay` uses two authenticated sockets and the production TLS/WSS
+frame handlers.
+
+Resident integration command:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `88 expect()` calls.
+The first test uses isolated Stephen/Kai Client state and one real Server. Kai
+receives an empty authoritative project list and no local project key before
+acceptance. After the safe invitation DTO and explicit accept command, Kai
+receives member metadata and persists the acknowledged epoch-one key. Both
+resident event logs are scanned for sealed-key and certificate canaries.
+
+Mandatory three-process command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `265 expect()` calls.
+The test compiles and starts a separate CoCodex Server executable, Stephen
+Client executable, and Kai Client executable with independent state roots,
+identities, accounts, workspaces, and the real TLS/WSS transport. Its
+authoritative database read proves only the owner member exists before Kai
+accepts. The rest of the same path proves bidirectional host-local agent
+execution, ordered encrypted shared chat, private ciphertext and explicit
+agent share, offline shared/private queues, Server restart, ordered recovery,
+and local private-history recovery.
+
+Authoritative CoCodex regression:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `140 pass`, `0 fail`, `1354 expect()` calls
+across 33 files. No test was disabled or skipped.
+
+Full inherited OpenCodex regression:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; relevant output:
+`PASS: all 343 files completed` across 14 fresh workers. This is the
+repository's isolated whole-suite runner; no inherited test file was removed
+or disabled.
+
+Static, privacy, executable, and GUI commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run --cwd gui test
+.\node_modules\.bin\bun.exe run --cwd gui lint
+.\node_modules\.bin\bun.exe run --cwd gui lint:i18n
+.\node_modules\.bin\bun.exe run --cwd gui build
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`.
+The Client and Server compiled as separate executables. GUI tests reported
+`116 pass`, `0 fail`, and `563 expect()` calls. GUI lint retained one
+pre-existing `use-app-route-state.ts:84` hook warning and no errors; the
+production build retained the existing large-chunk advisory.
+
+Primary files:
+
+- `packages/cocodex-protocol/src/project-invitation.ts`
+- `apps/cocodex-server/src/project-invitations.ts`
+- `apps/cocodex-server/src/project-encryption-storage.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/session.ts`
+- `src/cocodex/gui-bridge.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `apps/cocodex-server/tests/project-encryption-storage.test.ts`
+- `apps/cocodex-server/tests/project-encryption-server.test.ts`
+- `tests/cocodex-project-encryption-session.test.ts`
+- `tests/cocodex-private-alpha-process.test.ts`
+- ADR 0038 and the Client/Server architecture documentation
+
+`git diff --check` exited `0` apart from line-ending conversion notices. The
+post-run audit found no surviving CoCodex test process or dedicated listener.
+
+Known limit: a committed invitation or accepted membership recovers through
+the authoritative invitation/project/key lists after either process restarts.
+An invite create/respond/cancel frame that was prepared but never received by
+the Server is exact-replayed across a same-resident transport reconnect, but
+that pending action is not yet stored in a protected client outbox across a
+Client process crash. It is not counted as durable offline invitation-action
+delivery in this checkpoint.

@@ -1,5 +1,6 @@
 import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { expirePendingProjectInvitationsForDevice } from "./project-invitations";
 import {
   canonicalEd25519PublicKey,
   enrollmentSigningTranscript,
@@ -194,18 +195,24 @@ export function approveDevice(db: Database, fingerprint: string, now = new Date(
 }
 
 export function revokeDevice(db: Database, fingerprint: string, now = new Date()): boolean {
-  const result = db.query(`
-    UPDATE devices
-    SET status = 'revoked', revoked_at = ?
-    WHERE fingerprint = ? AND status = 'approved'
-  `).run(now.toISOString(), fingerprint);
-  if (result.changes === 1) {
+  return db.transaction(() => {
+    const device = db.query(`
+      SELECT id FROM devices WHERE fingerprint = ? AND status = 'approved'
+    `).get(fingerprint) as { id: string } | null;
+    if (!device) return false;
+    const result = db.query(`
+      UPDATE devices
+      SET status = 'revoked', revoked_at = ?
+      WHERE id = ? AND status = 'approved'
+    `).run(now.toISOString(), device.id);
+    if (result.changes !== 1) return false;
+    expirePendingProjectInvitationsForDevice(db, device.id, now);
     db.query(`
       INSERT INTO audit_events (event_type, subject_id, occurred_at, details_json)
-      SELECT 'device.revoked', id, ?, '{}' FROM devices WHERE fingerprint = ?
-    `).run(now.toISOString(), fingerprint);
-  }
-  return result.changes === 1;
+      VALUES ('device.revoked', ?, ?, '{}')
+    `).run(device.id, now.toISOString());
+    return true;
+  }).immediate();
 }
 export function listDevices(db: Database): DeviceRecord[] {
   return db.query(`

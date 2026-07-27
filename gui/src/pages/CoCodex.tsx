@@ -96,6 +96,25 @@ interface PrivateContact {
   projectCapable: boolean;
 }
 
+interface ProjectInvitation {
+  invitationId: string;
+  projectId: string;
+  projectName: string;
+  ownerDeviceId: string;
+  ownerDisplayName: string;
+  ownerFingerprint: string;
+  recipientDeviceId: string;
+  recipientDisplayName: string;
+  recipientFingerprint: string;
+  keyEpoch: number;
+  issuedAt: string;
+  expiresAt: string;
+  status: "pending" | "accepted" | "declined" | "cancelled" | "expired";
+  direction: "incoming" | "outgoing";
+  trusted: boolean;
+  actionable: boolean;
+}
+
 type AgentStatus = "offline" | "available" | "queued" | "working" | "completed" | "failed";
 
 interface AgentView {
@@ -240,6 +259,7 @@ interface SessionValue {
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
   contacts?: PrivateContact[];
+  invitations?: ProjectInvitation[];
   project?: Project;
   frame?: {
     type?: string;
@@ -431,8 +451,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
-  const [selectedProjectMembers, setSelectedProjectMembers] = useState<string[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
   const [privateReceipts, setPrivateReceipts] = useState<Record<string, "sent" | "delivered" | "read">>({});
@@ -555,7 +575,6 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setProjects(previous => [...previous.filter(project => project.id !== nextProject.id), nextProject]);
         setProjectId(nextProject.id);
         setProjectName("");
-        setSelectedProjectMembers([]);
         setNotice(t("cocodex.projects.created", { name: nextProject.name }));
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
@@ -655,7 +674,6 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         if (frame.type === "project.created") {
           setProjectId(nextProject.id);
           setProjectName("");
-          setSelectedProjectMembers([]);
           setNotice(t("cocodex.projects.created", { name: nextProject.name }));
         }
       }
@@ -708,6 +726,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         const contacts = value.contacts as PrivateContact[];
         setPrivateContacts(contacts);
         setRecipientDeviceId(previous => reconcilePrivateContactSelection(previous, contacts));
+      }
+      if (value?.source === "project-invitations" && Array.isArray(value.invitations)) {
+        setProjectInvitations(value.invitations as ProjectInvitation[]);
       }
       if (value?.source === "private-receipt" && value.receipt?.messageId) {
         setPrivateReceipts(previous => {
@@ -908,9 +929,65 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         type: "project.create",
         projectId: crypto.randomUUID(),
         name,
-        memberDeviceIds: selectedProjectMembers,
+        memberDeviceIds: [],
       });
       setNotice(t("cocodex.projects.creating"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inviteProjectMember = async (contact: PrivateContact) => {
+    if (!projectId || !contact.trusted || !contact.projectCapable) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "project.invite.create",
+        projectId,
+        recipientDeviceId: contact.deviceId,
+      });
+      setNotice(t("cocodex.invites.sent", { name: contact.displayName }));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const respondToProjectInvitation = async (
+    invitation: ProjectInvitation,
+    decision: "accept" | "decline",
+  ) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "project.invite.respond",
+        invitationId: invitation.invitationId,
+        decision,
+      });
+      setNotice(t(decision === "accept" ? "cocodex.invites.accepted" : "cocodex.invites.declined", {
+        name: invitation.projectName,
+      }));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelProjectInvitation = async (invitation: ProjectInvitation) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "project.invite.cancel",
+        invitationId: invitation.invitationId,
+      });
+      setNotice(t("cocodex.invites.cancelled", { name: invitation.recipientDisplayName }));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1249,6 +1326,43 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <small>{status.server ? `${status.server.host}:${status.server.port}` : t("cocodex.server.none")}</small>
               </div>
             </div>
+            {projectInvitations.some(invitation =>
+              invitation.direction === "incoming" && invitation.status === "pending") && (
+              <section className="cocodex-invitations">
+                <div className="cocodex-section-head">
+                  <span>{t("cocodex.invites.title")}</span>
+                  <button type="button" className="btn btn-ghost btn-icon"
+                    title={t("cocodex.invites.refresh")}
+                    onClick={() => void command({ type: "project.invite.list" })}
+                    disabled={status.state !== "connected"}>
+                    <IconRefresh />
+                  </button>
+                </div>
+                {projectInvitations.filter(invitation =>
+                  invitation.direction === "incoming" && invitation.status === "pending").map(invitation => (
+                  <article key={invitation.invitationId}>
+                    <span>
+                      <strong>{invitation.projectName}</strong>
+                      <small>{t("cocodex.invites.from", { name: invitation.ownerDisplayName })}
+                        {" \u00b7 "}{invitation.ownerFingerprint.slice(-12)}</small>
+                      {!invitation.trusted && <small>{t("cocodex.invites.verifyOwner")}</small>}
+                    </span>
+                    <div>
+                      <button type="button" className="btn btn-ghost"
+                        disabled={busy || status.state !== "connected"}
+                        onClick={() => void respondToProjectInvitation(invitation, "decline")}>
+                        {t("cocodex.invites.decline")}
+                      </button>
+                      <button type="button" className="btn btn-primary"
+                        disabled={busy || status.state !== "connected" || !invitation.actionable}
+                        onClick={() => void respondToProjectInvitation(invitation, "accept")}>
+                        {t("cocodex.invites.accept")}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
             <div className="cocodex-project-list">
               {projects.map(project => (
                 <button key={project.id} type="button" className={project.id === projectId ? "active" : ""}
@@ -1263,21 +1377,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <input className="input" value={projectName}
                 onChange={event => setProjectName(event.target.value)}
                 placeholder={t("cocodex.projects.name")} maxLength={120} required />
-              <small>{t("cocodex.projects.members")}</small>
-              <div className="cocodex-project-create-members">
-                {privateContacts.filter(contact => contact.trusted && contact.projectCapable).map(contact => (
-                  <label key={contact.deviceId}>
-                    <input type="checkbox"
-                      checked={selectedProjectMembers.includes(contact.deviceId)}
-                      onChange={event => setSelectedProjectMembers(previous => event.target.checked
-                        ? [...previous, contact.deviceId]
-                        : previous.filter(deviceId => deviceId !== contact.deviceId))} />
-                    <span>{contact.displayName}<small>{contact.fingerprint.slice(-12)}</small></span>
-                  </label>
-                ))}
-                {!privateContacts.some(contact => contact.trusted && contact.projectCapable)
-                  && <small className="muted">{t("cocodex.projects.membersEmpty")}</small>}
-              </div>
+              <small>{t("cocodex.projects.ownerOnly")}</small>
               <button type="submit" className="btn btn-primary"
                 disabled={busy || status.state !== "connected" || !projectName.trim()}>
                 {t("cocodex.projects.create")}
@@ -1292,6 +1392,39 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               onTrust={member => void trustProjectMember(member)}
               onRemove={member => void removeProjectMember(member)}
             />}
+            {projectId && projects.find(project => project.id === projectId)?.role === "owner" && (
+              <section className="cocodex-invite-people">
+                <strong>{t("cocodex.invites.people")}</strong>
+                <small>{t("cocodex.invites.peopleHelp")}</small>
+                {privateContacts.filter(contact =>
+                  contact.trusted
+                  && contact.projectCapable
+                  && !projectMembers.some(member => member.deviceId === contact.deviceId)
+                  && !projectInvitations.some(invitation =>
+                    invitation.projectId === projectId
+                    && invitation.recipientDeviceId === contact.deviceId
+                    && invitation.status === "pending")).map(contact => (
+                  <button type="button" className="btn btn-ghost" key={contact.deviceId}
+                    disabled={busy || status.state !== "connected"}
+                    onClick={() => void inviteProjectMember(contact)}>
+                    {t("cocodex.invites.invite", { name: contact.displayName })}
+                  </button>
+                ))}
+                {projectInvitations.filter(invitation =>
+                  invitation.projectId === projectId
+                  && invitation.direction === "outgoing"
+                  && invitation.status === "pending").map(invitation => (
+                  <span className="cocodex-invite-pending" key={invitation.invitationId}>
+                    <small>{t("cocodex.invites.pending", { name: invitation.recipientDisplayName })}</small>
+                    <button type="button" className="btn btn-ghost"
+                      disabled={busy || status.state !== "connected"}
+                      onClick={() => void cancelProjectInvitation(invitation)}>
+                      {t("cocodex.invites.cancel")}
+                    </button>
+                  </span>
+                ))}
+              </section>
+            )}
             <div className="cocodex-device">
               <small>{t("cocodex.device.this")}</small>
               <strong>{status.displayName}</strong>

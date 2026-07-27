@@ -1,7 +1,9 @@
-import { createHash, randomUUID, sign } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import {
   agentDefinitionSigningTranscript,
   projectCreationSigningTranscript,
+  projectInvitationDecisionTranscript,
+  projectInvitationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
@@ -17,6 +19,7 @@ import {
   type FileReferencePlaintext,
   type PrivateContactView,
   type ProjectMemberView,
+  type ProjectInvitationView,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
@@ -117,6 +120,11 @@ interface ControlCommand extends Record<string, unknown> {
 type CachedProjectMember = Omit<ProjectMemberView, "deviceKeyCertificate"> & {
   projectWrapPublicKeyPem: string | null;
   trusted: boolean;
+};
+
+type ResidentProjectInvitation = ProjectInvitationView & {
+  trusted: boolean;
+  projectKey?: Buffer;
 };
 
 function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -306,6 +314,14 @@ export async function runJsonLineSession(
     commandId: string;
   }>();
   const pendingProjectCreationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const projectInvitations = new Map<string, ResidentProjectInvitation>();
+  const pendingProjectInvitationCommands = new Map<string, {
+    commandId: string;
+    invitationId: string;
+    action: "create" | "accept" | "decline" | "cancel";
+    projectKey?: Buffer;
+    frame: Record<string, unknown>;
+  }>();
   const pendingAgentConfigurations = new Map<string, {
     commandId: string;
     projectId: string;
@@ -457,6 +473,100 @@ export async function runJsonLineSession(
     }, 61_000);
     timer.unref?.();
     pendingProjectCreationRetryTimers.set(requestId, timer);
+  };
+  const safeProjectInvitation = (invitation: ResidentProjectInvitation) => ({
+    invitationId: invitation.invitationId,
+    projectId: invitation.projectId,
+    projectName: invitation.projectName,
+    ownerDeviceId: invitation.ownerDeviceId,
+    ownerDisplayName: invitation.ownerDisplayName,
+    ownerFingerprint: invitation.ownerFingerprint,
+    recipientDeviceId: invitation.recipientDeviceId,
+    recipientDisplayName: invitation.recipientDisplayName,
+    recipientFingerprint: invitation.recipientFingerprint,
+    keyEpoch: invitation.keyEpoch,
+    issuedAt: invitation.issuedAt,
+    expiresAt: invitation.expiresAt,
+    status: invitation.status,
+    direction: invitation.ownerDeviceId === connection.deviceId ? "outgoing" as const : "incoming" as const,
+    trusted: invitation.trusted,
+    actionable: invitation.status === "pending"
+      && new Date(invitation.expiresAt).getTime() > Date.now()
+      && invitation.recipientDeviceId === connection.deviceId
+      && invitation.trusted
+      && invitation.projectKey !== undefined,
+  });
+  const emitProjectInvitations = () => {
+    emit({
+      source: "project-invitations",
+      invitations: [...projectInvitations.values()]
+        .map(safeProjectInvitation)
+        .sort((left, right) => right.issuedAt.localeCompare(left.issuedAt)
+          || left.invitationId.localeCompare(right.invitationId)),
+    });
+  };
+  const ingestProjectInvitation = async (
+    raw: unknown,
+  ): Promise<ResidentProjectInvitation> => {
+    const invitation = raw as ProjectInvitationView;
+    if (invitation.serverFingerprint !== connection.serverFingerprint) {
+      throw new Error("Project invitation belongs to another Server authority");
+    }
+    const certificate = verifyDeviceKeyCertificate(
+      invitation.ownerDeviceKeyCertificate,
+      invitation.ownerDeviceId,
+    );
+    if (certificate.fingerprint !== invitation.ownerFingerprint) {
+      throw new Error("Project invitation owner certificate fingerprint does not match the Server");
+    }
+    if (publicKeyFingerprint(invitation.envelope.senderPublicKeyPem) !== invitation.ownerFingerprint) {
+      throw new Error("Project invitation envelope key does not match the owner certificate");
+    }
+    if (!verify(
+      null,
+      projectInvitationSigningTranscript({
+        invitationId: invitation.invitationId,
+        projectId: invitation.projectId,
+        serverFingerprint: invitation.serverFingerprint,
+        ownerDeviceId: invitation.ownerDeviceId,
+        recipientDeviceId: invitation.recipientDeviceId,
+        keyEpoch: invitation.keyEpoch,
+        envelope: invitation.envelope,
+        issuedAt: invitation.issuedAt,
+        expiresAt: invitation.expiresAt,
+        nonce: invitation.nonce,
+      }),
+      createPublicKey(invitation.envelope.senderPublicKeyPem),
+      Buffer.from(invitation.ownerSignature, "base64url"),
+    )) {
+      throw new Error("Project invitation owner signature is invalid");
+    }
+    let trusted = invitation.ownerDeviceId === connection.deviceId;
+    let projectKey: Buffer | undefined;
+    if (invitation.recipientDeviceId === connection.deviceId) {
+      trusted = loadTrustedDevices(paths.trustedDevices)[invitation.ownerDeviceId]
+        === invitation.ownerFingerprint;
+      if (invitation.status === "pending"
+        && new Date(invitation.expiresAt).getTime() > Date.now()
+        && trusted) {
+        if (!identity.projectWrapPrivateKeyPem || !identity.projectWrapPublicKeyPem) {
+          throw new Error("This client has no project-wrap key");
+        }
+        projectKey = await openProjectKeyEnvelope({
+          envelope: invitation.envelope,
+          recipientDeviceId: connection.deviceId,
+          recipientProjectWrapPrivateKeyPem: identity.projectWrapPrivateKeyPem,
+          recipientProjectWrapPublicKeyPem: identity.projectWrapPublicKeyPem,
+          expectedProjectId: invitation.projectId,
+          expectedKeyEpoch: invitation.keyEpoch,
+          expectedSenderDeviceId: invitation.ownerDeviceId,
+          expectedSenderPublicKeyPem: invitation.envelope.senderPublicKeyPem,
+        });
+      }
+    }
+    const resident = { ...invitation, trusted, ...(projectKey ? { projectKey } : {}) };
+    projectInvitations.set(invitation.invitationId, resident);
+    return resident;
   };
   const migrationRecordId = (projectId: string, revision: number): string => {
     const hex = createHash("sha256").update(`CoCodex legacy context migration\u0000${projectId}\u0000${revision}`).digest("hex").slice(0, 32).split("");
@@ -1847,6 +1957,8 @@ export async function runJsonLineSession(
       catch { return; }
       if (frame.type === "project.list.result"
         || frame.type === "project.created" || frame.type === "project.changed"
+        || frame.type === "project.invite.list.result" || frame.type === "project.invite.created"
+        || frame.type === "project.invite.changed" || frame.type === "project.invite.responded"
         || frame.type === "agent.list.result" || frame.type === "agent.created"
         || frame.type === "agent.task.list.result"
         || frame.type === "project.key.result" || frame.type === "project.key.accepted"
@@ -1872,6 +1984,17 @@ export async function runJsonLineSession(
         }
       }
       if (frame.type === "error" && typeof frame.requestId === "string") {
+        const pendingInvitationCommand = pendingProjectInvitationCommands.get(frame.requestId);
+        if (pendingInvitationCommand) {
+          pendingProjectInvitationCommands.delete(frame.requestId);
+          emit({
+            source: "control",
+            id: pendingInvitationCommand.commandId,
+            ok: false,
+            invitationId: pendingInvitationCommand.invitationId,
+            error: String(frame.error ?? "Project invitation request failed"),
+          });
+        }
         const pendingAgent = pendingAgentConfigurations.get(frame.requestId);
         if (pendingAgent) {
           pendingAgentConfigurations.delete(frame.requestId);
@@ -1936,6 +2059,59 @@ export async function runJsonLineSession(
             error: String(frame.error ?? "Project creation failed"),
           });
         }
+      }
+      if (frame.type === "project.invite.list.result") {
+        void (async () => {
+          const nextIds = new Set<string>();
+          for (const rawInvitation of frame.invitations as ProjectInvitationView[]) {
+            const invitation = await ingestProjectInvitation(rawInvitation);
+            nextIds.add(invitation.invitationId);
+          }
+          for (const id of [...projectInvitations.keys()]) {
+            if (!nextIds.has(id)) projectInvitations.delete(id);
+          }
+          emitProjectInvitations();
+        })().catch(error => emitError({
+          source: "project-invitations",
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        return;
+      }
+      if (frame.type === "project.invite.created" || frame.type === "project.invite.changed"
+        || frame.type === "project.invite.responded") {
+        void (async () => {
+          const invitation = await ingestProjectInvitation(frame.invitation);
+          const pending = typeof frame.requestId === "string"
+            ? pendingProjectInvitationCommands.get(frame.requestId)
+            : undefined;
+          if (pending) {
+            pendingProjectInvitationCommands.delete(frame.requestId);
+            if (pending.invitationId !== invitation.invitationId) {
+              throw new Error("Project invitation acknowledgement did not match the request");
+            }
+            if (pending.action === "accept") {
+              if (invitation.status !== "accepted" || !pending.projectKey) {
+                throw new Error("Project invitation acceptance acknowledgement is invalid");
+              }
+              storeProjectKey(paths.projectKeys, invitation.projectId, invitation.keyEpoch, pending.projectKey);
+              projectKeySubscriptions.add(invitation.projectId);
+              void migrateProjectSubscriptions(invitation.projectId);
+            }
+            emit({
+              source: "control",
+              id: pending.commandId,
+              ok: true,
+              invitationId: invitation.invitationId,
+              projectId: invitation.projectId,
+              status: invitation.status,
+            });
+          }
+          emitProjectInvitations();
+        })().catch(error => emitError({
+          source: "project-invitations",
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        return;
       }
       if (frame.type === "project.chat.snapshot" || frame.type === "project.chat.event" || frame.type === "project.chat.accepted") {
         void openEncryptedChatFrame(frame);
@@ -2371,6 +2547,15 @@ export async function runJsonLineSession(
       type: "private.contact.list",
       requestId: randomUUID(),
     });
+    send({
+      version: 1,
+      type: "project.invite.list",
+      requestId: randomUUID(),
+    });
+    for (const pending of pendingProjectInvitationCommands.values()) {
+      try { send(pending.frame); }
+      catch { /* the connection supervisor will replay the exact signed invitation action */ }
+    }
     for (const pending of pendingAgentConfigurations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will replay the exact signed create */ }
@@ -2512,31 +2697,10 @@ export async function runJsonLineSession(
           const projectId = String(command.projectId ?? randomUUID());
           const name = String(command.name ?? "").trim();
           if (name.length < 1 || name.length > 120) throw new Error("Project name must be 1-120 characters");
-          if (!Array.isArray(command.memberDeviceIds) || command.memberDeviceIds.length > 127) {
-            throw new Error("Project creation requires a bounded member list");
-          }
-          const trustedDevices = loadTrustedDevices(paths.trustedDevices);
-          const memberIds = [...new Set(command.memberDeviceIds.map(String))].sort();
-          if (memberIds.includes(connection.deviceId)) {
-            throw new Error("The local owner must not be repeated in the member list");
-          }
           const recipients = [{
             deviceId: connection.deviceId,
             projectWrapPublicKeyPem: identity.projectWrapPublicKeyPem,
           }];
-          for (const memberDeviceId of memberIds) {
-            const contact = privateContacts.get(memberDeviceId);
-            if (!contact || !contact.projectWrapPublicKeyPem) {
-              throw new Error("Every selected member must be an approved project-capable contact");
-            }
-            if (trustedDevices[memberDeviceId] !== contact.fingerprint) {
-              throw new Error("Every selected member fingerprint must be independently verified");
-            }
-            recipients.push({
-              deviceId: memberDeviceId,
-              projectWrapPublicKeyPem: contact.projectWrapPublicKeyPem,
-            });
-          }
           const projectKey = createProjectKey();
           const envelopes = [];
           for (const recipient of recipients) {
@@ -2588,6 +2752,145 @@ export async function runJsonLineSession(
             // The durable signed creation remains staged for reconnect.
           }
           projectKeySubscriptions.add(projectId);
+        } else if (command.type === "project.invite.list") {
+          send({ version: 1, type: "project.invite.list", requestId: controlRequestId(command.id) });
+        } else if (command.type === "project.invite.create") {
+          const projectId = String(command.projectId);
+          const recipientDeviceId = String(command.recipientDeviceId);
+          const current = loadProjectKeyForEncryption(paths.projectKeys, projectId);
+          if (!current) throw new Error("The current project key is unavailable for invitation");
+          const contact = privateContacts.get(recipientDeviceId);
+          if (!contact?.projectWrapPublicKeyPem) {
+            throw new Error("Invitation recipient is not an approved project-capable contact");
+          }
+          if (loadTrustedDevices(paths.trustedDevices)[recipientDeviceId] !== contact.fingerprint) {
+            throw new Error("Invitation recipient fingerprint must be independently verified");
+          }
+          const invitationId = String(command.invitationId ?? randomUUID());
+          const issuedAt = new Date().toISOString();
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+          const nonce = randomBytes(32).toString("base64url");
+          const envelope = await sealProjectKeyEnvelope({
+            projectId,
+            keyEpoch: current.keyEpoch,
+            recipientDeviceId,
+            senderDeviceId: connection.deviceId,
+            projectKey: current.projectKey,
+            recipientProjectWrapPublicKeyPem: contact.projectWrapPublicKeyPem,
+            senderPrivateKeyPem: identity.privateKeyPem,
+            senderPublicKeyPem: identity.publicKeyPem,
+          });
+          const invitationInput = {
+            invitationId,
+            projectId,
+            serverFingerprint: connection.serverFingerprint,
+            ownerDeviceId: connection.deviceId,
+            recipientDeviceId,
+            keyEpoch: current.keyEpoch,
+            envelope,
+            issuedAt,
+            expiresAt,
+            nonce,
+          };
+          const requestId = controlRequestId(command.id);
+          const frame = {
+            version: 1,
+            type: "project.invite.create",
+            requestId,
+            invitationId,
+            projectId,
+            serverFingerprint: connection.serverFingerprint,
+            recipientDeviceId,
+            keyEpoch: current.keyEpoch,
+            envelope,
+            issuedAt,
+            expiresAt,
+            nonce,
+            signature: sign(
+              null,
+              projectInvitationSigningTranscript(invitationInput),
+              identity.privateKeyPem,
+            ).toString("base64url"),
+          };
+          pendingProjectInvitationCommands.set(requestId, {
+            commandId: String(command.id ?? requestId),
+            invitationId,
+            action: "create",
+            frame,
+          });
+          send(frame);
+        } else if (command.type === "project.invite.respond") {
+          const invitationId = String(command.invitationId);
+          const decision = command.decision === "decline" ? "decline" : "accept";
+          const invitation = projectInvitations.get(invitationId);
+          if (!invitation || invitation.recipientDeviceId !== connection.deviceId) {
+            throw new Error("Project invitation is not addressed to this device");
+          }
+          if (invitation.status !== "pending") throw new Error(`Project invitation is ${invitation.status}`);
+          if (decision === "accept" && (!invitation.trusted || !invitation.projectKey)) {
+            throw new Error("Project invitation owner and key envelope must be verified before acceptance");
+          }
+          const requestId = controlRequestId(command.id);
+          const frame = {
+            version: 1,
+            type: "project.invite.respond",
+            requestId,
+            invitationId,
+            decision,
+            signature: sign(null, projectInvitationDecisionTranscript({
+              invitationId,
+              projectId: invitation.projectId,
+              serverFingerprint: invitation.serverFingerprint,
+              ownerDeviceId: invitation.ownerDeviceId,
+              recipientDeviceId: invitation.recipientDeviceId,
+              keyEpoch: invitation.keyEpoch,
+              envelope: invitation.envelope,
+              issuedAt: invitation.issuedAt,
+              expiresAt: invitation.expiresAt,
+              nonce: invitation.nonce,
+            }, decision), identity.privateKeyPem).toString("base64url"),
+          };
+          pendingProjectInvitationCommands.set(requestId, {
+            commandId: String(command.id ?? requestId),
+            invitationId,
+            action: decision,
+            ...(decision === "accept" ? { projectKey: invitation.projectKey } : {}),
+            frame,
+          });
+          send(frame);
+        } else if (command.type === "project.invite.cancel") {
+          const invitationId = String(command.invitationId);
+          const invitation = projectInvitations.get(invitationId);
+          if (!invitation || invitation.ownerDeviceId !== connection.deviceId) {
+            throw new Error("Project invitation is not owned by this device");
+          }
+          if (invitation.status !== "pending") throw new Error(`Project invitation is ${invitation.status}`);
+          const requestId = controlRequestId(command.id);
+          const frame = {
+            version: 1,
+            type: "project.invite.cancel",
+            requestId,
+            invitationId,
+            signature: sign(null, projectInvitationDecisionTranscript({
+              invitationId,
+              projectId: invitation.projectId,
+              serverFingerprint: invitation.serverFingerprint,
+              ownerDeviceId: invitation.ownerDeviceId,
+              recipientDeviceId: invitation.recipientDeviceId,
+              keyEpoch: invitation.keyEpoch,
+              envelope: invitation.envelope,
+              issuedAt: invitation.issuedAt,
+              expiresAt: invitation.expiresAt,
+              nonce: invitation.nonce,
+            }, "cancel"), identity.privateKeyPem).toString("base64url"),
+          };
+          pendingProjectInvitationCommands.set(requestId, {
+            commandId: String(command.id ?? requestId),
+            invitationId,
+            action: "cancel",
+            frame,
+          });
+          send(frame);
         } else if (command.type === "agent.configure") {
           const projectId = String(command.projectId);
           const name = String(command.name ?? "").trim();
@@ -3337,6 +3640,11 @@ export async function runJsonLineSession(
           }
           trustDevice(paths.trustedDevices, deviceId, fingerprint);
           emitPrivateContacts();
+          send({
+            version: 1,
+            type: "project.invite.list",
+            requestId: randomUUID(),
+          });
           privateProcessing = privateProcessing
             .then(async () => {
               await retryDeferredPrivateMessages();

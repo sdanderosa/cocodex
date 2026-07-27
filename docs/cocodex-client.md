@@ -31,8 +31,8 @@ compatibility surfaces for the inherited local proxy.
 
 The GUI remains the normal OpenCodex GUI. Open the **CoCodex** page to enroll
 the device, start the resident collaboration session, select a shared project,
-create an encrypted Co-Project with verified contacts, edit the Yjs prompt,
-and set the server-authoritative **Final Goal**.
+create an encrypted owner-only Co-Project, invite verified contacts, edit the
+Yjs prompt, and set the server-authoritative **Final Goal**.
 
 Client state defaults to `%USERPROFILE%\.cocodex` (or `COCODEX_HOME`). It is
 separate from `.opencodex` and `.codex`; no import or migration overwrites
@@ -245,26 +245,42 @@ surfaces `rotation-required` without silently falling back to plaintext.
 New client installations also create a dedicated X25519 project-wrap keypair;
 it is separate from the private-message key and remains in the protected
 client state directory. The normal path is **CoCodex > Create Co-Project**:
-enter a name and select independently verified, project-capable contacts. The
-GUI sends only their device IDs. The resident Client resolves and verifies
-their cached certificates, generates a random project key, and creates the
-project and epoch 1 together:
+enter a name. Creation is owner-only: the resident Client generates a random
+project key and creates the project and epoch 1 together without granting any
+other approved device membership:
 
 ```json
-{"id":"create-1","type":"project.create","projectId":"NEW_PROJECT_UUID","name":"Nocturne Launcher","memberDeviceIds":["KAI_DEVICE_ID"]}
+{"id":"create-1","type":"project.create","projectId":"NEW_PROJECT_UUID","name":"Nocturne Launcher","memberDeviceIds":[]}
 ```
 
 Creation is one atomic owner-signed batch: the signature binds the normalized
-name, creator, complete recipient set, and exact epoch-1 envelopes. The server
-commits project, memberships, epoch, and all envelopes in one transaction and
-acknowledges the exact request before the Client reports success. The Client
+name, creator, and exact owner epoch-1 envelope. The server commits the
+project, owner membership, epoch, creation replay record, and envelope in one
+transaction and acknowledges the exact request before the Client reports
+success. The Client
 persists the signed creation and generated key as a protected pending intent,
 so a process restart replays the same request rather than generating a new
 key. A rejection or mismatched acknowledgement removes the staged key.
-Authenticated reconnects and project discovery refresh every envelope
-addressed to the device, so an offline member does not repeat enrollment or
-depend on the original broadcast. Certificates, project-wrap keys, sealed
-keys, and acknowledgement envelope batches never enter the renderer.
+
+The owner then selects an independently fingerprint-verified,
+project-capable contact under **Invite people**:
+
+```json
+{"id":"invite-1","type":"project.invite.create","projectId":"NEW_PROJECT_UUID","recipientDeviceId":"KAI_DEVICE_ID"}
+{"id":"accept-1","type":"project.invite.respond","invitationId":"INVITATION_UUID","decision":"accept"}
+```
+
+The resident owner seals the current project key to that exact device and
+signs a bounded invitation. The recipient sees safe metadata and must
+explicitly accept or decline. Acceptance is disabled until the owner
+certificate, exact fingerprint trust, signature, current epoch, and addressed
+envelope all verify locally. The decrypted key remains memory-only until the
+Server atomically acknowledges membership plus the envelope. Authenticated
+reconnects list committed invitations and refresh every envelope addressed to
+the device, so a known member does not repeat enrollment or depend on the
+original broadcast. Pending invite actions are replayed exactly during a
+resident reconnect. Certificates, project-wrap keys, sealed keys, signatures,
+and decrypted keys never enter the renderer.
 
 The older `project.key.initialize` command remains only for migrating an
 already existing unkeyed administrative project. It requires one recipient
