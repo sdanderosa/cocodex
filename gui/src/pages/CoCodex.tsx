@@ -9,6 +9,12 @@ import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-sta
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
 import {
+  applyPromptTextEdit,
+  encodePromptRelativeCaret,
+  resolvePromptRelativeCaret,
+  type RelativePromptCaret,
+} from "../cocodex-prompt-presence";
+import {
   confirmProjectMemberRemoval,
   clearRecoveredProjectSecurity,
   isRevokedProjectMember,
@@ -266,12 +272,14 @@ interface PresenceMember {
   displayName: string;
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
+  relativeCaret?: RelativePromptCaret | null;
   typing: boolean;
 }
 
 interface LocalPresence {
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
+  relativeCaret: RelativePromptCaret | null;
   typing: boolean;
 }
 
@@ -325,6 +333,7 @@ interface SessionValue {
     displayName?: string;
     cursor?: { x: number; y: number } | null;
     caret?: { anchor: number; head: number } | null;
+    relativeCaret?: RelativePromptCaret | null;
     typing?: boolean;
     members?: PresenceMember[] | ProjectMember[];
     projects?: Project[];
@@ -529,6 +538,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [agentApprovals, setAgentApprovals] = useState<AgentApproval[]>([]);
   const [draft, setDraft] = useState("");
   const [sharedPrompt, setSharedPrompt] = useState("");
+  const [activePromptDoc, setActivePromptDoc] = useState<Y.Doc>();
   const [sharedContext, setSharedContext] = useState<SharedProjectContext>();
   const [finalGoalDraft, setFinalGoalDraft] = useState("");
   const [usageReports, setUsageReports] = useState<UsageReportView[]>([]);
@@ -570,7 +580,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const presenceSentAt = useRef(0);
   const presenceProject = useRef("");
   const presenceConnectionState = useRef<ConnectionState | undefined>(undefined);
-  const localPresence = useRef<LocalPresence>({ cursor: null, caret: null, typing: false });
+  const localPresence = useRef<LocalPresence>({
+    cursor: null, caret: null, relativeCaret: null, typing: false,
+  });
   const presenceSendTimer = useRef<number | undefined>(undefined);
   const typingIdleTimer = useRef<number | undefined>(undefined);
   const promptDoc = useRef<Y.Doc | undefined>(undefined);
@@ -603,6 +615,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     });
     promptDoc.current = document;
     promptProject.current = nextScope;
+    setActivePromptDoc(document);
     setSharedPrompt("");
     return document;
   }, [command]);
@@ -905,7 +918,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
         setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
           deviceId: frame.deviceId!, displayName: frame.displayName!, cursor: frame.cursor ?? null,
-          caret: frame.caret ?? null, typing: frame.typing === true,
+          caret: frame.caret ?? null, relativeCaret: frame.relativeCaret ?? null,
+          typing: frame.typing === true,
         }]);
       } else if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
         && frame.type === "presence.leave" && frame.deviceId) {
@@ -1106,10 +1120,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const editSharedPrompt = (value: string) => {
     if (!projectId || !chatId) return;
     const text = ensurePromptDocument(projectId, chatId).getText("prompt");
-    text.doc?.transact(() => {
-      text.delete(0, text.length);
-      text.insert(0, value);
-    });
+    applyPromptTextEdit(text, value);
   };
 
   const sendPrompt = async (event: FormEvent) => {
@@ -1512,10 +1523,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     const nextScope = projectId && chatId ? `${projectId}:${chatId}` : "";
     if (previousScope && previousScope !== nextScope && presenceConnectionState.current === "connected") {
       const [previousProjectId, previousChatId] = previousScope.split(":");
-      sendPresenceState(previousProjectId!, previousChatId ?? null, { cursor: null, caret: null, typing: false });
+      sendPresenceState(previousProjectId!, previousChatId ?? null, {
+        cursor: null, caret: null, relativeCaret: null, typing: false,
+      });
     }
     presenceProject.current = nextScope;
-    localPresence.current = { cursor: null, caret: null, typing: false };
+    localPresence.current = { cursor: null, caret: null, relativeCaret: null, typing: false };
     if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
     if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
   }, [projectId, chatId, sendPresenceState]);
@@ -1537,7 +1550,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const selectedProjectLocked = selectedProject?.lock?.state === "locked";
   const selectedChat = chats.find(item => item.id === chatId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
-    && (member.typing || member.caret));
+    && (member.typing || member.caret || member.relativeCaret)).map(member => ({
+      ...member,
+      caret: activePromptDoc
+        ? resolvePromptRelativeCaret(
+          activePromptDoc.getText("prompt"),
+          member.relativeCaret,
+          member.caret,
+        )
+        : member.caret,
+    }));
   const selectedPrivateContact = privateContacts.find(contact => contact.deviceId === recipientDeviceId);
   const selectedPrivateMessages = privateTimelineForContact(
     privateMessages,
@@ -1938,20 +1960,48 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               <textarea className="input" value={sharedPrompt}
                 onChange={event => {
                   editSharedPrompt(event.target.value);
-                  publishPresence({ caret: {
+                  const caret = {
                     anchor: event.currentTarget.selectionStart,
                     head: event.currentTarget.selectionEnd,
-                  }, typing: true }, false);
+                  };
+                  publishPresence({
+                    caret,
+                    relativeCaret: encodePromptRelativeCaret(
+                      ensurePromptDocument(projectId, chatId).getText("prompt"),
+                      caret,
+                    ),
+                    typing: true,
+                  }, false);
                 }}
-                onFocus={event => publishPresence({ caret: {
-                  anchor: event.currentTarget.selectionStart,
-                  head: event.currentTarget.selectionEnd,
-                } })}
-                onSelect={event => publishPresence({ caret: {
-                  anchor: event.currentTarget.selectionStart,
-                  head: event.currentTarget.selectionEnd,
-                } })}
-                onBlur={() => publishPresence({ caret: null, typing: false })}
+                onFocus={event => {
+                  const caret = {
+                    anchor: event.currentTarget.selectionStart,
+                    head: event.currentTarget.selectionEnd,
+                  };
+                  publishPresence({
+                    caret,
+                    relativeCaret: encodePromptRelativeCaret(
+                      ensurePromptDocument(projectId, chatId).getText("prompt"),
+                      caret,
+                    ),
+                  });
+                }}
+                onSelect={event => {
+                  const caret = {
+                    anchor: event.currentTarget.selectionStart,
+                    head: event.currentTarget.selectionEnd,
+                  };
+                  publishPresence({
+                    caret,
+                    relativeCaret: encodePromptRelativeCaret(
+                      ensurePromptDocument(projectId, chatId).getText("prompt"),
+                      caret,
+                    ),
+                  });
+                }}
+                onBlur={() => publishPresence({
+                  caret: null, relativeCaret: null, typing: false,
+                })}
                 placeholder={t("cocodex.prompt.placeholder")} rows={3}
                 disabled={!status.running || !projectId || selectedProjectLocked} />
               {remotePromptPresence.length > 0 && <div className="cocodex-prompt-presence" aria-live="polite">

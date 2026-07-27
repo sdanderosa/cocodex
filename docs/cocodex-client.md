@@ -199,11 +199,16 @@ selection after submission likewise cannot mutate the dispatched request. See
 ADR 0044.
 
 Presence is deliberately ephemeral. The client publishes a normalized mouse
-cursor plus a bounded prompt caret/selection and typing flag; local state keeps
-those channels merged, batches typing updates, clears typing after idle/blur,
-and republishes the state after reconnect. The GUI shows named awareness/status
-chips for remote caret/selection/typing state. Offsets are advisory for the
-current prompt snapshot, not stable Yjs RelativePositions or an inline overlay.
+cursor plus a bounded prompt caret/selection, the corresponding encoded Yjs
+RelativePositions, and a typing flag; local state keeps those channels merged,
+batches typing updates, clears typing after idle/blur, and republishes the state
+after reconnect. The GUI resolves remote caret/selection anchors against the
+current merged Yjs document and shows named awareness/status chips. Textarea
+changes are applied to Y.Text as a minimal prefix/suffix edit so unchanged
+relative anchors survive ordinary typing. Raw offsets remain only as a
+backward-compatible fallback. Presence frames are ephemeral, never carry prompt
+text, and are delivered only to sockets viewing the same chat. A rich inline
+caret overlay remains future UI work.
 
 To instruct a local or remote named agent through the JSON-line session:
 

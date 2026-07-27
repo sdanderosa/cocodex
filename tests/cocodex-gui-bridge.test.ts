@@ -337,6 +337,16 @@ describe("CoCodex GUI bridge", () => {
       type: "usage.get",
       projectId: crypto.randomUUID(),
     }).accepted).toBe(true);
+    const presenceProjectId = crypto.randomUUID();
+    expect(bridge.command({
+      type: "presence.update",
+      projectId: presenceProjectId,
+      chatId: presenceProjectId,
+      cursor: null,
+      caret: { anchor: 4, head: 9 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" },
+      typing: true,
+    }).accepted).toBe(true);
     const memberProjectId = crypto.randomUUID();
     const removedDeviceId = crypto.randomUUID();
     expect(bridge.command({
@@ -417,6 +427,10 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "presence.update"
+      && value.projectId === presenceProjectId
+      && value.relativeCaret?.anchor === "AQIDBA=="
+      && value.relativeCaret?.head === "BQYHCA==")).toBe(true);
     expect(received.some((value: any) => value.type === "project.file-reference.list"
       && value.projectId === referenceProjectId)).toBe(true);
     expect(received.some((value: any) => value.type === "project.file-reference.publish"

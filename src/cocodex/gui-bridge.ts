@@ -79,7 +79,7 @@ const RENDERER_FRAME_FIELDS = new Set([
   "taskId", "authorDeviceId", "title", "summary", "createdAt",
   "referenceId", "artifactId", "relativePath", "commitSha", "sha256",
   "sizeBytes", "mediaType", "hostDeviceId",
-  "cursor", "caret", "typing", "x", "y", "anchor", "head",
+  "cursor", "caret", "relativeCaret", "typing", "x", "y", "anchor", "head",
   "final", "created", "keyEpoch",
   "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
   "operationId", "cancelledTaskCount",

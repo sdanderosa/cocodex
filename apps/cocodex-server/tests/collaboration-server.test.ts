@@ -17,6 +17,7 @@ import {
   type UsageReport,
   publicKeyFingerprint,
   projectLockSigningTranscript,
+  sharedChatCreationSigningTranscript,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
@@ -1144,12 +1145,14 @@ describe("authenticated WSS collaboration", () => {
     stephenSocket.send(JSON.stringify({
       version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
       chatId: project.id,
-      cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 }, typing: true,
+      cursor: { x: 0.42, y: 0.73 }, caret: { anchor: 4, head: 9 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" }, typing: true,
     }));
     const presenceUpdate = await remotePresence;
     expect(presenceUpdate.displayName).toBe("Stephen");
     expect(presenceUpdate.cursor).toEqual({ x: 0.42, y: 0.73 });
     expect(presenceUpdate.caret).toEqual({ anchor: 4, head: 9 });
+    expect(presenceUpdate.relativeCaret).toEqual({ anchor: "AQIDBA==", head: "BQYHCA==" });
     expect(presenceUpdate.typing).toBe(true);
     const typingOnly = nextFrame(reconnectedKai, "presence.update", frame => frame.deviceId === stephen.id);
     stephenSocket.send(JSON.stringify({
@@ -1503,6 +1506,80 @@ describe("authenticated WSS collaboration", () => {
       cursor: null, caret: null, typing: true,
     }));
     expect(await typingOnly).toMatchObject({ deviceId: stephen.id, cursor: null, caret: null, typing: true });
+
+    const secondChatId = randomUUID();
+    const nonce = randomBytes(32).toString("base64url");
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const chatCreated = nextFrame(stephenSocket, "project.chat.created");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.chat.create",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId: secondChatId,
+      title: "Security review",
+      nonce,
+      issuedAt,
+      expiresAt,
+      signature: sign(null, sharedChatCreationSigningTranscript({
+        projectId: project.id,
+        chatId: secondChatId,
+        title: "Security review",
+        creatorDeviceId: stephen.id,
+        nonce,
+        issuedAt,
+        expiresAt,
+      }), stephen.privateKey).toString("base64url"),
+    }));
+    expect(await chatCreated).toMatchObject({ chat: { id: secondChatId } });
+
+    const kaiSecondChat = nextFrame(kaiSocket, "project.chat.snapshot");
+    const kaiSecondPresence = nextFrame(kaiSocket, "presence.snapshot");
+    kaiSocket.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: secondChatId, afterSequence: 0,
+    }));
+    await kaiSecondChat;
+    expect((await kaiSecondPresence).members).toEqual([expect.objectContaining({
+      deviceId: stephen.id,
+      caret: null,
+      relativeCaret: null,
+      typing: false,
+    })]);
+
+    const foreignPresence: unknown[] = [];
+    const collectForeignPresence = (event: MessageEvent) => {
+      const frame = JSON.parse(String(event.data));
+      if (frame.type === "presence.update" && frame.deviceId === stephen.id) {
+        foreignPresence.push(frame);
+      }
+    };
+    kaiSocket.addEventListener("message", collectForeignPresence);
+    const crossChatAccepted = nextFrame(stephenSocket, "presence.accepted");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, cursor: null, caret: { anchor: 2, head: 5 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" }, typing: true,
+    }));
+    await crossChatAccepted;
+    const nullChatRejected = nextFrame(stephenSocket, "error");
+    stephenSocket.send(JSON.stringify({
+      version: 1, type: "presence.update", requestId: randomUUID(), projectId: project.id,
+      chatId: null, cursor: null, caret: { anchor: 2, head: 5 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" }, typing: true,
+    }));
+    expect((await nullChatRejected).error).toContain("Prompt presence requires a chat");
+    await Bun.sleep(100);
+    kaiSocket.removeEventListener("message", collectForeignPresence);
+    expect(foreignPresence).toEqual([]);
+    const kaiGeneralChat = nextFrame(kaiSocket, "project.chat.snapshot");
+    const kaiGeneralPresence = nextFrame(kaiSocket, "presence.snapshot");
+    kaiSocket.send(JSON.stringify({
+      version: 1, type: "project.chat.subscribe", requestId: randomUUID(), projectId: project.id,
+      chatId: project.id, afterSequence: 0,
+    }));
+    await Promise.all([kaiGeneralChat, kaiGeneralPresence]);
 
     const duplicateStephen = await connect(server.port, stephen, fingerprint, false);
     const duplicateSnapshot = nextFrame(duplicateStephen, "project.chat.snapshot");

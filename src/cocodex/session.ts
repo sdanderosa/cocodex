@@ -4362,6 +4362,7 @@ export async function runJsonLineSession(
             chatId: command.chatId === null ? null : String(command.chatId ?? command.projectId),
             cursor: command.cursor ?? null,
             caret: command.caret ?? null,
+            relativeCaret: command.relativeCaret ?? null,
             typing: command.typing === true,
           });
           emit({ source: "control", id: command.id, ok: true });

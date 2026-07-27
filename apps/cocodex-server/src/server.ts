@@ -164,7 +164,7 @@ interface SocketData {
   remoteAddress: string;
   subscribedProjects: Set<string>;
   subscribedEncryptedChats: Set<string>;
-  subscribedPresenceProjects: Set<string>;
+  subscribedPresenceChats: Map<string, string>;
   subscribedEncryptedPrompts: Set<string>;
   subscribedEncryptedArtifacts: Set<string>;
   subscribedEncryptedFileReferences: Set<string>;
@@ -191,6 +191,7 @@ interface PresenceState {
   chatId: string | null;
   cursor: { x: number; y: number } | null;
   caret: { anchor: number; head: number } | null;
+  relativeCaret?: { anchor: string; head: string } | null;
   typing: boolean;
   updatedAt: string;
 }
@@ -677,7 +678,11 @@ export function startCoCodexServer(
     const encoded = JSON.stringify(parsed);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
-      if (!deviceId || !socket.data.subscribedPresenceProjects.has(projectId)) continue;
+      const subscribedChatId = socket.data.subscribedPresenceChats.get(projectId);
+      if (!deviceId || subscribedChatId === undefined
+        || (parsed.type === "presence.update" && parsed.chatId !== subscribedChatId)
+        || (parsed.type === "presence.leave"
+          && parsed.chatId !== null && parsed.chatId !== subscribedChatId)) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
         socket.close(1008, "Device authorization was revoked");
@@ -687,7 +692,7 @@ export function startCoCodexServer(
         requireProjectMembership(db, projectId, deviceId);
         socket.send(encoded);
       } catch {
-        socket.data.subscribedPresenceProjects.delete(projectId);
+        socket.data.subscribedPresenceChats.delete(projectId);
       }
     }
   }
@@ -700,7 +705,7 @@ export function startCoCodexServer(
     deviceId: string,
   ): void {
     requireSharedChat(db, projectId, chatId, deviceId);
-    socket.data.subscribedPresenceProjects.add(projectId);
+    socket.data.subscribedPresenceChats.set(projectId, chatId);
     prunePresence();
     socket.send(JSON.stringify(presenceSnapshotFrameSchema.parse({
       version: 1,
@@ -712,7 +717,7 @@ export function startCoCodexServer(
         .filter(member => member.deviceId !== deviceId)
         .map(member => member.chatId === chatId
           ? member
-          : { ...member, cursor: null, caret: null, typing: false })
+          : { ...member, cursor: null, caret: null, relativeCaret: null, typing: false })
         .slice(0, MAX_PRESENCE_MEMBERS),
     })));
   }
@@ -724,8 +729,11 @@ export function startCoCodexServer(
 
   function clearProjectPresence(projectId: string, deviceId: string): void {
     const members = presenceByProject.get(projectId);
-    if (!members?.delete(deviceId)) return;
-    sendPresence(projectId, { version: 1, type: "presence.leave", projectId, chatId: null, deviceId });
+    const member = members?.get(deviceId);
+    if (!member || !members?.delete(deviceId)) return;
+    sendPresence(projectId, {
+      version: 1, type: "presence.leave", projectId, chatId: member.chatId, deviceId,
+    });
     if (members.size === 0) {
       presenceByProject.delete(projectId);
       presenceProjectUpdateTimes.delete(projectId);
@@ -859,7 +867,7 @@ export function startCoCodexServer(
           remoteAddress,
           subscribedProjects: new Set(),
           subscribedEncryptedChats: new Set(),
-          subscribedPresenceProjects: new Set(),
+          subscribedPresenceChats: new Map(),
           subscribedEncryptedPrompts: new Set(),
           subscribedEncryptedArtifacts: new Set(),
           subscribedEncryptedFileReferences: new Set(),
@@ -1669,11 +1677,14 @@ export function startCoCodexServer(
               chatId: message.chatId,
               cursor: message.cursor,
               caret: message.caret,
+              relativeCaret: message.relativeCaret,
               typing: message.typing,
               updatedAt: new Date().toISOString(),
             } satisfies PresenceState;
             const members = presenceByProject.get(message.projectId) ?? new Map<string, PresenceState>();
-            const active = Boolean(message.cursor || message.caret || message.typing);
+            const active = Boolean(
+              message.cursor || message.caret || message.relativeCaret || message.typing,
+            );
             if (active && !members.has(deviceId) && members.size >= MAX_PRESENCE_MEMBERS) {
               socket.send(JSON.stringify({
                 version: 1,

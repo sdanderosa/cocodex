@@ -157,6 +157,15 @@ const textCaret = z.object({
   anchor: z.number().int().min(0).max(32_768),
   head: z.number().int().min(0).max(32_768),
 }).strict();
+const relativeTextPosition = z.string().min(4).max(512)
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)
+  .refine(value => Buffer.from(value, "base64").toString("base64") === value, {
+    message: "Relative text position must be canonical base64",
+  });
+const relativeTextCaret = z.object({
+  anchor: relativeTextPosition,
+  head: relativeTextPosition,
+}).strict();
 
 interface WebSocketAuthTranscriptInput {
   serverFingerprint: string;
@@ -355,8 +364,16 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     chatId: chatId.nullable(),
     cursor: cursorPosition.nullable(),
     caret: textCaret.nullable(),
+    relativeCaret: relativeTextCaret.nullable().optional(),
     typing: z.boolean().default(false),
-  }).strict(),
+  }).strict().superRefine((value, refinement) => {
+    if (value.chatId === null && (value.caret || value.relativeCaret || value.typing)) {
+      refinement.addIssue({
+        code: "custom",
+        message: "Prompt presence requires a chat",
+      });
+    }
+  }),
   z.object({
     version: z.literal(1),
     type: z.literal("prompt.update"),
@@ -784,6 +801,7 @@ const presenceMemberSchema = z.object({
   chatId: chatId.nullable(),
   cursor: cursorPosition.nullable(),
   caret: textCaret.nullable(),
+  relativeCaret: relativeTextCaret.nullable().optional(),
   typing: z.boolean().default(false),
   updatedAt: z.iso.datetime(),
 }).strict();
@@ -807,6 +825,7 @@ export const presenceUpdateFrameSchema = z.object({
   displayName: z.string().trim().min(1).max(80),
   cursor: cursorPosition.nullable(),
   caret: textCaret.nullable(),
+  relativeCaret: relativeTextCaret.nullable().optional(),
   typing: z.boolean().default(false),
   updatedAt: z.iso.datetime(),
 }).strict();

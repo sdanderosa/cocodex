@@ -821,9 +821,10 @@ describe("CoCodex protocol", () => {
       type: "presence.update" as const,
       requestId: crypto.randomUUID(),
       projectId: crypto.randomUUID(),
-      chatId: null,
+      chatId: crypto.randomUUID(),
       cursor: { x: 0.25, y: 0.75 },
       caret: { anchor: 3, head: 8 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" },
       typing: true,
     };
     expect(clientFrameSchema.parse(frame)).toEqual(frame);
@@ -831,6 +832,30 @@ describe("CoCodex protocol", () => {
     delete (legacyFrame as Partial<typeof frame>).typing;
     expect(clientFrameSchema.parse(legacyFrame)).toMatchObject({ ...frame, typing: false });
     expect(() => clientFrameSchema.parse({ ...frame, cursor: { x: 2, y: 0 } })).toThrow();
+    expect(() => clientFrameSchema.parse({
+      ...frame,
+      relativeCaret: { anchor: "not base64", head: "BQYHCA==" },
+    })).toThrow();
+    expect(() => clientFrameSchema.parse({
+      ...frame,
+      relativeCaret: { anchor: "AB==", head: "BQYHCA==" },
+    })).toThrow();
+    const maximumPosition = Buffer.alloc(384, 7).toString("base64");
+    expect(clientFrameSchema.parse({
+      ...frame,
+      relativeCaret: { anchor: maximumPosition, head: maximumPosition },
+    })).toMatchObject({ relativeCaret: { anchor: maximumPosition, head: maximumPosition } });
+    const oversizedPosition = Buffer.alloc(385, 7).toString("base64");
+    expect(() => clientFrameSchema.parse({
+      ...frame,
+      relativeCaret: { anchor: oversizedPosition, head: maximumPosition },
+    })).toThrow();
+    expect(() => clientFrameSchema.parse({
+      ...frame,
+      chatId: null,
+      cursor: null,
+      caret: { anchor: 1, head: 2 },
+    })).toThrow();
   });
   test("strictly validates private-message ciphertext and server delivery frames", () => {
     const senderDeviceId = crypto.randomUUID();
@@ -1185,6 +1210,7 @@ describe("CoCodex protocol", () => {
       chatId: projectId,
       cursor: null,
       caret: { anchor: 2, head: 7 },
+      relativeCaret: { anchor: "AQIDBA==", head: "BQYHCA==" },
       typing: true,
       updatedAt,
     };
