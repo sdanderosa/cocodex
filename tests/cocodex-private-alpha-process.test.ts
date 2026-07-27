@@ -1150,9 +1150,29 @@ describe("three-process CoCodex private alpha", () => {
       && line.message?.messageId === cachedQueued.messageId
       && line.message?.deliveryState === "rejected");
     expect(rejectedCachedSend.message.rejectionReason).toContain("not approved");
-    await waitFor(kai, line => line.source === "session"
-      && line.state === "connected"
-      && line.flushedEvents >= 1);
+    await waitFor(kai, line => line.source === "session" && line.state === "connected");
+    await waitFor(kai, line => line.source === "project-security"
+      && line.state === "device-revoked"
+      && line.projectId === project.id
+      && line.revokedDeviceId === stephenDevice.id
+      && line.promotedOwnerDeviceId === kaiDevice.id);
+    const recoverAfterRevocation = randomUUID();
+    kai.send({
+      id: recoverAfterRevocation,
+      type: "project.member.remove-and-rotate",
+      projectId: project.id,
+      deviceId: stephenDevice.id,
+    });
+    await Promise.all([
+      waitFor(kai, line => line.source === "control"
+        && line.id === recoverAfterRevocation
+        && line.ok === true
+        && line.keyEpoch === 2),
+      waitFor(kai, line => line.source === "project-encryption"
+        && line.state === "key-available"
+        && line.projectId === project.id
+        && line.keyEpoch === 2),
+    ]);
     const afterRevocationSubscribe = randomUUID();
     kai.send({
       id: afterRevocationSubscribe,
@@ -1160,10 +1180,25 @@ describe("three-process CoCodex private alpha", () => {
       projectId: project.id,
       afterSequence: 0,
     });
-    await waitFor(kai, line => line.frame?.type === "chat.snapshot"
+    const recoveredSnapshot = await waitFor(kai, line => line.frame?.type === "chat.snapshot"
       && line.frame.requestId === afterRevocationSubscribe
-      && line.frame.events?.some((event: any) => event.content === afterRevocationChat));
-    expect(readFileSync(join(kaiRoot, "outbox.json"), "utf8")).not.toContain(cachedQueued.messageId);
+      && Array.isArray(line.frame.events));
+    expect(recoveredSnapshot.frame.events
+      .some((event: any) => event.content === afterRevocationChat)).toBeFalse();
+    const afterRecoveryChat = "new work is encrypted only after revocation recovery";
+    const afterRecoveryChatRequest = randomUUID();
+    kai.send({
+      id: afterRecoveryChatRequest,
+      type: "chat.send",
+      projectId: project.id,
+      content: afterRecoveryChat,
+    });
+    await waitFor(kai, line => line.frame?.type === "chat.accepted"
+      && line.frame.requestId === afterRecoveryChatRequest
+      && line.frame.event?.content === afterRecoveryChat);
+    const recoveredOutbox = readFileSync(join(kaiRoot, "outbox.json"), "utf8");
+    expect(recoveredOutbox).not.toContain(cachedQueued.messageId);
+    expect(recoveredOutbox).not.toContain(afterRevocationChatRequest);
     kai.send({ id: "stop-revocation-k", type: "shutdown" });
     await kai.process.exited;
     residents.splice(residents.indexOf(kai), 1);

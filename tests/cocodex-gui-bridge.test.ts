@@ -174,6 +174,36 @@ describe("CoCodex GUI bridge", () => {
           },
         },
       })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          version: 1,
+          type: "project.device-revoked",
+          incidentId: "incident-1",
+          projectId: "project",
+          revokedDeviceId: "revoked-device",
+          currentEpoch: 3,
+          promotedOwnerDeviceId: "promoted-owner",
+          createdAt: "2030-01-01T00:00:00.000Z",
+          cancelledTasks: [{ taskId: "task-1", targetDeviceId: "revoked-device" }],
+          envelope: { sealedProjectKey: "REVOCATION_ENVELOPE_CANARY" },
+          deviceKeyCertificate: "REVOCATION_CERTIFICATE_CANARY",
+          privateKey: "REVOCATION_PRIVATE_KEY_CANARY",
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "project-security",
+        state: "device-revoked",
+        projectId: "project",
+        revokedDeviceId: "revoked-device",
+        currentEpoch: 3,
+        promotedOwnerDeviceId: "promoted-owner",
+        incidentId: "incident-1",
+        localDeviceRevoked: false,
+        keyRotationRequired: true,
+        envelope: { sealedProjectKey: "SECURITY_EVENT_ENVELOPE_CANARY" },
+        certificate: "SECURITY_EVENT_CERTIFICATE_CANARY",
+      })}\n`);
       for await (const chunk of input) {
         for (const line of String(chunk).trim().split("\n")) {
           const command = JSON.parse(line);
@@ -420,6 +450,37 @@ describe("CoCodex GUI bridge", () => {
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SEALED_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_PUBLIC_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SIGNATURE_CANARY");
+    const revokedEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "project.device-revoked");
+    expect(revokedEvent?.value).toEqual({
+      source: "server",
+      frame: {
+        type: "project.device-revoked",
+        incidentId: "incident-1",
+        projectId: "project",
+        revokedDeviceId: "revoked-device",
+        currentEpoch: 3,
+        promotedOwnerDeviceId: "promoted-owner",
+        createdAt: "2030-01-01T00:00:00.000Z",
+      },
+    });
+    expect(JSON.stringify(revokedEvent)).not.toContain("REVOCATION_ENVELOPE_CANARY");
+    expect(JSON.stringify(revokedEvent)).not.toContain("REVOCATION_CERTIFICATE_CANARY");
+    expect(JSON.stringify(revokedEvent)).not.toContain("REVOCATION_PRIVATE_KEY_CANARY");
+    const securityEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "project-security");
+    expect(securityEvent?.value).toEqual({
+      source: "project-security",
+      state: "device-revoked",
+      projectId: "project",
+      revokedDeviceId: "revoked-device",
+      currentEpoch: 3,
+      promotedOwnerDeviceId: "promoted-owner",
+      incidentId: "incident-1",
+      keyRotationRequired: true,
+    });
+    expect(JSON.stringify(securityEvent)).not.toContain("SECURITY_EVENT_ENVELOPE_CANARY");
+    expect(JSON.stringify(securityEvent)).not.toContain("SECURITY_EVENT_CERTIFICATE_CANARY");
     const projectCreatedEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "project.created");
     expect(projectCreatedEvent?.value).toMatchObject({

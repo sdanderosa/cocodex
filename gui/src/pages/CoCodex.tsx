@@ -9,10 +9,14 @@ import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-sta
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import {
   confirmProjectMemberRemoval,
+  clearRecoveredProjectSecurity,
+  isRevokedProjectMember,
+  markProjectMemberRevoked,
   projectMemberRemovalCommand,
   reconcileRevokedProject,
   type Project,
   type ProjectMember,
+  type ProjectSecurityIncident,
 } from "../cocodex-member-state";
 import { useT, type TFn, type TKey } from "../i18n";
 import { IconBot, IconKey, IconLock, IconRefresh, IconServer } from "../icons";
@@ -260,8 +264,15 @@ interface LocalPresence {
 
 interface SessionValue {
   source?: string;
-  state?: ConnectionState | "key-available" | "rotation-required" | "revoked";
+  state?: ConnectionState | "key-available" | "rotation-required" | "revoked" | "device-revoked";
   projectId?: string;
+  keyEpoch?: number;
+  revokedDeviceId?: string;
+  promotedOwnerDeviceId?: string | null;
+  currentEpoch?: number;
+  incidentId?: string;
+  localDeviceRevoked?: boolean;
+  keyRotationRequired?: boolean;
   approvalState?: "pending" | "resolved";
   executionEnabled?: boolean;
   fullComputerEnabled?: boolean;
@@ -281,6 +292,12 @@ interface SessionValue {
     type?: string;
     projectId?: string;
     chatId?: string;
+    incidentId?: string;
+    revokedDeviceId?: string;
+    promotedOwnerDeviceId?: string | null;
+    currentEpoch?: number;
+    createdAt?: string;
+    status?: "approved" | "revoked";
     chats?: SharedChat[];
     chat?: SharedChat;
     defaultChat?: SharedChat;
@@ -445,16 +462,20 @@ export function ProjectMemberRoster({
               <strong>{member.displayName}</strong>
               <small>{member.role} · {member.fingerprint.slice(-12)} · {t(member.trusted
                 ? "cocodex.members.trusted"
-                : "cocodex.members.unverified")}</small>
+                : "cocodex.members.unverified")}
+                {isRevokedProjectMember(member) && ` · ${t("cocodex.members.revoked")}`}</small>
+              {isRevokedProjectMember(member) && <small role="status">{t("cocodex.members.revokedRecovery")}</small>}
             </span>
             {owner && member.role !== "owner" && <span className="cocodex-member-actions">
-              {!member.trusted && <button type="button" className="btn btn-ghost"
+              {!member.trusted && !isRevokedProjectMember(member) && <button type="button" className="btn btn-ghost"
                 disabled={busy || !connected} onClick={() => onTrust(member)}>
                 {t("cocodex.members.trust")}
               </button>}
               <button type="button" className="btn btn-danger btn-ghost"
                 disabled={busy || !connected} onClick={() => onRemove(member)}>
-                {t("cocodex.members.remove")}
+                {t(isRevokedProjectMember(member)
+                  ? "cocodex.members.removeAndRotate"
+                  : "cocodex.members.remove")}
               </button>
             </span>}
           </article>
@@ -475,6 +496,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [chatTitle, setChatTitle] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [projectSecurity, setProjectSecurity] = useState<Record<string, ProjectSecurityIncident>>({});
   const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
@@ -531,6 +553,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const typingIdleTimer = useRef<number | undefined>(undefined);
   const promptDoc = useRef<Y.Doc | undefined>(undefined);
   const promptProject = useRef("");
+  const seenSecurityIncidents = useRef(new Set<string>());
 
   const command = useCallback((body: Record<string, unknown>) =>
     cocodexApiJson(apiBase, `${apiBase}/api/cocodex/command`, {
@@ -623,6 +646,83 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
+        if (value.projectId) {
+          setProjectSecurity(previous => {
+            const existing = previous[value.projectId!];
+            if (existing?.state === "device-revoked") {
+              if (typeof existing.currentEpoch === "number" || typeof value.currentEpoch !== "number") {
+                return previous;
+              }
+              return {
+                ...previous,
+                [value.projectId!]: { ...existing, currentEpoch: value.currentEpoch },
+              };
+            }
+            return {
+              ...previous,
+              [value.projectId!]: {
+                ...existing,
+                state: "rotation-required",
+                ...(typeof value.currentEpoch === "number" ? { currentEpoch: value.currentEpoch } : {}),
+              },
+            };
+          });
+        }
+      }
+      if (value?.source === "project-encryption" && value.state === "key-available"
+        && value.projectId && typeof value.keyEpoch === "number") {
+        setProjectSecurity(previous => {
+          const incident = previous[value.projectId!];
+          const nextIncident = clearRecoveredProjectSecurity(
+            incident,
+            incident?.revokedDeviceId ?? "",
+            value.keyEpoch!,
+          );
+          if (nextIncident === incident) return previous;
+          const next = { ...previous };
+          if (nextIncident) next[value.projectId!] = nextIncident;
+          else delete next[value.projectId!];
+          return next;
+        });
+      }
+      const deviceRevokedFrame = frame?.type === "project.device-revoked" ? frame : undefined;
+      const deviceRevokedEvent = value?.source === "project-security" && value.state === "device-revoked"
+        ? value
+        : undefined;
+      const securityProjectId = deviceRevokedEvent?.projectId ?? deviceRevokedFrame?.projectId;
+      const revokedDeviceId = deviceRevokedEvent?.revokedDeviceId ?? deviceRevokedFrame?.revokedDeviceId;
+      if (securityProjectId && revokedDeviceId) {
+        const incidentId = deviceRevokedEvent?.incidentId ?? deviceRevokedFrame?.incidentId;
+        const localDeviceRevoked = deviceRevokedEvent?.localDeviceRevoked === true
+          || revokedDeviceId === status?.deviceId;
+        setProjectSecurity(previous => ({
+          ...previous,
+          [securityProjectId]: {
+            state: "device-revoked",
+            revokedDeviceId,
+            promotedOwnerDeviceId: deviceRevokedEvent?.promotedOwnerDeviceId
+              ?? deviceRevokedFrame?.promotedOwnerDeviceId,
+            currentEpoch: deviceRevokedEvent?.currentEpoch ?? deviceRevokedFrame?.currentEpoch,
+            incidentId,
+            localDeviceRevoked,
+          },
+        }));
+        setProjectMembers(previous => securityProjectId === projectId
+          ? markProjectMemberRevoked(previous, revokedDeviceId)
+          : previous);
+        setNotice(t(localDeviceRevoked
+          ? "cocodex.security.deviceRevokedLocal"
+          : "cocodex.security.deviceRevoked"));
+        if (incidentId && !seenSecurityIncidents.current.has(incidentId)) {
+          seenSecurityIncidents.current.add(incidentId);
+          if (status?.state === "connected") {
+            // Refresh ownership, roster status, and the key-rotation marker;
+            // never issue the destructive remove-and-rotate command here.
+            void command({ type: "project.list" });
+            void command({ type: "project.member.list", projectId: securityProjectId });
+            void command({ type: "project.key.get", projectId: securityProjectId });
+          }
+        }
       }
       if (value?.source === "project-encryption" && value.state === "revoked" && value.projectId) {
         const reconciled = reconcileRevokedProject(projects, projectId, value.projectId);
@@ -732,9 +832,29 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setPresence((frame.members as PresenceMember[]).map(member => ({ ...member, typing: member.typing === true })));
       } else if (frame?.projectId === projectId && frame.type === "project.member.list.result"
         && Array.isArray(frame.members)) {
-        setProjectMembers(frame.members as ProjectMember[]);
+        const members = frame.members as ProjectMember[];
+        setProjectMembers(members);
+        const revokedMember = members.find(isRevokedProjectMember);
+        if (revokedMember) {
+          setProjectSecurity(previous => ({
+            ...previous,
+            [projectId]: {
+              ...previous[projectId],
+              state: "device-revoked",
+              revokedDeviceId: revokedMember.deviceId,
+            },
+          }));
+        }
       } else if (frame?.projectId === projectId && frame.type === "project.member.removed" && frame.deviceId) {
         setProjectMembers(previous => previous.filter(member => member.deviceId !== frame.deviceId));
+        setProjectSecurity(previous => {
+          const incident = previous[projectId];
+          if (!incident || incident.revokedDeviceId !== frame.deviceId) return previous;
+          return {
+            ...previous,
+            [projectId]: { ...incident, memberRemoved: true },
+          };
+        });
       } else if (frame?.projectId === projectId && frame.chatId === chatId
         && frame.type === "presence.update" && frame.deviceId && frame.displayName) {
         setPresence(previous => [...previous.filter(member => member.deviceId !== frame.deviceId), {
@@ -794,7 +914,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         });
       }
     }
-  }, [chatId, command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, t]);
+  }, [chatId, command, ensurePromptDocument, loadStatus, projectId, projects, status?.deviceId, status?.state, t]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void loadStatus(), 0);
@@ -1319,6 +1439,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visibleArtifacts = status?.state === "connected" ? artifacts : [];
   const visibleFileReferences = status?.state === "connected" ? fileReferences : [];
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
+  const selectedProjectSecurity = projectSecurity[projectId];
+  const selectedProject = projects.find(project => project.id === projectId);
   const selectedChat = chats.find(item => item.id === chatId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
@@ -1350,6 +1472,26 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       </header>
 
       {notice && <div className="cocodex-notice" role="status">{notice}</div>}
+      {selectedProjectSecurity && projectId && (
+        <div className="cocodex-notice" role="alert">
+          <strong>{selectedProjectSecurity.state === "device-revoked"
+            ? t("cocodex.security.deviceRevoked")
+            : t("cocodex.encryption.rotationRequired")}</strong>
+          {selectedProjectSecurity.revokedDeviceId && (
+            <small> {selectedProjectSecurity.revokedDeviceId.slice(0, 12)}</small>
+          )}
+          {selectedProjectSecurity.promotedOwnerDeviceId && (
+            <small> · {t("cocodex.security.promotedOwner", {
+              device: selectedProjectSecurity.promotedOwnerDeviceId.slice(0, 12),
+            })}</small>
+          )}
+          {selectedProjectSecurity.state === "device-revoked"
+            && selectedProject?.role === "owner"
+            && projectMembers.some(member => isRevokedProjectMember(member) && member.role !== "owner") && (
+            <small> · {t("cocodex.security.ownerRecovery")}</small>
+          )}
+        </div>
+      )}
       {agentApprovals.map(approval => (
         <section className="cocodex-agent-approval" role="alert" key={approval.id}>
           <div>

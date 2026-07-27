@@ -16,6 +16,7 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "project.chat.list.result",
   "project.chat.created",
   "project.chat.changed",
+  "project.device-revoked",
   "project.member.list.result",
   "project.member.removed",
   "prompt.snapshot",
@@ -171,6 +172,25 @@ export interface CoCodexGuiStatus {
 function withoutSensitiveServerPayloads(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, any>;
+  if (record.source === "project-security" && record.state === "device-revoked") {
+    // Incident metadata is deliberately projected field-by-field. In
+    // particular, never forward a server frame, cancelled-task payload, key
+    // envelope, certificate, or signature through this resident-process
+    // boundary.
+    return {
+      source: "project-security",
+      state: "device-revoked",
+      ...(typeof record.projectId === "string" ? { projectId: record.projectId } : {}),
+      ...(typeof record.revokedDeviceId === "string" ? { revokedDeviceId: record.revokedDeviceId } : {}),
+      ...(typeof record.currentEpoch === "number" ? { currentEpoch: record.currentEpoch } : {}),
+      ...(record.promotedOwnerDeviceId === null || typeof record.promotedOwnerDeviceId === "string"
+        ? { promotedOwnerDeviceId: record.promotedOwnerDeviceId }
+        : {}),
+      ...(typeof record.incidentId === "string" ? { incidentId: record.incidentId } : {}),
+      ...(record.localDeviceRevoked === true ? { localDeviceRevoked: true } : {}),
+      keyRotationRequired: true,
+    };
+  }
   if (record.source === "private-contacts" && Array.isArray(record.contacts)) {
     return {
       source: "private-contacts",
@@ -259,6 +279,24 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
         ...(typeof frame.currentEpoch === "number" ? { currentEpoch: frame.currentEpoch } : {}),
         ...(typeof frame.rotationRequired === "boolean" ? { rotationRequired: frame.rotationRequired } : {}),
         ...(typeof frame.created === "boolean" ? { created: frame.created } : {}),
+      },
+    };
+  }
+  if (frame.type === "project.device-revoked") {
+    // This is a strict security incident frame. Only non-sensitive identity
+    // and recovery metadata is useful to the renderer.
+    return {
+      source: "server",
+      frame: {
+        type: "project.device-revoked",
+        ...(typeof frame.incidentId === "string" ? { incidentId: frame.incidentId } : {}),
+        ...(typeof frame.projectId === "string" ? { projectId: frame.projectId } : {}),
+        ...(typeof frame.revokedDeviceId === "string" ? { revokedDeviceId: frame.revokedDeviceId } : {}),
+        ...(typeof frame.currentEpoch === "number" ? { currentEpoch: frame.currentEpoch } : {}),
+        ...(frame.promotedOwnerDeviceId === null || typeof frame.promotedOwnerDeviceId === "string"
+          ? { promotedOwnerDeviceId: frame.promotedOwnerDeviceId }
+          : {}),
+        ...(typeof frame.createdAt === "string" ? { createdAt: frame.createdAt } : {}),
       },
     };
   }

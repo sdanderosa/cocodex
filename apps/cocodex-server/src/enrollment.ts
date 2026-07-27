@@ -8,6 +8,7 @@ import {
   type InvitationPayload,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { consumeInvitation, invitationIsUsable } from "./invitations";
+import { quarantineEncryptedProjectsForRevokedDevice } from "./project-encryption-storage";
 
 export interface EnrollmentChallenge {
   id: string;
@@ -207,6 +208,7 @@ export function revokeDevice(db: Database, fingerprint: string, now = new Date()
     `).run(now.toISOString(), device.id);
     if (result.changes !== 1) return false;
     expirePendingProjectInvitationsForDevice(db, device.id, now);
+    quarantineEncryptedProjectsForRevokedDevice(db, device.id, now);
     db.query(`
       INSERT INTO audit_events (event_type, subject_id, occurred_at, details_json)
       VALUES ('device.revoked', ?, ?, '{}')

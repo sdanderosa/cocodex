@@ -642,4 +642,30 @@ SET chat_id = (
 CREATE INDEX project_file_references_chat_created
   ON project_file_references(project_id, chat_id, created_at, id);`,
   },
+  {
+    version: 29,
+    sql: `
+CREATE TABLE device_revocation_project_incidents (
+  incident_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revoked_device_id TEXT NOT NULL REFERENCES devices(id),
+  recovery_owner_device_id TEXT REFERENCES devices(id),
+  current_epoch INTEGER NOT NULL CHECK (current_epoch > 0),
+  cancelled_tasks_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('unresolved', 'resolved')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution_rotation_id TEXT,
+  UNIQUE(project_id, revoked_device_id),
+  CHECK (
+    (status = 'unresolved' AND resolved_at IS NULL AND resolution_rotation_id IS NULL)
+    OR
+    (status = 'resolved' AND resolved_at IS NOT NULL AND resolution_rotation_id IS NOT NULL)
+  )
+);
+CREATE INDEX device_revocation_project_incidents_recovery
+  ON device_revocation_project_incidents(recovery_owner_device_id, status, created_at);
+CREATE INDEX device_revocation_project_incidents_project
+  ON device_revocation_project_incidents(project_id, status, created_at);`,
+  },
 ];

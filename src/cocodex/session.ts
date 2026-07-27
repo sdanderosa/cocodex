@@ -121,12 +121,27 @@ interface ControlCommand extends Record<string, unknown> {
 type CachedProjectMember = Omit<ProjectMemberView, "deviceKeyCertificate"> & {
   projectWrapPublicKeyPem: string | null;
   trusted: boolean;
+  /** The server may retain a revoked device in the roster for recovery. */
+  status?: "approved" | "revoked";
 };
 
 type ResidentProjectInvitation = ProjectInvitationView & {
   trusted: boolean;
   projectKey?: Buffer;
 };
+
+/**
+ * Return only approved recipients for a recovery key rotation. Revoked
+ * roster entries are retained for owner-visible recovery, but must never be
+ * given a newer project-key envelope.
+ */
+export function eligibleProjectMembersForRotation<T extends {
+  deviceId: string;
+  status?: "approved" | "revoked";
+}>(members: readonly T[], removedDeviceId: string): T[] {
+  return members.filter(member =>
+    member.deviceId !== removedDeviceId && member.status !== "revoked");
+}
 
 function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -2052,6 +2067,7 @@ export async function runJsonLineSession(
         || frame.type === "project.key.initialized" || frame.type === "project.key.changed"
         || frame.type === "project.key.rotated"
         || frame.type === "project.key.rotation-required"
+        || frame.type === "project.device-revoked"
         || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
@@ -2252,6 +2268,9 @@ export async function runJsonLineSession(
       if (frame.type === "project.member.list.result") {
         const trustedDevices = loadTrustedDevices(paths.trustedDevices);
         const members = frame.members.map((member: ProjectMemberView): CachedProjectMember => {
+          const membershipStatus = (member as ProjectMemberView & {
+            status?: "approved" | "revoked";
+          }).status === "revoked" ? "revoked" as const : "approved" as const;
           let projectWrapPublicKeyPem: string | null = null;
           let trusted = false;
           if (member.deviceKeyCertificate) {
@@ -2283,6 +2302,7 @@ export async function runJsonLineSession(
             role: member.role,
             projectWrapPublicKeyPem,
             trusted,
+            status: membershipStatus,
           };
         });
         projectMembers.set(String(frame.projectId), members);
@@ -2296,9 +2316,68 @@ export async function runJsonLineSession(
               fingerprint: member.fingerprint,
               role: member.role,
               trusted: member.trusted,
+              status: member.status ?? "approved",
             })),
           },
         });
+        return;
+      }
+      if (frame.type === "project.device-revoked") {
+        const projectId = String(frame.projectId);
+        const revokedDeviceId = String(frame.revokedDeviceId);
+        const localDeviceRevoked = revokedDeviceId === connection.deviceId;
+        const currentEpoch = Number(frame.currentEpoch);
+        try {
+          // A revocation is a quarantine signal, never an instruction to
+          // rotate silently. The local key store makes this sticky until an
+          // explicitly newer, server-approved epoch is installed.
+          markProjectKeyRotationRequired(paths.projectKeys, projectId);
+          if (localDeviceRevoked) {
+            revokeLocalProjectAccess(
+              projectId,
+              "This device was revoked from the project by the authoritative CoCodex Server.",
+            );
+          } else {
+            const cachedMembers = projectMembers.get(projectId);
+            if (cachedMembers) {
+              projectMembers.set(projectId, cachedMembers.map(member => member.deviceId === revokedDeviceId
+                ? { ...member, status: "revoked" as const }
+                : member));
+            }
+          }
+        } catch (error) {
+          emitError({
+            source: "project-encryption",
+            projectId,
+            deviceId: revokedDeviceId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        emit({
+          source: "project-security",
+          state: "device-revoked",
+          projectId,
+          revokedDeviceId,
+          currentEpoch: Number.isSafeInteger(currentEpoch) ? currentEpoch : undefined,
+          promotedOwnerDeviceId: frame.promotedOwnerDeviceId === null
+            ? null
+            : typeof frame.promotedOwnerDeviceId === "string" ? frame.promotedOwnerDeviceId : undefined,
+          incidentId: typeof frame.incidentId === "string" ? frame.incidentId : undefined,
+          localDeviceRevoked,
+          keyRotationRequired: true,
+        });
+        // Refresh authoritative roster/ownership/key metadata. No key bytes
+        // are requested here beyond the normal encrypted envelope path, and
+        // no remove-and-rotate command is issued automatically.
+        try {
+          projectKeySubscriptions.add(projectId);
+          send({ version: 1, type: "project.list", requestId: randomUUID() });
+          send({ version: 1, type: "project.member.list", requestId: randomUUID(), projectId });
+          send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
+        } catch {
+          // The reconnect supervisor retries these subscriptions when the
+          // socket is ready again.
+        }
         return;
       }
       if (frame.type === "project.prompt.snapshot" || frame.type === "project.prompt.changed" || frame.type === "project.prompt.accepted") {
@@ -2519,6 +2598,16 @@ export async function runJsonLineSession(
           projectId,
           (projectMembers.get(projectId) ?? []).filter(member => member.deviceId !== frame.deviceId),
         );
+        emit({
+          source: "server",
+          frame: {
+            version: 1,
+            type: "project.member.removed",
+            ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+            projectId,
+            deviceId: String(frame.deviceId),
+          },
+        });
         if (frame.deviceId === connection.deviceId) {
           try {
             revokeLocalProjectAccess(
@@ -3279,13 +3368,20 @@ export async function runJsonLineSession(
             throw new Error("Refresh the authoritative project member list before removing a device");
           }
           const owner = members.find(member => member.deviceId === connection.deviceId);
-          if (!owner || owner.role !== "owner") throw new Error("Only a project owner can remove members");
+          if (!owner || owner.role !== "owner" || owner.status === "revoked") {
+            throw new Error("Only an approved project owner can remove members");
+          }
           if (owner.projectWrapPublicKeyPem !== identity.projectWrapPublicKeyPem) {
             throw new Error("The server project-wrap key for this device does not match its local identity");
           }
           const target = members.find(member => member.deviceId === deviceId);
           if (!target || target.role === "owner") throw new Error("The selected device is not a removable project member");
-          const remaining = members.filter(member => member.deviceId !== deviceId);
+          // A revocation incident may leave revoked roster entries visible so
+          // the owner can recover them. Never wrap a new key for any revoked
+          // device, even when the explicit removal target is a different
+          // member; doing so would leak the new epoch to an unauthorized
+          // device and the server would reject the batch.
+          const remaining = eligibleProjectMembersForRotation(members, deviceId);
           if (remaining.length < 1 || remaining.length > 127) {
             throw new Error("Project member removal requires 1-127 remaining members");
           }

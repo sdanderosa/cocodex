@@ -58,7 +58,7 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }, { version: 26 }, { version: 27 }, { version: 28 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }, { version: 26 }, { version: 27 }, { version: 28 }, { version: 29 }]);
       expect(migrated.query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_invitations'",
       ).get()).toEqual({ name: "project_invitations" });
@@ -108,6 +108,22 @@ describe("CoCodex database migrations", () => {
       ).get()).toEqual({ name: "private_message_receipts" });
       expect((migrated.query("PRAGMA table_info(private_message_receipts)").all() as Array<{ name: string }>).map(column => column.name))
         .toEqual(expect.arrayContaining(["sequence", "message_id", "sender_device_id", "recipient_device_id", "receipt", "accepted_at"]));
+      expect(migrated.query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'device_revocation_project_incidents'",
+      ).get()).toEqual({ name: "device_revocation_project_incidents" });
+      expect((migrated.query(
+        "PRAGMA table_info(device_revocation_project_incidents)",
+      ).all() as Array<{ name: string }>).map(column => column.name)).toEqual(expect.arrayContaining([
+        "incident_id",
+        "project_id",
+        "revoked_device_id",
+        "recovery_owner_device_id",
+        "current_epoch",
+        "cancelled_tasks_json",
+        "status",
+        "resolved_at",
+        "resolution_rotation_id",
+      ]));
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;

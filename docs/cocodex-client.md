@@ -253,6 +253,19 @@ project-list reconciliation. A strictly newer valid envelope restores access
 only after the server later re-adds the device. The older two-step path still
 surfaces `rotation-required` without silently falling back to plaintext.
 
+An administrator-level device revocation is delivered as a durable project
+security incident. Every surviving Client immediately makes the old epoch
+write-ineligible in its protected key store, refreshes project ownership,
+membership, and key metadata, and labels the revoked roster entry. If the
+revoked device owned the project, the Server may promote an already approved
+survivor to recovery owner; that Client can use the normal **Remove and rotate**
+action to exclude the revoked member and install the complete next epoch.
+CoCodex never rotates silently from renderer input. The Server can replay the
+same unresolved incident after either side restarts, and exact recovery
+submission remains idempotent. A project with no approved survivor stays
+quarantined instead of weakening device identity or encryption checks. See ADR
+0040.
+
 ## Encrypted project context
 
 New client installations also create a dedicated X25519 project-wrap keypair;

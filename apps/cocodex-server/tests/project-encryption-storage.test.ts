@@ -19,7 +19,9 @@ import {
   getEncryptedProjectContext,
   createEncryptedProject,
   getProjectKeyEpoch,
+  getUnresolvedProjectRevocationIncidentForDevice,
   initializeProjectKeyEpoch,
+  listUnresolvedProjectRevocationIncidentsForDevice,
   listProjectKeyEnvelopes,
   removeProjectMemberAndInvalidateKeys,
   removeProjectMemberAndRotateKeys,
@@ -39,6 +41,7 @@ import { addProjectMember, createProject } from "../src/shared-state";
 
 interface TestDevice {
   id: string;
+  fingerprint: string;
   publicKey: string;
   privateKey: string;
   projectWrapPublicKey: string;
@@ -97,6 +100,7 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string): Test
   );
   return {
     id: enrolled.id,
+    fingerprint: enrolled.fingerprint,
     publicKey: signing.publicKey,
     privateKey: signing.privateKey,
     projectWrapPublicKey: projectWrap.publicKey,
@@ -970,6 +974,222 @@ describe("opaque project-encryption server storage", () => {
         now,
       )).toThrow("replay conflict");
       expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("quarantines every keyed project on device revocation and resolves the survivor-visible incident after rotation", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const revokedOwner = approvedDevice(db, "Revoked owner");
+      const firstSurvivor = approvedDevice(db, "First survivor");
+      const secondSurvivor = approvedDevice(db, "Second survivor");
+      const outsider = approvedDevice(db, "Outsider");
+      const project = createProject(db, "Revocation incident", revokedOwner.id, now);
+      addProjectMember(db, project.id, revokedOwner.id, firstSurvivor.id, now);
+      addProjectMember(db, project.id, revokedOwner.id, secondSurvivor.id, now);
+      initializeProjectKeyEpoch(db, project.id, revokedOwner.id, randomUUID(), [
+        keyEnvelope(project.id, revokedOwner, revokedOwner.id),
+        keyEnvelope(project.id, revokedOwner, firstSurvivor.id),
+        keyEnvelope(project.id, revokedOwner, secondSurvivor.id),
+      ], now);
+
+      const revokedAgent = randomUUID();
+      const survivorAgent = randomUUID();
+      db.query(`
+        INSERT INTO agents (id, project_id, host_device_id, name, enabled, created_at)
+        VALUES (?, ?, ?, 'Revoked host', 1, ?), (?, ?, ?, 'Survivor host', 1, ?)
+      `).run(
+        revokedAgent, project.id, revokedOwner.id, now.toISOString(),
+        survivorAgent, project.id, firstSurvivor.id, now.toISOString(),
+      );
+      const insertTask = db.query(`
+        INSERT INTO agent_tasks (
+          id, project_id, chat_id, requester_device_id, target_device_id, agent_id,
+          prompt, nonce, issued_at, expires_at, requester_signature,
+          server_signature, status, accepted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'opaque', ?, ?, ?, 'request-signature',
+          'server-signature', 'queued', ?)
+      `);
+      const revokedRequesterTask = randomUUID();
+      const revokedTargetTask = randomUUID();
+      const unrelatedTask = randomUUID();
+      const expiry = new Date(now.getTime() + 60_000).toISOString();
+      insertTask.run(
+        revokedRequesterTask, project.id, project.id, revokedOwner.id,
+        firstSurvivor.id, survivorAgent, randomUUID(), now.toISOString(),
+        expiry, now.toISOString(),
+      );
+      insertTask.run(
+        revokedTargetTask, project.id, project.id, firstSurvivor.id,
+        revokedOwner.id, revokedAgent, randomUUID(), now.toISOString(),
+        expiry, now.toISOString(),
+      );
+      insertTask.run(
+        unrelatedTask, project.id, project.id, firstSurvivor.id,
+        secondSurvivor.id, survivorAgent, randomUUID(), now.toISOString(),
+        expiry, now.toISOString(),
+      );
+
+      const expectedRecoveryOwner = [firstSurvivor, secondSurvivor]
+        .sort((left, right) => left.id.localeCompare(right.id))[0]!;
+      const otherSurvivor = expectedRecoveryOwner.id === firstSurvivor.id
+        ? secondSurvivor
+        : firstSurvivor;
+      expect(revokeDevice(db, revokedOwner.fingerprint, now)).toBeTrue();
+      expect(db.query(`
+        SELECT device_id AS deviceId, role FROM project_members
+        WHERE project_id = ? ORDER BY device_id
+      `).all(project.id)).toEqual([
+        { deviceId: revokedOwner.id, role: "member" },
+        { deviceId: firstSurvivor.id, role: expectedRecoveryOwner.id === firstSurvivor.id ? "owner" : "member" },
+        { deviceId: secondSurvivor.id, role: expectedRecoveryOwner.id === secondSurvivor.id ? "owner" : "member" },
+      ].sort((left, right) => left.deviceId.localeCompare(right.deviceId)));
+      expect(getProjectKeyEpoch(db, project.id, expectedRecoveryOwner.id))
+        .toMatchObject({ currentEpoch: 1, rotationRequired: true });
+      expect(db.query("SELECT enabled FROM agents WHERE id = ?").get(revokedAgent))
+        .toEqual({ enabled: 0 });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(revokedRequesterTask))
+        .toEqual({ status: "failed" });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(revokedTargetTask))
+        .toEqual({ status: "failed" });
+      expect(db.query("SELECT status FROM agent_tasks WHERE id = ?").get(unrelatedTask))
+        .toEqual({ status: "queued" });
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM project_key_envelopes WHERE project_id = ?
+      `).get(project.id)).toEqual({ count: 0 });
+
+      const incidents = listUnresolvedProjectRevocationIncidentsForDevice(
+        db,
+        expectedRecoveryOwner.id,
+      );
+      expect(incidents).toEqual([expect.objectContaining({
+        projectId: project.id,
+        revokedDeviceId: revokedOwner.id,
+        recoveryOwnerDeviceId: expectedRecoveryOwner.id,
+        currentEpoch: 1,
+      })]);
+      expect(incidents[0]!.cancelledTasks).toEqual(expect.arrayContaining([
+        { taskId: revokedRequesterTask, targetDeviceId: firstSurvivor.id },
+        { taskId: revokedTargetTask, targetDeviceId: revokedOwner.id },
+      ]));
+      expect(listUnresolvedProjectRevocationIncidentsForDevice(db, otherSurvivor.id))
+        .toEqual(incidents);
+      expect(getUnresolvedProjectRevocationIncidentForDevice(
+        db,
+        incidents[0]!.incidentId,
+        outsider.id,
+      )).toBeNull();
+      expect(() => listUnresolvedProjectRevocationIncidentsForDevice(db, revokedOwner.id))
+        .toThrow("not approved");
+
+      const rotationId = randomUUID();
+      const rotationEnvelopes = [
+        keyEnvelope(project.id, expectedRecoveryOwner, expectedRecoveryOwner.id, 2),
+        keyEnvelope(project.id, expectedRecoveryOwner, otherSurvivor.id, 2),
+      ];
+      const rotated = removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        expectedRecoveryOwner.id,
+        revokedOwner.id,
+        1,
+        rotationId,
+        rotationEnvelopes,
+        new Date("2027-01-01T00:01:00.000Z"),
+      );
+      expect(rotated).toMatchObject({ created: true, keyEpoch: 2, rotationRequired: false });
+      expect(listUnresolvedProjectRevocationIncidentsForDevice(db, expectedRecoveryOwner.id))
+        .toEqual([]);
+      expect(getUnresolvedProjectRevocationIncidentForDevice(
+        db,
+        incidents[0]!.incidentId,
+        expectedRecoveryOwner.id,
+      )).toBeNull();
+      expect(db.query(`
+        SELECT status, resolution_rotation_id AS resolutionRotationId
+        FROM device_revocation_project_incidents WHERE incident_id = ?
+      `).get(incidents[0]!.incidentId)).toEqual({
+        status: "resolved",
+        resolutionRotationId: rotationId,
+      });
+      expect(removeProjectMemberAndRotateKeys(
+        db,
+        project.id,
+        expectedRecoveryOwner.id,
+        revokedOwner.id,
+        1,
+        rotationId,
+        rotationEnvelopes,
+        new Date("2027-01-01T00:02:00.000Z"),
+      )).toMatchObject({ created: false });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("keeps an owner-only encrypted project quarantined with an unresolved incident", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const owner = approvedDevice(db, "Only owner");
+      const project = createProject(db, "Owner-only incident", owner.id);
+      initializeProjectKeyEpoch(db, project.id, owner.id, randomUUID(), [
+        keyEnvelope(project.id, owner, owner.id),
+      ]);
+      expect(revokeDevice(db, owner.fingerprint)).toBeTrue();
+      expect(db.query(`
+        SELECT rotation_required AS rotationRequired
+        FROM project_key_epochs WHERE project_id = ?
+      `).get(project.id)).toEqual({ rotationRequired: 1 });
+      expect(db.query(`
+        SELECT recovery_owner_device_id AS recoveryOwnerDeviceId, status
+        FROM device_revocation_project_incidents WHERE project_id = ?
+      `).get(project.id)).toEqual({
+        recoveryOwnerDeviceId: null,
+        status: "unresolved",
+      });
+      expect(db.query(`
+        SELECT role FROM project_members WHERE project_id = ? AND device_id = ?
+      `).get(project.id, owner.id)).toEqual({ role: "owner" });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("does not starve revocation incidents after the first 128 projects", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const survivor = approvedDevice(db, "Incident survivor");
+      const revoked = approvedDevice(db, "Many-project revoked device");
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const projectIds: string[] = [];
+      for (let index = 0; index < 129; index += 1) {
+        const project = createProject(db, `Incident ${index}`, survivor.id, now);
+        addProjectMember(db, project.id, survivor.id, revoked.id, now);
+        projectIds.push(project.id);
+      }
+      expect(revokeDevice(db, revoked.fingerprint, now)).toBeTrue();
+      const insertIncident = db.query(`
+        INSERT INTO device_revocation_project_incidents (
+          incident_id, project_id, revoked_device_id, recovery_owner_device_id,
+          current_epoch, cancelled_tasks_json, status, created_at
+        ) VALUES (?, ?, ?, ?, 1, '[]', 'unresolved', ?)
+      `);
+      for (const projectId of projectIds) {
+        insertIncident.run(
+          randomUUID(),
+          projectId,
+          revoked.id,
+          survivor.id,
+          now.toISOString(),
+        );
+      }
+      const incidents = listUnresolvedProjectRevocationIncidentsForDevice(db, survivor.id);
+      expect(incidents).toHaveLength(129);
+      expect(new Set(incidents.map(incident => incident.projectId)))
+        .toEqual(new Set(projectIds));
     } finally {
       db.close();
     }

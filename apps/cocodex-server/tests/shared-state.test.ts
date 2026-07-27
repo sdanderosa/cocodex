@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { decodeInvitation, enrollmentSigningTranscript } from "@cocodex/protocol";
 import { openDatabase } from "../src/database";
-import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/enrollment";
+import { approveDevice, createEnrollmentChallenge, enrollDevice, revokeDevice } from "../src/enrollment";
 import { createInvitation } from "../src/invitations";
 import {
   addProjectMember,
@@ -56,6 +56,27 @@ function approvedDevice(db: ReturnType<typeof openDatabase>, name: string, now: 
 }
 
 describe("authoritative shared state", () => {
+  test("keeps a revoked member visible to the approved owner for recovery", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const now = new Date("2027-01-01T00:00:00.000Z");
+      const stephen = approvedDevice(db, "Stephen", now);
+      const kai = approvedDevice(db, "Kai", now);
+      const project = createProject(db, "Recovery roster", stephen, now);
+      addProjectMember(db, project.id, stephen, kai, now);
+      const kaiFingerprint = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+        .get(kai) as { fingerprint: string };
+      expect(revokeDevice(db, kaiFingerprint.fingerprint, now)).toBeTrue();
+      expect(listProjectMembers(db, project.id, stephen)).toEqual([
+        expect.objectContaining({ deviceId: stephen, role: "owner", status: "approved" }),
+        expect.objectContaining({ deviceId: kai, role: "member", status: "revoked" }),
+      ]);
+      expect(() => listProjectMembers(db, project.id, kai)).toThrow("approved");
+    } finally {
+      db.close();
+    }
+  });
+
   test("orders two members' idempotent chat events and recovers by cursor", () => {
     const db = openDatabase(":memory:");
     try {
@@ -70,10 +91,11 @@ describe("authoritative shared state", () => {
         deviceId: member.deviceId,
         displayName: member.displayName,
         role: member.role,
+        status: member.status,
         deviceKeyCertificate: member.deviceKeyCertificate,
       }))).toEqual([
-        { deviceId: stephen, displayName: "Stephen", role: "owner", deviceKeyCertificate: null },
-        { deviceId: kai, displayName: "Kai", role: "member", deviceKeyCertificate: null },
+        { deviceId: stephen, displayName: "Stephen", role: "owner", status: "approved", deviceKeyCertificate: null },
+        { deviceId: kai, displayName: "Kai", role: "member", status: "approved", deviceKeyCertificate: null },
       ]);
 
       const first = appendChatEvent(db, {

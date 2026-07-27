@@ -121,11 +121,14 @@ export function listProjectMembers(
       d.display_name AS displayName,
       d.fingerprint,
       pm.role,
+      d.status,
       d.device_key_certificate AS deviceKeyCertificate
     FROM project_members pm
     JOIN devices d ON d.id = pm.device_id
-    WHERE pm.project_id = ? AND d.status = 'approved'
-    ORDER BY CASE pm.role WHEN 'owner' THEN 0 ELSE 1 END, pm.joined_at ASC, d.id ASC
+    WHERE pm.project_id = ? AND d.status IN ('approved', 'revoked')
+    ORDER BY CASE pm.role WHEN 'owner' THEN 0 ELSE 1 END,
+      CASE d.status WHEN 'approved' THEN 0 ELSE 1 END,
+      pm.joined_at ASC, d.id ASC
   `).all(projectId) as ProjectMemberView[];
 }
 

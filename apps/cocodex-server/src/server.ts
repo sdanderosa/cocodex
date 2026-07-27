@@ -6,6 +6,7 @@ import {
   clientFrameSchema,
   decodeInvitation,
   enrollmentClaimSchema,
+  agentCancelFrameSchema,
   agentListFrameSchema,
   agentCreatedFrameSchema,
   agentExecutionAcceptedFrameSchema,
@@ -17,6 +18,7 @@ import {
   projectInvitationCreatedFrameSchema,
   projectInvitationListResultFrameSchema,
   projectInvitationRespondedFrameSchema,
+  projectDeviceRevokedFrameSchema,
   sharedChatChangedFrameSchema,
   sharedChatCreatedFrameSchema,
   sharedChatListResultFrameSchema,
@@ -87,6 +89,7 @@ import {
   createEncryptedProject,
   getProjectKeyEpoch,
   initializeProjectKeyEpoch,
+  listUnresolvedProjectRevocationIncidentsForDevice,
   listProjectKeyEnvelopes,
   listProjectKeyEnvelopesForDevice,
   removeProjectMemberAndInvalidateKeys,
@@ -133,6 +136,8 @@ interface SocketData {
   subscribedUsages: Set<string>;
   agentReady: boolean;
   agentId?: string;
+  deliveredRevocationIncidents: Set<string>;
+  deliveredRevocationCancellations: Set<string>;
 }
 
 interface DeviceAuthRow {
@@ -263,6 +268,44 @@ export function startCoCodexServer(
         socket.send(encoded);
       } catch {
         socket.data.subscribedProjects.delete(projectId);
+      }
+    }
+  }
+
+  function deliverRevocationIncidents(
+    socket: ServerWebSocket<SocketData>,
+    deviceId: string,
+  ): void {
+    for (const incident of listUnresolvedProjectRevocationIncidentsForDevice(db, deviceId)) {
+      clearPresence(incident.revokedDeviceId);
+      if (!socket.data.deliveredRevocationIncidents.has(incident.incidentId)) {
+        const frame = projectDeviceRevokedFrameSchema.parse({
+          version: 1,
+          type: "project.device-revoked",
+          incidentId: incident.incidentId,
+          projectId: incident.projectId,
+          revokedDeviceId: incident.revokedDeviceId,
+          currentEpoch: incident.currentEpoch,
+          promotedOwnerDeviceId: incident.recoveryOwnerDeviceId,
+          cancelledTaskCount: incident.cancelledTasks.length,
+          cancelledTasks: incident.cancelledTasks.slice(0, 256),
+          createdAt: incident.createdAt,
+        });
+        socket.send(JSON.stringify(frame));
+        socket.data.deliveredRevocationIncidents.add(incident.incidentId);
+      }
+      if (!socket.data.agentReady) continue;
+      for (const task of incident.cancelledTasks) {
+        if (task.targetDeviceId !== deviceId) continue;
+        const cancellationKey = `${incident.incidentId}:${task.taskId}`;
+        if (socket.data.deliveredRevocationCancellations.has(cancellationKey)) continue;
+        socket.send(JSON.stringify(agentCancelFrameSchema.parse({
+          version: 1,
+          type: "agent.cancel",
+          taskId: task.taskId,
+          reason: "A project device was revoked and its in-flight task authorization was cancelled.",
+        })));
+        socket.data.deliveredRevocationCancellations.add(cancellationKey);
       }
     }
   }
@@ -700,6 +743,8 @@ export function startCoCodexServer(
           subscribedEncryptedContexts: new Set(),
           subscribedUsages: new Set(),
           agentReady: false,
+          deliveredRevocationIncidents: new Set(),
+          deliveredRevocationCancellations: new Set(),
         };
         if (bunServer.upgrade(request, { data })) return;
         unauthenticatedSocketCount -= 1;
@@ -768,6 +813,7 @@ export function startCoCodexServer(
                 envelope,
               }));
             }
+            deliverRevocationIncidents(socket, device.id);
             return;
           }
           if (message.type === "auth.response") throw new Error("Device is already authenticated");
@@ -814,6 +860,7 @@ export function startCoCodexServer(
             }
             socket.data.agentReady = true;
             socket.data.agentId = readyAgentId;
+            deliverRevocationIncidents(socket, deviceId);
             for (const task of pendingAgentTasks(db, deviceId, new Date(), socket.data.agentId)) {
               socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
             }
@@ -2038,8 +2085,11 @@ export function startCoCodexServer(
       if (!deviceId) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
+        clearPresence(deviceId);
         socket.close(1008, "Device authorization was revoked");
+        continue;
       }
+      deliverRevocationIncidents(socket, deviceId);
     }
     const revision = privateContactDirectoryRevision(db);
     if (revision !== privateContactRevision) broadcastPrivateContacts();

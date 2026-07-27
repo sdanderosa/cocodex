@@ -193,6 +193,20 @@ route remains fail closed behind `rotation_required` for compatibility.
 Historical pre-key plaintext rows are retained for audit but are not served
 through keyed routes; a full historical migration is still a release-gate item.
 
+The administrative `revoke --fingerprint` path applies the same boundary
+across every encrypted project that contains the device. Device status,
+invitation expiry, hosted-agent disablement, requester/target task
+terminalization, sender/recipient envelope invalidation, epoch quarantine,
+owner recovery assignment, audit state, and a durable incident row commit or
+roll back together. Live revoked sockets are closed and their presence is
+cleared. Approved survivors receive a bounded
+`project.device-revoked` notice on each connection until an explicit atomic
+member removal and complete-recipient rotation resolves the incident. Every
+affected task hosted by a survivor also receives its own cancellation command;
+the Server still does not execute a local command. A revoked owner is replaced
+only by an already approved deterministic survivor. Owner-only projects remain
+quarantined with no fabricated recovery authority. See ADR 0040.
+
 Presence is a separate ephemeral membership-scoped channel. Both legacy and
 encrypted chat subscriptions register the socket for presence snapshots and
 updates, so project-key selection does not disable awareness. The server bounds

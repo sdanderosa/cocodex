@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from "node:crypto";
+import { createPublicKey, randomUUID, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   canonicalEd25519PublicKey,
@@ -90,6 +90,26 @@ export interface EncryptedProjectCreationResult {
 export interface ProjectMemberRemovalRotationResult extends ProjectKeyRotationResult {
   removedDeviceId: string;
   cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
+}
+
+export interface ProjectRevocationIncident {
+  incidentId: string;
+  projectId: string;
+  revokedDeviceId: string;
+  recoveryOwnerDeviceId: string | null;
+  currentEpoch: number;
+  cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
+  createdAt: string;
+}
+
+interface ProjectRevocationIncidentRow {
+  incidentId: string;
+  projectId: string;
+  revokedDeviceId: string;
+  recoveryOwnerDeviceId: string | null;
+  currentEpoch: number;
+  cancelledTasksJson: string;
+  createdAt: string;
 }
 
 function enrolledSigningKey(db: Database, deviceId: string): string {
@@ -268,6 +288,254 @@ function approvedProjectMembers(db: Database, projectId: string): string[] {
     ORDER BY pm.device_id ASC
   `).all(projectId) as Array<{ deviceId: string }>;
   return rows.map(row => row.deviceId);
+}
+
+function projectRevocationIncidentFromRow(row: ProjectRevocationIncidentRow): ProjectRevocationIncident {
+  let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
+  try {
+    const parsed = JSON.parse(row.cancelledTasksJson) as unknown;
+    if (!Array.isArray(parsed) || !parsed.every(value =>
+        value && typeof value === "object"
+        && typeof (value as Record<string, unknown>).taskId === "string"
+        && typeof (value as Record<string, unknown>).targetDeviceId === "string")) {
+      throw new Error("invalid cancelled tasks");
+    }
+    cancelledTasks = parsed as Array<{ taskId: string; targetDeviceId: string }>;
+  } catch {
+    throw new Error("Stored device-revocation project incident is invalid");
+  }
+  if (!row.incidentId || !row.projectId || !row.revokedDeviceId
+    || !Number.isSafeInteger(row.currentEpoch) || row.currentEpoch < 1
+    || !Number.isFinite(Date.parse(row.createdAt))) {
+    throw new Error("Stored device-revocation project incident is invalid");
+  }
+  return {
+    incidentId: row.incidentId,
+    projectId: row.projectId,
+    revokedDeviceId: row.revokedDeviceId,
+    recoveryOwnerDeviceId: row.recoveryOwnerDeviceId,
+    currentEpoch: row.currentEpoch,
+    cancelledTasks,
+    createdAt: row.createdAt,
+  };
+}
+
+function requireApprovedDevice(db: Database, deviceId: string): void {
+  const approved = db.query(`
+    SELECT 1 FROM devices WHERE id = ? AND status = 'approved'
+  `).get(deviceId);
+  if (!approved) throw new Error("Device is not approved");
+}
+
+export function listUnresolvedProjectRevocationIncidentsForDevice(
+  db: Database,
+  deviceId: string,
+): ProjectRevocationIncident[] {
+  requireApprovedDevice(db, deviceId);
+  const rows = db.query(`
+    SELECT i.incident_id AS incidentId, i.project_id AS projectId,
+      i.revoked_device_id AS revokedDeviceId,
+      i.recovery_owner_device_id AS recoveryOwnerDeviceId,
+      i.current_epoch AS currentEpoch,
+      i.cancelled_tasks_json AS cancelledTasksJson,
+      i.created_at AS createdAt
+    FROM device_revocation_project_incidents i
+    JOIN project_members pm ON pm.project_id = i.project_id AND pm.device_id = ?
+    JOIN devices d ON d.id = pm.device_id AND d.status = 'approved'
+    WHERE i.status = 'unresolved' AND i.revoked_device_id <> ?
+    ORDER BY i.created_at ASC, i.incident_id ASC
+  `).all(deviceId, deviceId) as ProjectRevocationIncidentRow[];
+  return rows.map(projectRevocationIncidentFromRow);
+}
+
+export function getUnresolvedProjectRevocationIncidentForDevice(
+  db: Database,
+  incidentId: string,
+  deviceId: string,
+): ProjectRevocationIncident | null {
+  requireApprovedDevice(db, deviceId);
+  const row = db.query(`
+    SELECT i.incident_id AS incidentId, i.project_id AS projectId,
+      i.revoked_device_id AS revokedDeviceId,
+      i.recovery_owner_device_id AS recoveryOwnerDeviceId,
+      i.current_epoch AS currentEpoch,
+      i.cancelled_tasks_json AS cancelledTasksJson,
+      i.created_at AS createdAt
+    FROM device_revocation_project_incidents i
+    JOIN project_members pm ON pm.project_id = i.project_id AND pm.device_id = ?
+    JOIN devices d ON d.id = pm.device_id AND d.status = 'approved'
+    WHERE i.incident_id = ? AND i.status = 'unresolved'
+      AND i.revoked_device_id <> ?
+  `).get(deviceId, incidentId, deviceId) as ProjectRevocationIncidentRow | null;
+  return row ? projectRevocationIncidentFromRow(row) : null;
+}
+
+/**
+ * Quarantine every encrypted project containing a newly revoked device.
+ * The caller owns the surrounding device-revocation transaction.
+ */
+export function quarantineEncryptedProjectsForRevokedDevice(
+  db: Database,
+  revokedDeviceId: string,
+  now = new Date(),
+): ProjectRevocationIncident[] {
+  const revoked = db.query(`
+    SELECT 1 FROM devices WHERE id = ? AND status = 'revoked'
+  `).get(revokedDeviceId);
+  if (!revoked) throw new Error("Device must be revoked before project quarantine");
+  const projects = db.query(`
+    SELECT pm.project_id AS projectId, pm.role,
+      e.current_epoch AS currentEpoch
+    FROM project_members pm
+    JOIN project_key_epochs e ON e.project_id = pm.project_id
+    WHERE pm.device_id = ? AND e.current_epoch > 0
+    ORDER BY pm.project_id ASC
+  `).all(revokedDeviceId) as Array<{
+    projectId: string;
+    role: "owner" | "member";
+    currentEpoch: number;
+  }>;
+  const incidents: ProjectRevocationIncident[] = [];
+  const timestamp = now.toISOString();
+  for (const project of projects) {
+    const approvedOwners = db.query(`
+      SELECT pm.device_id AS deviceId
+      FROM project_members pm
+      JOIN devices d ON d.id = pm.device_id
+      WHERE pm.project_id = ? AND pm.role = 'owner' AND d.status = 'approved'
+        AND pm.device_id <> ?
+      ORDER BY pm.joined_at ASC, pm.device_id ASC
+    `).all(project.projectId, revokedDeviceId) as Array<{ deviceId: string }>;
+    const approvedSurvivors = db.query(`
+      SELECT pm.device_id AS deviceId
+      FROM project_members pm
+      JOIN devices d ON d.id = pm.device_id
+      WHERE pm.project_id = ? AND d.status = 'approved' AND pm.device_id <> ?
+      ORDER BY pm.joined_at ASC, pm.device_id ASC
+    `).all(project.projectId, revokedDeviceId) as Array<{ deviceId: string }>;
+    const recoveryOwnerDeviceId = approvedOwners[0]?.deviceId
+      ?? approvedSurvivors[0]?.deviceId
+      ?? null;
+    if (project.role === "owner" && recoveryOwnerDeviceId) {
+      db.query(`
+        UPDATE project_members SET role = 'member'
+        WHERE project_id = ? AND device_id = ? AND role = 'owner'
+      `).run(project.projectId, revokedDeviceId);
+      db.query(`
+        UPDATE project_members SET role = 'owner'
+        WHERE project_id = ? AND device_id = ?
+      `).run(project.projectId, recoveryOwnerDeviceId);
+    }
+    db.query(`
+      UPDATE agents SET enabled = 0
+      WHERE project_id = ? AND host_device_id = ?
+    `).run(project.projectId, revokedDeviceId);
+    const cancelledTasks = db.query(`
+      SELECT id AS taskId, target_device_id AS targetDeviceId
+      FROM agent_tasks
+      WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+        AND status IN ('queued', 'running')
+      ORDER BY accepted_at ASC, id ASC
+    `).all(project.projectId, revokedDeviceId, revokedDeviceId) as Array<{
+      taskId: string;
+      targetDeviceId: string;
+    }>;
+    db.query(`
+      UPDATE agent_tasks SET status = 'failed', completed_at = ?
+      WHERE project_id = ? AND (requester_device_id = ? OR target_device_id = ?)
+        AND status IN ('queued', 'running')
+    `).run(timestamp, project.projectId, revokedDeviceId, revokedDeviceId);
+    db.query(`
+      DELETE FROM project_key_envelopes
+      WHERE project_id = ? AND (recipient_device_id = ? OR sender_device_id = ?)
+    `).run(project.projectId, revokedDeviceId, revokedDeviceId);
+    const quarantined = db.query(`
+      UPDATE project_key_epochs
+      SET rotation_required = 1, updated_at = ?
+      WHERE project_id = ? AND current_epoch = ?
+    `).run(timestamp, project.projectId, project.currentEpoch);
+    if (quarantined.changes !== 1) {
+      throw new Error("Project key epoch changed during device revocation");
+    }
+    expirePendingProjectInvitationsForProject(
+      db,
+      project.projectId,
+      "key-rotation-required",
+      now,
+    );
+    const incident: ProjectRevocationIncident = {
+      incidentId: randomUUID(),
+      projectId: project.projectId,
+      revokedDeviceId,
+      recoveryOwnerDeviceId,
+      currentEpoch: project.currentEpoch,
+      cancelledTasks,
+      createdAt: timestamp,
+    };
+    db.query(`
+      INSERT INTO device_revocation_project_incidents (
+        incident_id, project_id, revoked_device_id, recovery_owner_device_id,
+        current_epoch, cancelled_tasks_json, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'unresolved', ?)
+    `).run(
+      incident.incidentId,
+      incident.projectId,
+      incident.revokedDeviceId,
+      incident.recoveryOwnerDeviceId,
+      incident.currentEpoch,
+      JSON.stringify(incident.cancelledTasks),
+      incident.createdAt,
+    );
+    db.query(`
+      INSERT INTO audit_events (
+        event_type, actor_device_id, subject_id, occurred_at, details_json
+      ) VALUES ('device.revocation.project-quarantined', NULL, ?, ?, ?)
+    `).run(
+      revokedDeviceId,
+      timestamp,
+      JSON.stringify({
+        incidentId: incident.incidentId,
+        projectId: incident.projectId,
+        currentEpoch: incident.currentEpoch,
+        recoveryOwnerDeviceId: incident.recoveryOwnerDeviceId,
+        cancelledTasks: incident.cancelledTasks,
+      }),
+    );
+    incidents.push(incident);
+  }
+  return incidents;
+}
+
+function resolveProjectRevocationIncident(
+  db: Database,
+  projectId: string,
+  revokedDeviceId: string,
+  rotationId: string,
+  now: Date,
+): void {
+  const incident = db.query(`
+    SELECT status, resolution_rotation_id AS resolutionRotationId
+    FROM device_revocation_project_incidents
+    WHERE project_id = ? AND revoked_device_id = ?
+  `).get(projectId, revokedDeviceId) as {
+    status: "unresolved" | "resolved";
+    resolutionRotationId: string | null;
+  } | null;
+  if (!incident) return;
+  if (incident.status === "resolved") {
+    if (incident.resolutionRotationId !== rotationId) {
+      throw new Error("Device-revocation project incident was resolved by another rotation");
+    }
+    return;
+  }
+  const resolved = db.query(`
+    UPDATE device_revocation_project_incidents
+    SET status = 'resolved', resolved_at = ?, resolution_rotation_id = ?
+    WHERE project_id = ? AND revoked_device_id = ? AND status = 'unresolved'
+  `).run(now.toISOString(), rotationId, projectId, revokedDeviceId);
+  if (resolved.changes !== 1) {
+    throw new Error("Device-revocation project incident changed during rotation");
+  }
 }
 
 function sameEnvelopeSet(left: ProjectKeyEnvelope[], right: ProjectKeyEnvelope[]): boolean {
@@ -875,6 +1143,13 @@ export function removeProjectMemberAndRotateKeys(
       || !sameEnvelopeSet(priorEnvelopes, envelopes)) {
       throw new Error("Project member removal replay conflict");
     }
+    resolveProjectRevocationIncident(
+      db,
+      projectId,
+      memberDeviceId,
+      rotationId,
+      now,
+    );
     const currentState = readProjectKeyEpoch(db, projectId);
     return {
       projectId,
@@ -1020,6 +1295,13 @@ export function removeProjectMemberAndRotateKeys(
       JSON.stringify(envelopes),
       JSON.stringify(cancelledTasks),
       timestamp,
+    );
+    resolveProjectRevocationIncident(
+      db,
+      projectId,
+      memberDeviceId,
+      rotationId,
+      now,
     );
   });
   return {

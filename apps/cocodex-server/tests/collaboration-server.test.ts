@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +30,7 @@ import { createTlsIdentity, tlsCertificateFingerprint } from "../src/tls";
 import { openSignedPrivateMessage, sealSignedPrivateMessage } from "../../../src/cocodex/private-messaging";
 
 const roots: string[] = [];
+const deferredRoots: string[] = [];
 const servers: Array<{ stop(force?: boolean): Promise<void> }> = [];
 const databases: Database[] = [];
 const sockets: WebSocket[] = [];
@@ -55,17 +56,35 @@ afterEach(async () => {
 
   Bun.gc(true);
   for (const root of roots.splice(0)) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         rmSync(root, { recursive: true, force: true });
         break;
       } catch (error) {
-        if (attempt === 19) throw error;
-        await Bun.sleep(25);
+        if (attempt === 99) {
+          deferredRoots.push(root);
+          break;
+        }
+        await Bun.sleep(50);
       }
     }
   }
-});
+}, 15_000);
+
+afterAll(async () => {
+  Bun.gc(true);
+  for (const root of deferredRoots.splice(0)) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if (attempt === 99) throw error;
+        await Bun.sleep(50);
+      }
+    }
+  }
+}, 15_000);
 
 interface TestDevice {
   id: string;
@@ -152,11 +171,17 @@ async function connect(
   serverFingerprint: string,
   announceAgentReady = true,
   agentId?: string,
+  receivedFrames?: Array<Record<string, unknown>>,
 ): Promise<WebSocket> {
   const socket = new WebSocket(
     `wss://127.0.0.1:${port}/v1/connect`,
     { tls: { rejectUnauthorized: false } } as never,
   );
+  if (receivedFrames) {
+    socket.addEventListener("message", event => {
+      receivedFrames.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+    });
+  }
   sockets.push(socket);
   const challenge = await nextFrame(socket, "auth.challenge");
   const requestId = randomUUID();
@@ -188,6 +213,20 @@ async function connect(
     }));
   }
   return socket;
+}
+
+async function waitForCollectedFrame(
+  frames: Array<Record<string, unknown>>,
+  expectedType: string,
+  timeoutMs = 3_000,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const frame = frames.find(candidate => candidate.type === expectedType);
+    if (frame) return frame;
+    await Bun.sleep(10);
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for collected ${expectedType}`);
 }
 
 function usageReport(deviceId: string, revision = 1): UsageReport {
@@ -302,8 +341,12 @@ describe("authenticated WSS collaboration", () => {
 
     const removed = nextFrame(stephenSocket, "private.contact.snapshot", frame =>
       Array.isArray(frame.contacts) && frame.contacts.length === 0);
+    const kaiClosed = new Promise<CloseEvent>(resolve =>
+      kaiSocket.addEventListener("close", event => resolve(event), { once: true }));
     expect(revokeDevice(db, publicKeyFingerprint(kai.publicKey))).toBeTrue();
-    expect((await removed).contacts).toEqual([]);
+    const [removedSnapshot, revokedClose] = await Promise.all([removed, kaiClosed]);
+    expect(removedSnapshot.contacts).toEqual([]);
+    expect(revokedClose.code).toBe(1008);
   });
 
   test("creates a signed self-hosted agent over WSS and rejects spoofed authority", async () => {
@@ -1386,6 +1429,181 @@ describe("authenticated WSS collaboration", () => {
     await removedAtStephen;
     await leaveAtStephen;
   });
+
+  test("replays unresolved project revocation incidents once per surviving socket and cancels affected workers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-revocation-incident-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Revocation recovery", stephen.id);
+    addProjectMember(db, project.id, stephen.id, kai.id);
+    const agentId = randomUUID();
+    registerAgent(db, {
+      id: agentId,
+      projectId: project.id,
+      hostDeviceId: kai.id,
+      name: "Kai recovery worker",
+    });
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false);
+    const kaiFrames: Array<Record<string, unknown>> = [];
+    const kaiWorker = await connect(server.port, kai, fingerprint, false, undefined, kaiFrames);
+    const workerReady = nextFrame(kaiWorker, "agent.ready.accepted");
+    kaiWorker.send(JSON.stringify({
+      version: 1,
+      type: "agent.ready",
+      requestId: randomUUID(),
+      agentId,
+    }));
+    await workerReady;
+
+    for (const socket of [stephenSocket, kaiWorker]) {
+      const chatSnapshot = nextFrame(socket, "project.chat.snapshot");
+      const presenceSnapshot = nextFrame(socket, "presence.snapshot");
+      socket.send(JSON.stringify({
+        version: 1,
+        type: "project.chat.subscribe",
+        requestId: randomUUID(),
+        projectId: project.id,
+        chatId: project.id,
+        afterSequence: 0,
+      }));
+      await Promise.all([chatSnapshot, presenceSnapshot]);
+    }
+    const presenceAtKai = nextFrame(kaiWorker, "presence.update", frame => frame.deviceId === stephen.id);
+    const presenceAccepted = nextFrame(stephenSocket, "presence.accepted");
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "presence.update",
+      requestId: randomUUID(),
+      projectId: project.id,
+      chatId: project.id,
+      cursor: { x: 0.25, y: 0.75 },
+      caret: null,
+      typing: true,
+    }));
+    await Promise.all([presenceAtKai, presenceAccepted]);
+
+    const taskId = randomUUID();
+    const nonce = randomUUID();
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const prompt = "Keep this task in flight until device revocation.";
+    const taskAtKai = nextFrame(
+      kaiWorker,
+      "agent.task",
+      frame => (frame.task as Record<string, unknown> | undefined)?.id === taskId,
+    );
+    const acceptedAtStephen = nextFrame(
+      stephenSocket,
+      "agent.accepted",
+      frame => (frame.task as Record<string, unknown> | undefined)?.id === taskId,
+    );
+    stephenSocket.send(JSON.stringify({
+      version: 1,
+      type: "agent.request",
+      requestId: randomUUID(),
+      taskId,
+      projectId: project.id,
+      chatId: project.id,
+      agentId,
+      prompt,
+      nonce,
+      issuedAt,
+      expiresAt,
+      signature: sign(null, agentRequestSigningTranscript({
+        taskId,
+        projectId: project.id,
+        chatId: project.id,
+        agentId,
+        prompt,
+        nonce,
+        issuedAt,
+        expiresAt,
+      }), stephen.privateKey).toString("base64url"),
+    }));
+    await Promise.all([taskAtKai, acceptedAtStephen]);
+
+    const encryptedAt = new Date().toISOString();
+    db.query(`
+      INSERT INTO project_key_epochs (
+        project_id, current_epoch, last_rotation_id, updated_by_device_id,
+        created_at, updated_at, rotation_required
+      ) VALUES (?, 1, NULL, ?, ?, ?, 0)
+    `).run(project.id, stephen.id, encryptedAt, encryptedAt);
+
+    const incidentAtKai = nextFrame(kaiWorker, "project.device-revoked");
+    const cancellationAtKai = nextFrame(kaiWorker, "agent.cancel", frame => frame.taskId === taskId);
+    const leaveAtKai = nextFrame(kaiWorker, "presence.leave", frame => frame.deviceId === stephen.id);
+    const revokedSocketClosed = new Promise<CloseEvent>(resolve => {
+      stephenSocket.addEventListener("close", event => resolve(event), { once: true });
+    });
+    expect(revokeDevice(db, publicKeyFingerprint(stephen.publicKey))).toBeTrue();
+
+    const [incident, cancellation, leave, closeEvent] = await Promise.all([
+      incidentAtKai,
+      cancellationAtKai,
+      leaveAtKai,
+      revokedSocketClosed,
+    ]);
+    expect(incident).toMatchObject({
+      projectId: project.id,
+      revokedDeviceId: stephen.id,
+      currentEpoch: 1,
+      promotedOwnerDeviceId: kai.id,
+      cancelledTaskCount: 1,
+      cancelledTasks: [{ taskId, targetDeviceId: kai.id }],
+    });
+    expect(cancellation).toMatchObject({ taskId });
+    expect(leave).toMatchObject({ projectId: project.id, deviceId: stephen.id });
+    expect(closeEvent.code).toBe(1008);
+
+    await Bun.sleep(1_100);
+    expect(kaiFrames.filter(frame => frame.type === "project.device-revoked")).toHaveLength(1);
+    expect(kaiFrames.filter(frame => frame.type === "agent.cancel" && frame.taskId === taskId)).toHaveLength(1);
+
+    const roster = nextFrame(kaiWorker, "project.member.list.result");
+    kaiWorker.send(JSON.stringify({
+      version: 1,
+      type: "project.member.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await roster).members).toEqual([
+      expect.objectContaining({ deviceId: kai.id, role: "owner", status: "approved" }),
+      expect.objectContaining({ deviceId: stephen.id, role: "member", status: "revoked" }),
+    ]);
+
+    const replayFrames: Array<Record<string, unknown>> = [];
+    await connect(server.port, kai, fingerprint, false, undefined, replayFrames);
+    const replayedIncident = await waitForCollectedFrame(replayFrames, "project.device-revoked");
+    expect(incident.incidentId).toBeString();
+    const incidentId = String(incident.incidentId);
+    expect(replayedIncident).toMatchObject({ incidentId, projectId: project.id });
+    await Bun.sleep(1_100);
+    expect(replayFrames.filter(frame => frame.type === "project.device-revoked")).toHaveLength(1);
+
+    db.query(`
+      UPDATE device_revocation_project_incidents
+      SET status = 'resolved', resolved_at = ?, resolution_rotation_id = ?
+      WHERE incident_id = ?
+    `).run(new Date().toISOString(), randomUUID(), incidentId);
+    const resolvedFrames: Array<Record<string, unknown>> = [];
+    await connect(server.port, kai, fingerprint, false, undefined, resolvedFrames);
+    await Bun.sleep(1_100);
+    expect(resolvedFrames.some(frame => frame.type === "project.device-revoked")).toBeFalse();
+  }, 15_000);
 
   test("closes an authenticated socket after device revocation without waiting for another frame", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-revocation-sweep-"));

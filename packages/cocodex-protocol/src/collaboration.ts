@@ -552,6 +552,32 @@ export const projectKeyRotationRequiredFrameSchema = z.object({
   currentEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX),
 }).strict();
 
+const revokedDeviceCancelledTaskSchema = z.object({
+  taskId: z.uuid(),
+  targetDeviceId: deviceId,
+}).strict();
+
+export const projectDeviceRevokedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.device-revoked"),
+  incidentId: z.uuid(),
+  projectId,
+  revokedDeviceId: deviceId,
+  currentEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX),
+  promotedOwnerDeviceId: deviceId.nullable(),
+  cancelledTaskCount: z.number().int().nonnegative().max(0x7fff_ffff),
+  cancelledTasks: z.array(revokedDeviceCancelledTaskSchema).max(256),
+  createdAt: z.iso.datetime(),
+}).strict().superRefine((value, context) => {
+  if (value.cancelledTaskCount < value.cancelledTasks.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["cancelledTaskCount"],
+      message: "Cancelled task count cannot be smaller than the included task list",
+    });
+  }
+});
+
 export const projectMemberRemovedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("project.member.removed"),
@@ -599,6 +625,7 @@ export const projectMemberViewSchema = z.object({
   displayName: z.string().trim().min(1).max(80),
   fingerprint: z.string().trim().min(16).max(256),
   role: z.enum(["owner", "member"]),
+  status: z.enum(["approved", "revoked"]),
   deviceKeyCertificate: z.string().min(256).max(8_192).nullable(),
 }).strict();
 
@@ -814,6 +841,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectKeyChangedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
+  projectDeviceRevokedFrameSchema,
   projectMemberRemovedFrameSchema,
   projectMemberListFrameSchema,
   agentListFrameSchema,
@@ -905,6 +933,7 @@ export type ProjectKeyInitializedFrame = z.infer<typeof projectKeyInitializedFra
 export type ProjectKeyChangedFrame = z.infer<typeof projectKeyChangedFrameSchema>;
 export type ProjectKeyRotatedFrame = z.infer<typeof projectKeyRotatedFrameSchema>;
 export type ProjectKeyRotationRequiredFrame = z.infer<typeof projectKeyRotationRequiredFrameSchema>;
+export type ProjectDeviceRevokedFrame = z.infer<typeof projectDeviceRevokedFrameSchema>;
 export type ProjectMemberRemovedFrame = z.infer<typeof projectMemberRemovedFrameSchema>;
 export type ProjectMemberView = z.infer<typeof projectMemberViewSchema>;
 export type ProjectMemberListFrame = z.infer<typeof projectMemberListFrameSchema>;

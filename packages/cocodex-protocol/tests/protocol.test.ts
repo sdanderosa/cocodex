@@ -15,6 +15,7 @@ import {
   PROJECT_CONTEXT_MAX_BYTES,
   projectContextResultFrameSchema,
   projectKeyEnvelopeSchema,
+  projectDeviceRevokedFrameSchema,
   projectKeyInitializedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
@@ -407,9 +408,24 @@ describe("CoCodex protocol", () => {
         displayName: "Stephen",
         fingerprint: "AAAA-BBBB-CCCC-DDDD",
         role: "owner",
+        status: "approved",
         deviceKeyCertificate: "C".repeat(256),
       }],
     })).toMatchObject({ type: "project.member.list.result", projectId });
+    expect(() => projectServerFrameSchema.parse({
+      version: 1,
+      type: "project.member.list.result",
+      requestId: listMembers.requestId,
+      projectId,
+      members: [{
+        deviceId: recipientDeviceId,
+        displayName: "Revoked member",
+        fingerprint: "AAAA-BBBB-CCCC-DDDD",
+        role: "member",
+        status: "pending",
+        deviceKeyCertificate: null,
+      }],
+    })).toThrow();
     const projectList = {
       version: 1 as const,
       type: "project.list.result" as const,
@@ -1037,6 +1053,46 @@ describe("CoCodex protocol", () => {
     expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
     expect(() => projectKeyRotationRequiredFrameSchema.parse({ ...frame, removedDeviceId: "not-a-uuid" })).toThrow();
     expect(() => projectKeyRotationRequiredFrameSchema.parse({ ...frame, currentEpoch: 0 })).toThrow();
+  });
+  test("strictly bounds project device-revocation incident notices", () => {
+    const frame = {
+      version: 1 as const,
+      type: "project.device-revoked" as const,
+      incidentId: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      revokedDeviceId: crypto.randomUUID(),
+      currentEpoch: 4,
+      promotedOwnerDeviceId: crypto.randomUUID(),
+      cancelledTaskCount: 1,
+      cancelledTasks: [{
+        taskId: crypto.randomUUID(),
+        targetDeviceId: crypto.randomUUID(),
+      }],
+      createdAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(projectDeviceRevokedFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectServerFrameSchema.parse(frame)).toEqual(frame);
+    expect(projectDeviceRevokedFrameSchema.parse({
+      ...frame,
+      promotedOwnerDeviceId: null,
+      cancelledTaskCount: 0,
+      cancelledTasks: [],
+    })).toMatchObject({ promotedOwnerDeviceId: null, cancelledTaskCount: 0, cancelledTasks: [] });
+    expect(() => projectDeviceRevokedFrameSchema.parse({ ...frame, currentEpoch: 0 })).toThrow();
+    expect(() => projectDeviceRevokedFrameSchema.parse({
+      ...frame,
+      cancelledTaskCount: 257,
+      cancelledTasks: Array.from({ length: 257 }, () => frame.cancelledTasks[0]),
+    })).toThrow();
+    expect(() => projectDeviceRevokedFrameSchema.parse({
+      ...frame,
+      cancelledTaskCount: 0,
+    })).toThrow();
+    expect(() => projectDeviceRevokedFrameSchema.parse({
+      ...frame,
+      cancelledTaskCount: 0x8000_0000,
+    })).toThrow();
+    expect(() => projectDeviceRevokedFrameSchema.parse({ ...frame, extra: true })).toThrow();
   });
   test("strictly validates server presence snapshots, updates, and leaves", () => {
     const projectId = crypto.randomUUID();

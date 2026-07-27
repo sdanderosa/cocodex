@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -85,5 +85,66 @@ describe("device enrollment persistence", () => {
     expect(listDevices(db)[0]?.status).toBe("revoked");
     expect(revokeDevice(db, device.fingerprint, new Date("2027-01-01T00:05:00.000Z"))).toBeFalse();
     db.close();
+  });
+
+  test("rolls back device revocation when encrypted-project incident persistence fails", () => {
+    const db = openDatabase(":memory:");
+    const now = new Date("2027-01-01T00:00:00.000Z");
+    const invitationId = randomUUID();
+    const deviceId = randomUUID();
+    const projectId = randomUUID();
+    try {
+      db.query(`
+        INSERT INTO invitations (id, token_hash, expires_at, consumed_at, created_at)
+        VALUES (?, 'rollback-token-hash', ?, ?, ?)
+      `).run(invitationId, now.toISOString(), now.toISOString(), now.toISOString());
+      db.query(`
+        INSERT INTO devices (
+          id, public_key_pem, fingerprint, display_name, status,
+          invitation_id, enrolled_at, approved_at
+        ) VALUES (?, 'rollback-public-key', 'rollback-fingerprint', 'Rollback Device',
+          'approved', ?, ?, ?)
+      `).run(deviceId, invitationId, now.toISOString(), now.toISOString());
+      db.query(`
+        INSERT INTO projects (id, name, created_by_device_id, created_at)
+        VALUES (?, 'Rollback Project', ?, ?)
+      `).run(projectId, deviceId, now.toISOString());
+      db.query(`
+        INSERT INTO project_members (project_id, device_id, role, joined_at)
+        VALUES (?, ?, 'owner', ?)
+      `).run(projectId, deviceId, now.toISOString());
+      db.query(`
+        INSERT INTO shared_chats (
+          id, project_id, title, created_by_device_id, state,
+          creation_nonce, created_at, updated_at
+        ) VALUES (?, ?, 'General', ?, 'active', NULL, ?, ?)
+      `).run(projectId, projectId, deviceId, now.toISOString(), now.toISOString());
+      db.query(`
+        INSERT INTO project_key_epochs (
+          project_id, current_epoch, last_rotation_id, updated_by_device_id,
+          created_at, updated_at, rotation_required
+        ) VALUES (?, 1, NULL, ?, ?, ?, 0)
+      `).run(projectId, deviceId, now.toISOString(), now.toISOString());
+      db.exec(`
+        CREATE TRIGGER reject_revocation_incident
+        BEFORE INSERT ON device_revocation_project_incidents
+        BEGIN
+          SELECT RAISE(ABORT, 'injected incident failure');
+        END;
+      `);
+      expect(() => revokeDevice(db, "rollback-fingerprint", now))
+        .toThrow("injected incident failure");
+      expect(db.query("SELECT status, revoked_at AS revokedAt FROM devices WHERE id = ?")
+        .get(deviceId)).toEqual({ status: "approved", revokedAt: null });
+      expect(db.query(`
+        SELECT rotation_required AS rotationRequired
+        FROM project_key_epochs WHERE project_id = ?
+      `).get(projectId)).toEqual({ rotationRequired: 0 });
+      expect(db.query(`
+        SELECT COUNT(*) AS count FROM device_revocation_project_incidents
+      `).get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
   });
 });

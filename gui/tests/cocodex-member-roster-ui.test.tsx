@@ -10,6 +10,9 @@ import {
 } from "../src/pages/CoCodex";
 import {
   confirmProjectMemberRemoval,
+  clearRecoveredProjectSecurity,
+  isRevokedProjectMember,
+  markProjectMemberRevoked,
   projectMemberRemovalCommand,
   reconcileRevokedProject,
   type ProjectMember,
@@ -99,6 +102,39 @@ test("non-owner roster never renders trust or removal controls", () => {
 
   expect(html).not.toContain(">Verify<");
   expect(html).not.toContain(">Remove<");
+});
+
+test("owner roster marks revoked members and exposes only remove-and-rotate recovery", () => {
+  const member: ProjectMember = {
+    deviceId: crypto.randomUUID(),
+    displayName: "Kai",
+    fingerprint: "kai-fingerprint-123456789012",
+    role: "member",
+    trusted: true,
+    status: "revoked",
+  };
+  const html = renderToStaticMarkup(
+    <LanguageProvider>
+      <ProjectMemberRoster
+        members={[member]}
+        owner
+        connected
+        busy={false}
+        onRefresh={() => {}}
+        onTrust={() => {}}
+        onRemove={() => {}}
+      />
+    </LanguageProvider>,
+  );
+  expect(html).toContain("revoked");
+  expect(html).toContain("Revoked device");
+  expect(html).toContain("Remove &amp; rotate");
+  expect(html).not.toContain(">Verify<");
+  expect(isRevokedProjectMember(member)).toBeTrue();
+  expect(markProjectMemberRevoked([{
+    ...member,
+    status: "approved",
+  }], member.deviceId)[0]?.status).toBe("revoked");
 });
 
 test("owner roster invokes enabled controls and disables every action offline", async () => {
@@ -198,4 +234,18 @@ test("revocation removes the project and moves or clears the selected project", 
     selectedProjectId: "",
     clearedSelection: true,
   });
+});
+
+test("security quarantine clears only after the revoked member is removed and a newer key arrives", () => {
+  const incident = {
+    state: "device-revoked" as const,
+    revokedDeviceId: "revoked-device",
+    currentEpoch: 2,
+    memberRemoved: true,
+  };
+  expect(clearRecoveredProjectSecurity(incident, "revoked-device", 2)).toEqual(incident);
+  expect(clearRecoveredProjectSecurity({ ...incident, memberRemoved: false }, "revoked-device", 3))
+    .toEqual({ ...incident, memberRemoved: false });
+  expect(clearRecoveredProjectSecurity(incident, "other-device", 3)).toEqual(incident);
+  expect(clearRecoveredProjectSecurity(incident, "revoked-device", 3)).toBeUndefined();
 });

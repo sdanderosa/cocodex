@@ -160,6 +160,18 @@ reviewed again before release.
   source code is copied; the transactions, immutable exact replay, strict
   notices, revoked-project outbox purge, and legacy-route rejection are
   independently implemented. See ADR 0019 and ADR 0031.
+- **Administrative device-revocation incidents:** treat device revocation as a
+  durable multi-project security event, not only an authentication status
+  change. In one authoritative transaction, quarantine every keyed project,
+  disable the revoked host's agents, terminalize work requested by or routed
+  to that device, invalidate its envelopes, and persist a survivor-visible
+  recovery incident. This independently combines Syncthing-style explicit
+  device revocation, Matrix-style future-key withholding, and
+  MeshCentral-style server routing/local execution. A surviving approved
+  member may be deterministically promoted to perform the existing
+  complete-recipient owner-signed rotation; owner-only projects fail closed.
+  Incident notices replay after reconnect until that rotation resolves them.
+  No reference source or new dependency is used. See ADR 0040.
 - **Authoritative project context:** the encrypted `project.context.*` path
   keeps only signed opaque envelopes in SQLite, with a monotonic server
   revision; stale optimistic writers receive a conflict instead of overwriting

@@ -12,6 +12,47 @@ export interface ProjectMember {
   fingerprint: string;
   role: "owner" | "member";
   trusted: boolean;
+  /** Server-authoritative membership status. Older clients omit this field. */
+  status?: "approved" | "revoked";
+}
+
+export interface ProjectSecurityIncident {
+  state: "rotation-required" | "device-revoked";
+  revokedDeviceId?: string;
+  promotedOwnerDeviceId?: string | null;
+  currentEpoch?: number;
+  incidentId?: string;
+  localDeviceRevoked?: boolean;
+  /** Internal renderer acknowledgement that the owner removed the target. */
+  memberRemoved?: boolean;
+}
+
+export function isRevokedProjectMember(member: ProjectMember): boolean {
+  return member.status === "revoked";
+}
+
+export function markProjectMemberRevoked(
+  members: ProjectMember[],
+  revokedDeviceId: string,
+): ProjectMember[] {
+  return members.map(member => member.deviceId === revokedDeviceId
+    ? { ...member, status: "revoked" as const }
+    : member);
+}
+
+export function clearRecoveredProjectSecurity(
+  incident: ProjectSecurityIncident | undefined,
+  removedDeviceId: string,
+  keyEpoch: number,
+): ProjectSecurityIncident | undefined {
+  if (!incident || incident.state !== "device-revoked"
+    || incident.revokedDeviceId !== removedDeviceId
+    || !incident.memberRemoved
+    || typeof incident.currentEpoch !== "number"
+    || keyEpoch <= incident.currentEpoch) {
+    return incident;
+  }
+  return undefined;
 }
 
 export function reconcileRevokedProject(
