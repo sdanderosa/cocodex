@@ -61,23 +61,24 @@ function Resolve-Prefix([string]$Npm, [string]$RequestedPrefix) {
     if ($RequestedPrefix) {
         return [System.IO.Path]::GetFullPath($RequestedPrefix)
     }
-    $value = (& $Npm prefix -g).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $value) {
-        throw "Unable to resolve the npm global installation directory."
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if (-not $localAppData) {
+        throw "Unable to resolve the Windows local application-data directory."
     }
-    return [System.IO.Path]::GetFullPath($value)
+    return [System.IO.Path]::GetFullPath((Join-Path $localAppData "CoCodex\app"))
 }
 
 function Resolve-CommandShim([string]$Prefix, [string]$Name) {
-    $windowsShim = Join-Path $Prefix "$Name.cmd"
+    $commandRoot = Join-Path $Prefix "node_modules\.bin"
+    $windowsShim = Join-Path $commandRoot "$Name.cmd"
     if (Test-Path -LiteralPath $windowsShim -PathType Leaf) {
         return $windowsShim
     }
-    $plainShim = Join-Path $Prefix $Name
+    $plainShim = Join-Path $commandRoot $Name
     if (Test-Path -LiteralPath $plainShim -PathType Leaf) {
         return $plainShim
     }
-    throw "The installed package did not create the '$Name' command in $Prefix."
+    throw "The installed package did not create the '$Name' command in $commandRoot."
 }
 
 function Read-BoundedJson([string]$Path, [int64]$MaxBytes, [string]$Label) {
@@ -149,6 +150,7 @@ function Assert-InstalledCommands([string]$Prefix, [string]$ExpectedVersion = ""
 }
 
 function Add-PrefixToUserPath([string]$Prefix) {
+    $Prefix = Join-Path $Prefix "node_modules\.bin"
     $current = [Environment]::GetEnvironmentVariable("Path", "User")
     $parts = @($current -split ";" | Where-Object { $_ -and $_.Trim() })
     $alreadyPresent = $parts | Where-Object {
@@ -368,7 +370,42 @@ function Assert-ReleaseArchive([string]$Archive, $Release) {
     if ((Get-TextSha256 $shrinkwrapText) -ne $Release.shrinkwrapSha256.ToUpperInvariant()) {
         throw "CoCodex archive dependency lock does not match RELEASE.json."
     }
-    return $Release.version
+    return [pscustomobject]@{
+        Version = $Release.version
+        Package = $package
+    }
+}
+
+function Write-InstallRootManifest([string]$Prefix, [string]$Archive, $Package) {
+    if (-not (Test-Path -LiteralPath $Prefix -PathType Container)) {
+        [void][System.IO.Directory]::CreateDirectory($Prefix)
+    }
+    $manifestPath = Join-Path $Prefix "package.json"
+    $temporaryPath = Join-Path $Prefix "package.json.cocodex-new"
+    $dependency = [ordered]@{}
+    $dependency[$PackageName] = [System.IO.Path]::GetFullPath($Archive)
+    $root = [ordered]@{
+        name = "cocodex-private-alpha-install-root"
+        version = "1.0.0"
+        private = $true
+        dependencies = $dependency
+        overrides = $Package.overrides
+    }
+    [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        (($root | ConvertTo-Json -Depth 32) + "`n"),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $backupPath = Join-Path $Prefix "package.json.cocodex-old"
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            [System.IO.File]::Delete($backupPath)
+        }
+        [System.IO.File]::Replace($temporaryPath, $manifestPath, $backupPath, $true)
+        [System.IO.File]::Delete($backupPath)
+    } else {
+        [System.IO.File]::Move($temporaryPath, $manifestPath)
+    }
 }
 
 function Assert-CoCodexStopped([string]$Prefix) {
@@ -402,6 +439,7 @@ $archive = $null
 $verifiedHash = $null
 $release = $null
 $releaseVersion = ""
+$releasePackage = $null
 if ($Action -eq "Install" -or $Action -eq "Update") {
     $archive = Resolve-ReleaseFile $PackagePath "*.tgz" "CoCodex package archive"
     $checksum = Resolve-ReleaseFile $ChecksumPath "SHA256SUMS.txt" "checksum file"
@@ -413,7 +451,9 @@ if ($Action -eq "Install" -or $Action -eq "Update") {
     if ($release.sha256.ToUpperInvariant() -ne $verifiedHash) {
         throw "RELEASE.json archive digest does not match the verified package."
     }
-    $releaseVersion = Assert-ReleaseArchive $archive $release
+    $releaseArchive = Assert-ReleaseArchive $archive $release
+    $releaseVersion = $releaseArchive.Version
+    $releasePackage = $releaseArchive.Package
 }
 
 $npm = Resolve-NpmCommand
@@ -423,9 +463,15 @@ $prefix = Resolve-Prefix $npm $NpmPrefix
 
 if ($Action -eq "Uninstall") {
     Assert-CoCodexStopped $prefix
-    & $npm uninstall -g --prefix $prefix $PackageName
+    & $npm uninstall --prefix $prefix $PackageName
     if ($LASTEXITCODE -ne 0) {
         throw "npm uninstall failed with exit code $LASTEXITCODE."
+    }
+    foreach ($metadata in @("package.json", "package-lock.json")) {
+        $metadataPath = Join-Path $prefix $metadata
+        if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+            [System.IO.File]::Delete($metadataPath)
+        }
     }
     Write-Host "CoCodex application files were removed." -ForegroundColor Green
     Write-Host "Client state (~\.cocodex), Server state (~\.cocodex-server), OpenCodex state, and Codex state were preserved."
@@ -446,7 +492,8 @@ if ($Action -eq "Update" -or (
 }
 
 Write-Host "$Action CoCodex private alpha with Node v$nodeVersion and npm v$npmVersion..." -ForegroundColor Cyan
-& $npm install -g --prefix $prefix $archive
+Write-InstallRootManifest $prefix $archive $releasePackage
+& $npm install --prefix $prefix --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) {
     throw "npm install failed with exit code $LASTEXITCODE. Existing CoCodex state was not removed."
 }

@@ -73,15 +73,18 @@ The Windows PowerShell 5.1 installer:
 4. parses the bounded tar stream without extraction and requires the exact
    package name/version, empty package lifecycle scripts, and shrinkwrap digest;
 5. requires Node.js 22.12 or newer and npm 10 or newer;
-6. installs into npm's user-selected or configured global prefix;
+6. installs into a dedicated user application root (or an explicitly selected
+   validation root) where CoCodex is the npm root dependency;
 7. re-verifies the installed package identity/version and shrinkwrap;
 8. verifies `cocodex`, `ccx`, `cocodex-server`, `ccx-server`, and `ocx`;
 9. runs Client help, Server help, and inherited-runtime version smokes;
-10. adds only the command prefix to the user's PATH when requested.
+10. adds only that application's `node_modules/.bin` command directory to the
+    user's PATH when requested.
 
 `Update` first proves no process is executing from the CoCodex package prefix,
 then installs another verified local archive through the same path.
-`Uninstall` removes only `@sdanderosa/cocodex`; it does not delete any Client,
+`Uninstall` removes only the dedicated CoCodex application dependency and its
+root npm metadata; it does not delete any Client,
 Server, OpenCodex, or Codex state directory. The installer contains no
 recursive deletion operation.
 

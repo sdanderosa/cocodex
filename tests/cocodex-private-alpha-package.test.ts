@@ -66,7 +66,7 @@ describe("CoCodex private-alpha distribution", () => {
   test("verifies the exact archive checksum before invoking npm", () => {
     const source = readFileSync(join(import.meta.dir, "..", "scripts", "Install-CoCodex.ps1"), "utf8");
     const checksumAt = source.indexOf('$verifiedHash = Assert-BundleFileChecksum $archive $checksum "package archive"');
-    const installAt = source.indexOf("& $npm install -g");
+    const installAt = source.indexOf("& $npm install --prefix");
     expect(checksumAt).toBeGreaterThan(-1);
     expect(installAt).toBeGreaterThan(checksumAt);
     expect(source).toContain("[IO.FileAttributes]::ReparsePoint");
@@ -76,6 +76,8 @@ describe("CoCodex private-alpha distribution", () => {
     expect(source).toContain("must contain exactly one SHA-256 entry");
     expect(source).toContain("checksum file exceeds the 65536-byte validation limit");
     expect(source).toContain('$Action -eq "Install" -and');
+    expect(source).toContain("cocodex-private-alpha-install-root");
+    expect(source).toContain('Join-Path $Prefix "node_modules\\.bin"');
     expect(source).toContain('Read-TarTextEntry $Archive "package/package.json"');
     expect(source).toContain("Client state (~\\.cocodex), Server state (~\\.cocodex-server)");
     expect(source).not.toContain("Remove-Item");

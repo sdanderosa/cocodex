@@ -140,7 +140,7 @@ The archive is not Authenticode- or Sigstore-signed. Its checksum is meaningful
 only inside a trusted complete manually approved GitHub artifact; pull-request
 runs never upload an operator bundle. The package is not published
 to npm and has no automatic CoCodex update feed. The current installer is
-Windows-only, uses a user-level npm prefix, and does not install a Windows
+Windows-only, uses a dedicated user-level application root, and does not install a Windows
 Service. Standard npm performs the supported install from the committed
 SHA-512-integrity shrinkwrap. That graph is required to match the name,
 version, and integrity of the Bun-tested graph, and lifecycle scripts are
