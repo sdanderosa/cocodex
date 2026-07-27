@@ -1,7 +1,6 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { killProxy } from "../src/lib/process-control";
 import { createIsolatedTestEnvironment, isolatedWorkerEnvironment } from "./test";
 
 export interface TestBatchFailure {
@@ -67,13 +66,17 @@ export async function spawnWithTreeTimeout(
   if (timeout) clearTimeout(timeout);
   if (outcome.timedOut) {
     if (process.platform === "win32") {
-      try {
-        killProxy(child.pid);
-      } catch {
-        // Some constrained Windows runners deny taskkill even for owned children.
-        // Bun's direct kill is still required so the harness itself cannot hang.
-        if (child.exitCode === null) child.kill();
-      }
+      const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
+      const treeKill = Bun.spawnSync([taskkill, "/PID", String(child.pid), "/T", "/F"], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        timeout: 10_000,
+        windowsHide: true,
+      });
+      // Never let a blocked taskkill consume the enclosing GitHub job timeout.
+      // A direct owned-child kill remains mandatory when tree cleanup failed.
+      if (!treeKill.success && child.exitCode === null) child.kill();
     } else {
       try {
         process.kill(-child.pid, "SIGTERM");
@@ -137,29 +140,35 @@ export async function runRootTestsInBatches(
         + `${first} .. ${last}`,
     );
 
-    const isolated = createIsolatedTestEnvironment();
-    let completed: SpawnOutcome;
-    try {
-      completed = await spawnWithTreeTimeout(
-        [
-          process.execPath,
-          "test",
-          "--isolate",
-          "--timeout",
-          String(testTimeoutMs),
-          ...batch,
-        ],
-        {
-          cwd: join(import.meta.dir, ".."),
-          env: isolated.env,
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-        },
-        timeoutMs,
+    let completed: SpawnOutcome = { success: false, exitCode: null, timedOut: false };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const isolated = createIsolatedTestEnvironment();
+      try {
+        completed = await spawnWithTreeTimeout(
+          [
+            process.execPath,
+            "test",
+            "--isolate",
+            "--timeout",
+            String(testTimeoutMs),
+            ...batch,
+          ],
+          {
+            cwd: join(import.meta.dir, ".."),
+            env: isolated.env,
+            stdin: "inherit",
+            stdout: "inherit",
+            stderr: "inherit",
+          },
+          timeoutMs,
+        );
+      } finally {
+        isolated.cleanup();
+      }
+      if (!completed.timedOut || attempt === 2) break;
+      console.error(
+        `[test:batched] batch ${batchNumber} timed out; retrying once in a fresh environment`,
       );
-    } finally {
-      isolated.cleanup();
     }
 
     if (!completed.success) {
