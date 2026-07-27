@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { PROJECT_CONTEXT_MAX_BYTES } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 const MAX_GOAL_LENGTH = 32_768;
 
@@ -41,6 +42,7 @@ export function updateSharedProjectContext(
   context: Record<string, unknown>,
   now = new Date(),
 ): SharedProjectContext {
+  assertProjectUnlocked(db, projectId);
   requireProjectMembership(db, projectId, deviceId);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("Invalid context revision");
   if (typeof finalGoal !== "string") throw new Error("Final Goal must be a string");
@@ -56,6 +58,7 @@ export function updateSharedProjectContext(
   }
   if (Buffer.byteLength(contextJson, "utf8") > PROJECT_CONTEXT_MAX_BYTES) throw new Error("Shared project context is too large");
   return db.transaction(() => {
+    assertProjectUnlocked(db, projectId);
     const current = readContext(db, projectId);
     if (current.revision !== expectedRevision) throw new Error(`Shared project context revision conflict (expected ${expectedRevision}, current ${current.revision})`);
     const revision = current.revision + 1;

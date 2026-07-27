@@ -108,6 +108,21 @@ renderer sees only safe invitation metadata, while certificates, wrap keys,
 sealed envelopes, signatures, and decrypted keys remain resident-only. See
 ADR 0038.
 
+## Authoritative project lock
+
+An approved owner can submit a device-signed lock or unlock transition against
+the current monotonic project revision. Locking atomically records the new
+state, fails queued/running remote tasks, persists host cancellations, expires
+pending invitations, and audits the action. Shared history and recovery
+operations stay readable, while new shared mutations and remote dispatch fail
+closed across reconnect and server restart.
+
+The matching local agent bridge pauses before prompt decryption and aborts
+active work. This project pause is independent of the host's persisted
+emergency stop, so owner unlock never overrides local safety. A lock does not
+revoke project keys; compromised devices still require removal and rotation.
+See ADR 0041.
+
 ## Test isolation
 
 The mandatory harness launches one server and two clients as real processes.

@@ -4,6 +4,13 @@ export interface Project {
   id: string;
   name: string;
   role: "owner" | "member";
+  lock?: {
+    state: "active" | "locked";
+    revision: number;
+    lockedAt: string | null;
+    lockedByDeviceId: string | null;
+    reason: string | null;
+  };
 }
 
 export interface ProjectMember {

@@ -17,6 +17,8 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "project.chat.created",
   "project.chat.changed",
   "project.device-revoked",
+  "project.lock.updated",
+  "project.lock.changed",
   "project.member.list.result",
   "project.member.removed",
   "prompt.snapshot",
@@ -79,6 +81,8 @@ const RENDERER_FRAME_FIELDS = new Set([
   "sizeBytes", "mediaType", "hostDeviceId",
   "cursor", "caret", "typing", "x", "y", "anchor", "head",
   "final", "created", "keyEpoch",
+  "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
+  "operationId", "cancelledTaskCount",
 ]);
 const ALLOWED_COMMANDS = new Set([
   "project.list",
@@ -94,6 +98,7 @@ const ALLOWED_COMMANDS = new Set([
   "project.member.list",
   "project.member.remove-and-rotate",
   "project.member.remove",
+  "project.lock.update",
   "device.trust",
   "chat.subscribe",
   "chat.send",
@@ -189,6 +194,20 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
       ...(typeof record.incidentId === "string" ? { incidentId: record.incidentId } : {}),
       ...(record.localDeviceRevoked === true ? { localDeviceRevoked: true } : {}),
       keyRotationRequired: true,
+    };
+  }
+  if (record.source === "project-security"
+    && (record.state === "active" || record.state === "locked")) {
+    return {
+      source: "project-security",
+      state: record.state,
+      ...(typeof record.projectId === "string" ? { projectId: record.projectId } : {}),
+      ...(typeof record.revision === "number" ? { revision: record.revision } : {}),
+      ...(typeof record.reason === "string" || record.reason === null ? { reason: record.reason } : {}),
+      ...(typeof record.lockedAt === "string" || record.lockedAt === null ? { lockedAt: record.lockedAt } : {}),
+      ...(typeof record.lockedByDeviceId === "string" || record.lockedByDeviceId === null
+        ? { lockedByDeviceId: record.lockedByDeviceId }
+        : {}),
     };
   }
   if (record.source === "private-contacts" && Array.isArray(record.contacts)) {
@@ -494,6 +513,19 @@ export class CoCodexGuiBridge {
     }
     if (command.type === "private.send" && "recipientKeyCertificate" in command) {
       throw new Error("The GUI must resolve private contacts inside the resident Client");
+    }
+    if (command.type === "project.lock.update") {
+      const allowed = new Set(["id", "type", "projectId", "action", "expectedRevision", "reason"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string"
+        || (command.action !== "lock" && command.action !== "unlock")
+        || (command.expectedRevision !== undefined
+          && (!Number.isInteger(command.expectedRevision) || Number(command.expectedRevision) < 0))
+        || (command.reason !== undefined
+          && (typeof command.reason !== "string" || command.reason.trim().length < 1
+            || command.reason.trim().length > 512))) {
+        throw new Error("Invalid project lock command");
+      }
     }
     const id = typeof command.id === "string" && command.id.length > 0
       ? command.id

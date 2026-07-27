@@ -668,4 +668,60 @@ CREATE INDEX device_revocation_project_incidents_recovery
 CREATE INDEX device_revocation_project_incidents_project
   ON device_revocation_project_incidents(project_id, status, created_at);`,
   },
+  {
+    version: 30,
+    sql: `
+CREATE TABLE project_lock_state (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  state TEXT NOT NULL CHECK (state IN ('active', 'locked')),
+  revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 2147483647),
+  locked_at TEXT,
+  locked_by_device_id TEXT REFERENCES devices(id),
+  reason TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (state = 'active' AND locked_at IS NULL AND locked_by_device_id IS NULL AND reason IS NULL)
+    OR
+    (state = 'locked' AND locked_at IS NOT NULL AND locked_by_device_id IS NOT NULL
+      AND length(trim(reason)) BETWEEN 1 AND 512)
+  )
+);
+INSERT INTO project_lock_state (
+  project_id, state, revision, locked_at, locked_by_device_id, reason, updated_at
+)
+SELECT id, 'active', 0, NULL, NULL, NULL, created_at FROM projects;
+
+CREATE TABLE project_lock_transitions (
+  operation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  actor_device_id TEXT NOT NULL REFERENCES devices(id),
+  action TEXT NOT NULL CHECK (action IN ('lock', 'unlock')),
+  expected_revision INTEGER NOT NULL CHECK (expected_revision BETWEEN 0 AND 2147483646),
+  resulting_revision INTEGER NOT NULL CHECK (resulting_revision = expected_revision + 1),
+  reason TEXT NOT NULL CHECK (length(trim(reason)) BETWEEN 1 AND 512),
+  server_fingerprint TEXT NOT NULL,
+  server_epoch INTEGER NOT NULL CHECK (server_epoch > 0),
+  nonce TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  cancelled_tasks_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(actor_device_id, nonce)
+);
+CREATE INDEX project_lock_transitions_project_revision
+  ON project_lock_transitions(project_id, resulting_revision);
+
+CREATE TABLE project_lock_task_cancellations (
+  operation_id TEXT NOT NULL REFERENCES project_lock_transitions(operation_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_device_id TEXT NOT NULL REFERENCES devices(id),
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (operation_id, task_id)
+);
+CREATE INDEX project_lock_task_cancellations_target
+  ON project_lock_task_cancellations(target_device_id, created_at);`,
+  },
 ];

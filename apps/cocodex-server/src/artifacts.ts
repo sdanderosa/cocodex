@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Artifact, ArtifactStatus, ArtifactType } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 export interface PublishArtifactInput {
   id: string;
@@ -15,6 +16,7 @@ export interface PublishArtifactInput {
 }
 
 export function publishArtifact(db: Database, input: PublishArtifactInput, now = new Date()): { artifact: Artifact; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   requireProjectMembership(db, input.projectId, input.authorDeviceId);
   if (input.taskId) {
     const task = db.query("SELECT project_id AS projectId, target_device_id AS targetDeviceId FROM agent_tasks WHERE id = ?")
@@ -34,13 +36,16 @@ export function publishArtifact(db: Database, input: PublishArtifactInput, now =
   }
   const createdAt = now.toISOString();
   const artifact: Artifact = { ...input, createdAt, updatedAt: createdAt };
-  db.query(`INSERT INTO artifacts
-    (id, project_id, chat_id, task_id, author_device_id, type, title, summary, content, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    artifact.id, artifact.projectId, artifact.projectId, artifact.taskId, artifact.authorDeviceId, artifact.type,
-    artifact.title.trim(), artifact.summary.trim(), artifact.content, artifact.status, createdAt, createdAt,
-  );
-  return { artifact, created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    db.query(`INSERT INTO artifacts
+      (id, project_id, chat_id, task_id, author_device_id, type, title, summary, content, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      artifact.id, artifact.projectId, artifact.projectId, artifact.taskId, artifact.authorDeviceId, artifact.type,
+      artifact.title.trim(), artifact.summary.trim(), artifact.content, artifact.status, createdAt, createdAt,
+    );
+    return { artifact, created: true };
+  }).immediate();
 }
 
 export function listArtifacts(db: Database, projectId: string, deviceId: string): Artifact[] {

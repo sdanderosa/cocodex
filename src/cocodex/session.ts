@@ -4,6 +4,7 @@ import {
   projectCreationSigningTranscript,
   projectInvitationDecisionTranscript,
   projectInvitationSigningTranscript,
+  projectLockSigningTranscript,
   sharedChatCreationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
@@ -21,6 +22,7 @@ import {
   type PrivateContactView,
   type ProjectMemberView,
   type ProjectInvitationView,
+  type ProjectLockState,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { parse as parsePath } from "node:path";
@@ -87,6 +89,7 @@ import {
 } from "./private-history";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
 import { loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
+import { compareProjectLockState } from "./project-lock-state";
 import {
   createProjectKey,
   openProjectContent,
@@ -224,6 +227,23 @@ function sameProjectKeyEnvelopeSet(left: unknown[], right: unknown[]): boolean {
 }
 
 const SNAPSHOT_PAGE_SIZE = 500;
+const PROJECT_MUTATION_COMMANDS = new Set([
+  "project.chat.create",
+  "chat.send",
+  "project.chat.send",
+  "prompt.update",
+  "project.prompt.update",
+  "context.update",
+  "project.context.update",
+  "presence.update",
+  "agent.request",
+  "agent.configure",
+  "artifact.publish",
+  "project.artifact.publish",
+  "project.file-reference.publish",
+  "private.share",
+  "project.invite.create",
+]);
 
 export interface JsonLineSessionOptions {
   input?: NodeJS.ReadableStream;
@@ -317,6 +337,7 @@ export async function runJsonLineSession(
   const localAgentPolicies = new Map<string, LocalAgentPolicy>();
   const localAgentSafeties = new Map<string, LocalAgentSafetyState>();
   const localAgentBridges = new Map<string, LocalAgentBridgeHandle>();
+  const projectLocks = new Map<string, ProjectLockState>();
   const localAgentWorkerRuns = new Map<string, Promise<void>>();
   const localAgentWorkerSockets = new Map<string, WebSocket>();
   const localAgentActiveCounts = new Map<string, number>();
@@ -366,6 +387,34 @@ export async function runJsonLineSession(
   }>();
   const emit = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
   const emitError = (value: unknown) => errorOutput.write(`${JSON.stringify(value)}\n`);
+  const applyProjectLockState = (projectId: string, lock: ProjectLockState): boolean => {
+    const current = projectLocks.get(projectId);
+    const order = compareProjectLockState(current, lock);
+    if (order === "stale" || order === "equivocation") {
+      for (const policy of localAgentPolicies.values()) {
+        if (policy.projectId === projectId) {
+          localAgentBridges.get(policy.agentId)?.setProjectPaused(true);
+        }
+      }
+      emitError({
+        source: "project-security",
+        projectId,
+        error: order === "stale"
+          ? "Server sent a stale project lock revision"
+          : "Server equivocated at one project lock revision",
+      });
+      socket?.close(1008, "Invalid project lock authority state");
+      return false;
+    }
+    if (order === "duplicate") return true;
+    projectLocks.set(projectId, lock);
+    for (const policy of localAgentPolicies.values()) {
+      if (policy.projectId === projectId) {
+        localAgentBridges.get(policy.agentId)?.setProjectPaused(lock.state !== "active");
+      }
+    }
+    return true;
+  };
   const reloadLocalAgentPolicies = (): LocalAgentPolicy[] => {
     localAgentPolicies.clear();
     localAgentLegacyRuntime.clear();
@@ -1973,6 +2022,7 @@ export async function runJsonLineSession(
         },
       });
       localAgentBridges.set(policy.agentId, bridge);
+      bridge.setProjectPaused(projectLocks.get(policy.projectId)?.state !== "active");
       if (!safety.executionEnabled) bridge.emergencyStop(safety.reason);
       emitAgentSafety(undefined, policy.agentId);
       return async () => {
@@ -2068,6 +2118,7 @@ export async function runJsonLineSession(
         || frame.type === "project.key.rotated"
         || frame.type === "project.key.rotation-required"
         || frame.type === "project.device-revoked"
+        || frame.type === "project.lock.updated" || frame.type === "project.lock.changed"
         || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
@@ -2242,6 +2293,10 @@ export async function runJsonLineSession(
             : "";
           if (!projectId) continue;
           activeProjectIds.add(projectId);
+          const lock = (project as Record<string, unknown>).lock as ProjectLockState | undefined;
+          if (lock) {
+            applyProjectLockState(projectId, lock);
+          }
           projectKeySubscriptions.add(projectId);
           try {
             send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
@@ -2264,6 +2319,21 @@ export async function runJsonLineSession(
             );
           }
         }
+      }
+      if (frame.type === "project.lock.changed" || frame.type === "project.lock.updated") {
+        const transition = frame.transition as Record<string, unknown>;
+        const projectId = String(transition.projectId);
+        const lock = transition.state as ProjectLockState;
+        if (!applyProjectLockState(projectId, lock)) return;
+        emit({
+          source: "project-security",
+          state: lock.state,
+          projectId,
+          revision: lock.revision,
+          reason: lock.reason,
+          lockedAt: lock.lockedAt,
+          lockedByDeviceId: lock.lockedByDeviceId,
+        });
       }
       if (frame.type === "project.member.list.result") {
         const trustedDevices = loadTrustedDevices(paths.trustedDevices);
@@ -2507,6 +2577,9 @@ export async function runJsonLineSession(
           const project = frame.project && typeof frame.project === "object"
             ? frame.project as Record<string, unknown>
             : {};
+          if (project.lock && typeof project.lock === "object") {
+            applyProjectLockState(String(project.id), project.lock as ProjectLockState);
+          }
           if (String(project.id) !== pending.projectId || String(project.name) !== pending.name
             || project.role !== "owner" || Number(frame.keyEpoch) !== pending.keyEpoch
             || !sameProjectKeyEnvelopeSet(expectedEnvelopes, returnedEnvelopes)) {
@@ -2539,6 +2612,9 @@ export async function runJsonLineSession(
       } else if (frame.type === "project.changed") {
         const project = frame.project as Record<string, unknown>;
         const projectId = String(project.id);
+        if (project.lock && typeof project.lock === "object") {
+          applyProjectLockState(projectId, project.lock as ProjectLockState);
+        }
         projectKeySubscriptions.add(projectId);
         try {
           send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
@@ -2880,8 +2956,64 @@ export async function runJsonLineSession(
           socket?.close();
           break;
         }
+        if (PROJECT_MUTATION_COMMANDS.has(command.type) && typeof command.projectId === "string") {
+          const lock = projectLocks.get(command.projectId);
+          if (lock?.state === "locked") {
+            throw new Error(`Project is locked: ${lock.reason ?? "shared changes are paused"}`);
+          }
+        }
         if (command.type === "project.list") {
           send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
+        } else if (command.type === "project.lock.update") {
+          const projectId = String(command.projectId);
+          const action = command.action === "unlock" ? "unlock" as const : "lock" as const;
+          const reason = String(command.reason ?? (action === "lock"
+            ? "Locked by the project owner."
+            : "Unlocked by the project owner.")).trim();
+          if (reason.length < 1 || reason.length > 512) {
+            throw new Error("Project lock reason must be 1-512 characters");
+          }
+          const expectedRevision = command.expectedRevision === undefined
+            ? projectLocks.get(projectId)?.revision
+            : Number(command.expectedRevision);
+          if (!Number.isInteger(expectedRevision) || expectedRevision! < 0 || expectedRevision! > 0x7ffffffe) {
+            throw new Error("Current authoritative project lock revision is required");
+          }
+          const issuedAt = new Date().toISOString();
+          const expiresAt = new Date(Date.now() + 2 * 60_000).toISOString();
+          const operationId = String(command.operationId ?? randomUUID());
+          const nonce = randomBytes(32).toString("base64url");
+          const unsigned = {
+            version: 1 as const,
+            operationId,
+            projectId,
+            action,
+            expectedRevision: expectedRevision!,
+            reason,
+            serverFingerprint: connection.serverFingerprint,
+            serverEpoch: connection.serverEpoch,
+            issuedAt,
+            expiresAt,
+            nonce,
+          };
+          send({
+            ...unsigned,
+            type: "project.lock.update",
+            requestId: controlRequestId(command.id),
+            signature: sign(
+              null,
+              projectLockSigningTranscript(unsigned),
+              identity.privateKeyPem,
+            ).toString("base64url"),
+          });
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            projectId,
+            action,
+            pending: true,
+          });
         } else if (command.type === "project.create") {
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
           const projectId = String(command.projectId ?? randomUUID());

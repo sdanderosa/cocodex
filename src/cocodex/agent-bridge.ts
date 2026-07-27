@@ -47,6 +47,8 @@ export type LocalAgentBridgeHandle = (() => Promise<void>) & {
   emergencyStop: (reason?: string) => void;
   resume: () => void;
   isEmergencyStopped: () => boolean;
+  setProjectPaused: (paused: boolean) => void;
+  isProjectPaused: () => boolean;
 };
 
 async function verifyTask(task: AgentTask | EncryptedAgentTask, security: AgentBridgeSecurity): Promise<AgentTask | null> {
@@ -272,11 +274,12 @@ export function attachLocalAgentBridge(
   const executionControllers = new Map<string, AbortController>();
   const taskModes = new Map<string, boolean>();
   const pendingCancellations = new Set<string>();
-  const cancelledEncryptedTasks = new Set<string>();
+  const cancelledTasks = new Set<string>();
   const cancellationResultsSent = new Set<string>();
   const emergencyCancelledTasks = new Set<string>();
   const MAX_LOCAL_AGENT_QUEUE = 8;
   let emergencyStopped = false;
+  let projectPaused = false;
   let executionChain = Promise.resolve();
   const reportActiveAgents = () => security.onActiveAgents?.(activeTasks.size);
   const sendCancellation = (taskId: string): Promise<void> => {
@@ -303,7 +306,7 @@ export function attachLocalAgentBridge(
         && !activeTasks.has(cancellation.data.taskId)
         && !taskModes.has(cancellation.data.taskId)) return;
       const knownMode = taskModes.get(cancellation.data.taskId);
-      if (knownMode === true) cancelledEncryptedTasks.add(cancellation.data.taskId);
+      if (knownMode !== undefined) cancelledTasks.add(cancellation.data.taskId);
       else if (knownMode === undefined) pendingCancellations.add(cancellation.data.taskId);
       executionControllers.get(cancellation.data.taskId)?.abort();
       return;
@@ -311,6 +314,9 @@ export function attachLocalAgentBridge(
     const wireTask = parsed.success ? parsed.data.task : encryptedParsed.success ? encryptedParsed.data.task : undefined;
     if (!wireTask) return;
     if (security.agentId !== undefined && wireTask.agentId !== security.agentId) return;
+    // Fail before encrypted prompt decryption or local authorization while the
+    // authoritative project is locked or has not yet been reconciled.
+    if (projectPaused) return;
     candidateTasks.add(wireTask.id);
     void (async () => {
       let task: AgentTask | null;
@@ -322,11 +328,11 @@ export function attachLocalAgentBridge(
       if (!task || activeTasks.has(task.id)) return;
       const encrypted = encryptedParsed.success;
       taskModes.set(task.id, encrypted);
-      if (pendingCancellations.delete(task.id) && encrypted) cancelledEncryptedTasks.add(task.id);
+      if (pendingCancellations.delete(task.id)) cancelledTasks.add(task.id);
       const executionController = new AbortController();
       executionControllers.set(task.id, executionController);
-      const cancelled = () => (encrypted && cancelledEncryptedTasks.has(task.id)) || emergencyCancelledTasks.has(task.id);
-      const executionAllowed = () => !emergencyStopped && (security.isExecutionAllowed?.() ?? true);
+      const cancelled = () => cancelledTasks.has(task.id) || emergencyCancelledTasks.has(task.id);
+      const executionAllowed = () => !emergencyStopped && !projectPaused && (security.isExecutionAllowed?.() ?? true);
       if (activeTasks.size >= MAX_LOCAL_AGENT_QUEUE) {
         activeTasks.add(task.id);
         reportActiveAgents();
@@ -348,7 +354,7 @@ export function attachLocalAgentBridge(
             activeTasks.delete(task.id);
             taskModes.delete(task.id);
             pendingCancellations.delete(task.id);
-            cancelledEncryptedTasks.delete(task.id);
+            cancelledTasks.delete(task.id);
             emergencyCancelledTasks.delete(task.id);
             cancellationResultsSent.delete(task.id);
             reportActiveAgents();
@@ -375,7 +381,7 @@ export function attachLocalAgentBridge(
           activeTasks.delete(task.id);
           taskModes.delete(task.id);
           pendingCancellations.delete(task.id);
-          cancelledEncryptedTasks.delete(task.id);
+          cancelledTasks.delete(task.id);
           emergencyCancelledTasks.delete(task.id);
           cancellationResultsSent.delete(task.id);
           reportActiveAgents();
@@ -402,6 +408,12 @@ export function attachLocalAgentBridge(
     for (const controller of executionControllers.values()) controller.abort();
   };
   const resume = () => { emergencyStopped = false; };
+  const setProjectPaused = (paused: boolean) => {
+    projectPaused = paused;
+    if (!paused) return;
+    for (const taskId of executionControllers.keys()) emergencyCancelledTasks.add(taskId);
+    for (const controller of executionControllers.values()) controller.abort();
+  };
   const detach = async () => {
     socket.removeEventListener("message", listener);
     for (const controller of executionControllers.values()) controller.abort();
@@ -411,6 +423,8 @@ export function attachLocalAgentBridge(
     emergencyStop,
     resume,
     isEmergencyStopped: () => emergencyStopped,
+    setProjectPaused,
+    isProjectPaused: () => projectPaused,
   });
   return detach as LocalAgentBridgeHandle;
 }

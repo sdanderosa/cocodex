@@ -13,6 +13,8 @@ import {
   type ProjectKeyEnvelope,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
+export { expirePendingProjectInvitationsForProject } from "./project-invitation-lifecycle";
 
 const MAX_INVITATION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1_000;
@@ -271,6 +273,7 @@ export function createProjectInvitation(
     throw new Error("Project invitation time window is invalid");
   }
   return db.transaction(() => {
+    assertProjectUnlocked(db, frame.projectId);
     const owner = requireProjectMembership(db, frame.projectId, ownerDeviceId);
     if (owner.role !== "owner") throw new Error("Only a project owner can invite members");
     const ownerCertificate = db.query(`
@@ -430,6 +433,7 @@ export function respondToProjectInvitation(
       throw new Error("Project invitation recipient is no longer approved");
     }
     if (decision === "accept") {
+      assertProjectUnlocked(db, current.projectId);
       approvedSigningKey(db, current.ownerDeviceId);
       const owner = requireProjectMembership(db, current.projectId, current.ownerDeviceId);
       if (owner.role !== "owner") throw new Error("Project invitation owner is no longer authorized");
@@ -571,36 +575,6 @@ export function expirePendingProjectInvitationsBeforeEpoch(
       invitation.invitationId,
       now.toISOString(),
       JSON.stringify({ projectId, reason: "key-epoch", minimumEpoch }),
-    );
-  }
-}
-
-export function expirePendingProjectInvitationsForProject(
-  db: Database,
-  projectId: string,
-  reason: "key-rotation-required" | "project-locked",
-  now = new Date(),
-): void {
-  const expired = db.query(`
-    SELECT invitation_id AS invitationId
-    FROM project_invitations
-    WHERE project_id = ? AND status = 'pending'
-  `).all(projectId) as Array<{ invitationId: string }>;
-  if (expired.length === 0) return;
-  db.query(`
-    UPDATE project_invitations
-    SET status = 'expired', updated_at = ?
-    WHERE project_id = ? AND status = 'pending'
-  `).run(now.toISOString(), projectId);
-  const audit = db.query(`
-    INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
-    VALUES ('project.invite.expired', NULL, ?, ?, ?)
-  `);
-  for (const invitation of expired) {
-    audit.run(
-      invitation.invitationId,
-      now.toISOString(),
-      JSON.stringify({ projectId, reason }),
     );
   }
 }

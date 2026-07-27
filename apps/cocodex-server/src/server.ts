@@ -19,6 +19,8 @@ import {
   projectInvitationListResultFrameSchema,
   projectInvitationRespondedFrameSchema,
   projectDeviceRevokedFrameSchema,
+  projectLockChangedFrameSchema,
+  projectLockUpdatedFrameSchema,
   sharedChatChangedFrameSchema,
   sharedChatCreatedFrameSchema,
   sharedChatListResultFrameSchema,
@@ -98,6 +100,12 @@ import {
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "./project-encryption-storage";
+import {
+  assertProjectUnlocked,
+  pendingProjectLockCancellations,
+  projectLockState,
+  updateProjectLock,
+} from "./project-locks";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
@@ -109,6 +117,24 @@ const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
 const MAX_PRIVATE_CONTACT_LISTS_PER_SECOND = 10;
+const PROJECT_LOCK_BLOCKED_FRAME_TYPES = new Set([
+  "project.chat.create",
+  "project.invite.create",
+  "agent.create",
+  "agent.execution.report",
+  "project.chat.send",
+  "project.prompt.update",
+  "project.artifact.publish",
+  "project.file-reference.publish",
+  "project.context.update",
+  "context.update",
+  "prompt.update",
+  "artifact.publish",
+  "agent.request",
+  "project.agent.request",
+  "chat.send",
+  "presence.update",
+]);
 const MAX_DEVICE_CERTIFICATE_PUBLISHES_PER_SECOND = 2;
 const MAX_PROJECT_CREATIONS_PER_MINUTE = 12;
 const MAX_PRESENCE_MEMBERS = 128;
@@ -625,6 +651,11 @@ export function startCoCodexServer(
     }
   }
 
+  function clearAllProjectPresence(projectId: string): void {
+    const deviceIds = [...(presenceByProject.get(projectId)?.keys() ?? [])];
+    for (const deviceId of deviceIds) clearProjectPresence(projectId, deviceId);
+  }
+
   function prunePresence(now = Date.now()): void {
     const cutoff = now - PRESENCE_TTL_MS;
     for (const [projectId, members] of presenceByProject) {
@@ -823,6 +854,11 @@ export function startCoCodexServer(
             socket.close(1008, "Device authorization was revoked");
             return;
           }
+          if (PROJECT_LOCK_BLOCKED_FRAME_TYPES.has(message.type)
+            && "projectId" in message
+            && typeof message.projectId === "string") {
+            assertProjectUnlocked(db, message.projectId);
+          }
           for (const expired of expireQueuedAgentTasks(db)) {
             sendToProject(expired.task.projectId, {
               version: 1,
@@ -861,6 +897,17 @@ export function startCoCodexServer(
             socket.data.agentReady = true;
             socket.data.agentId = readyAgentId;
             deliverRevocationIncidents(socket, deviceId);
+            for (const cancellation of pendingProjectLockCancellations(db, deviceId)) {
+              const cancellationKey = `project-lock:${cancellation.operationId}:${cancellation.taskId}`;
+              if (socket.data.deliveredRevocationCancellations.has(cancellationKey)) continue;
+              socket.send(JSON.stringify(agentCancelFrameSchema.parse({
+                version: 1,
+                type: "agent.cancel",
+                taskId: cancellation.taskId,
+                reason: cancellation.reason,
+              })));
+              socket.data.deliveredRevocationCancellations.add(cancellationKey);
+            }
             for (const task of pendingAgentTasks(db, deviceId, new Date(), socket.data.agentId)) {
               socket.send(JSON.stringify({ version: 1, type: "agent.task", task }));
             }
@@ -882,6 +929,46 @@ export function startCoCodexServer(
               requestId,
               projects: listProjects(db, deviceId),
             }));
+            return;
+          }
+          if (message.type === "project.lock.update") {
+            const result = updateProjectLock(
+              db,
+              deviceId,
+              message,
+              certificateFingerprint,
+              serverEpoch(db),
+            );
+            const cancelledTasks = result.cancelledTasks.slice(0, 256);
+            socket.send(JSON.stringify(projectLockUpdatedFrameSchema.parse({
+              version: 1,
+              type: "project.lock.updated",
+              requestId,
+              transition: result.transition,
+              created: result.created,
+              cancelledTaskCount: result.cancelledTasks.length,
+              cancelledTasks,
+            })));
+            if (result.created) {
+              if (result.transition.state.state === "locked") {
+                clearAllProjectPresence(message.projectId);
+                for (const task of result.cancelledTasks) {
+                  sendToDevice(task.targetDeviceId, agentCancelFrameSchema.parse({
+                    version: 1,
+                    type: "agent.cancel",
+                    taskId: task.taskId,
+                    reason: "The authoritative project owner locked this project.",
+                  }), true);
+                }
+              }
+              sendToProjectMembers(message.projectId, projectLockChangedFrameSchema.parse({
+                version: 1,
+                type: "project.lock.changed",
+                transition: result.transition,
+                cancelledTaskCount: result.cancelledTasks.length,
+                cancelledTasks,
+              }));
+            }
             return;
           }
           if (message.type === "project.create") {
@@ -999,6 +1086,13 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.invite.respond") {
+            if (message.decision === "accept") {
+              const invitationProject = db.query(`
+                SELECT project_id AS projectId
+                FROM project_invitations WHERE invitation_id = ?
+              `).get(message.invitationId) as { projectId: string } | null;
+              if (invitationProject) assertProjectUnlocked(db, invitationProject.projectId);
+            }
             const result = respondToProjectInvitation(
               db,
               deviceId,
@@ -1026,6 +1120,7 @@ export function startCoCodexServer(
                 id: result.invitation.projectId,
                 name: result.invitation.projectName,
                 role: "member" as const,
+                lock: projectLockState(db, result.invitation.projectId),
               };
               sendToDevice(deviceId, projectChangedFrameSchema.parse({
                 version: 1,
@@ -1944,7 +2039,10 @@ export function startCoCodexServer(
             if (!taskProject || !socket.data.agentReady || socket.data.agentId !== taskProject.agentId) {
               throw new Error("Agent result requires the matching ready worker lease");
             }
-            if (taskProject) assertLegacyProjectWriteAllowed(db, taskProject.projectId);
+            if (taskProject) {
+              assertProjectUnlocked(db, taskProject.projectId);
+              assertLegacyProjectWriteAllowed(db, taskProject.projectId);
+            }
             const result = appendAgentResult(
               db,
               deviceId,
@@ -1987,11 +2085,14 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.agent.result") {
-            const task = db.query("SELECT agent_id AS agentId FROM agent_tasks WHERE id = ?")
-              .get(message.taskId) as { agentId: string } | null;
+            const task = db.query(`
+              SELECT agent_id AS agentId, project_id AS projectId
+              FROM agent_tasks WHERE id = ?
+            `).get(message.taskId) as { agentId: string; projectId: string } | null;
             if (!task || !socket.data.agentReady || socket.data.agentId !== task.agentId) {
               throw new Error("Encrypted agent result requires the matching ready worker lease");
             }
+            assertProjectUnlocked(db, task.projectId);
             const result = appendEncryptedAgentResult(db, {
               taskId: message.taskId,
               chatId: message.chatId,

@@ -84,6 +84,23 @@ encryption epoch atomically. Another device joins only through
 `project.invite.create` followed by its own signed
 `project.invite.respond` acceptance.
 
+### Authoritative project lock
+
+An approved project owner can freeze new shared writes and remote execution
+with the signed `project.lock.update` WSS operation. Lock state and its
+monotonic revision are returned in `project.list`, `project.created`, and
+`project.changed`, and transition notices are broadcast to all approved
+members. The transition atomically terminalizes queued/running project tasks,
+stores durable host cancellations, expires pending invitations, and audits
+the owner action. It remains locked after a server restart.
+
+History and recovery reads remain available. Private messaging, device
+security, explicit member removal/key rotation, usage, and local-only
+OpenCodex are not gated. Unlock is another owner-signed revision transition;
+it does not resurrect canceled work. A project lock is not key revocation, so
+a compromised member must still be removed and the project key rotated. See
+ADR 0041.
+
 Approved Clients publish a self-signed public device-key certificate after
 proof-of-possession authentication. The `private.contact.list` WSS request
 returns only other approved certificate-bearing devices. Pending, revoked,

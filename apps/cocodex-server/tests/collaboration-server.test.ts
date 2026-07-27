@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
   type ChatEvent,
   type UsageReport,
   publicKeyFingerprint,
+  projectLockSigningTranscript,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
@@ -249,6 +250,108 @@ function usageReport(deviceId: string, revision = 1): UsageReport {
 }
 
 describe("authenticated WSS collaboration", () => {
+  test("enforces signed owner project lock across real WSS and server restart", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-lock-wss-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const stephen = approvedDevice(db, fingerprint, "Stephen");
+    const kai = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "Incident control", stephen.id);
+    addProjectMember(db, project.id, stephen.id, kai.id);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    let server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const stephenFrames: Array<Record<string, unknown>> = [];
+    const kaiFrames: Array<Record<string, unknown>> = [];
+    const stephenSocket = await connect(server.port, stephen, fingerprint, false, undefined, stephenFrames);
+    const kaiSocket = await connect(server.port, kai, fingerprint, false, undefined, kaiFrames);
+
+    const makeUpdate = (
+      device: TestDevice,
+      action: "lock" | "unlock",
+      expectedRevision: number,
+      reason: string,
+    ) => {
+      const issuedAt = new Date().toISOString();
+      const unsigned = {
+        version: 1 as const,
+        operationId: randomUUID(),
+        projectId: project.id,
+        action,
+        expectedRevision,
+        reason,
+        serverFingerprint: fingerprint,
+        serverEpoch: 1,
+        issuedAt,
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        nonce: randomBytes(32).toString("base64url"),
+      };
+      return {
+        ...unsigned,
+        type: "project.lock.update",
+        requestId: randomUUID(),
+        signature: sign(null, projectLockSigningTranscript(unsigned), device.privateKey).toString("base64url"),
+      };
+    };
+
+    const rejected = nextFrame(kaiSocket, "error");
+    kaiSocket.send(JSON.stringify(makeUpdate(kai, "lock", 0, "Member cannot lock")));
+    expect(String((await rejected).error)).toContain("owner");
+
+    const ownerAccepted = nextFrame(stephenSocket, "project.lock.updated");
+    stephenSocket.send(JSON.stringify(makeUpdate(stephen, "lock", 0, "Security review")));
+    expect(await ownerAccepted).toMatchObject({
+      created: true,
+      transition: {
+        projectId: project.id,
+        action: "lock",
+        state: { state: "locked", revision: 1, reason: "Security review" },
+      },
+    });
+    expect(await waitForCollectedFrame(kaiFrames, "project.lock.changed")).toMatchObject({
+      transition: { projectId: project.id, state: { state: "locked", revision: 1 } },
+    });
+    const blocked = nextFrame(kaiSocket, "error");
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "chat.send",
+      requestId: randomUUID(),
+      projectId: project.id,
+      eventId: randomUUID(),
+      content: "Must not persist",
+      clientCreatedAt: new Date().toISOString(),
+    }));
+    expect(String((await blocked).error)).toContain("PROJECT_LOCKED");
+    expect(db.query("SELECT COUNT(*) AS count FROM chat_events WHERE project_id = ?").get(project.id))
+      .toEqual({ count: 0 });
+
+    await server.stop(true);
+    servers.splice(servers.indexOf(server), 1);
+    server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const recovered = await connect(server.port, stephen, fingerprint, false);
+    const listed = nextFrame(recovered, "project.list.result");
+    recovered.send(JSON.stringify({ version: 1, type: "project.list", requestId: randomUUID() }));
+    expect(await listed).toMatchObject({
+      projects: [{
+        id: project.id,
+        lock: { state: "locked", revision: 1, reason: "Security review" },
+      }],
+    });
+    const unlocked = nextFrame(recovered, "project.lock.updated");
+    recovered.send(JSON.stringify(makeUpdate(stephen, "unlock", 1, "Review complete")));
+    expect(await unlocked).toMatchObject({
+      transition: { action: "unlock", state: { state: "active", revision: 2 } },
+    });
+  });
+
   test("discovers only verified approved private contacts and removes revoked peers", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-private-contacts-"));
     roots.push(root);

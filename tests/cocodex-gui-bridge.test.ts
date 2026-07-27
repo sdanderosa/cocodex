@@ -204,6 +204,43 @@ describe("CoCodex GUI bridge", () => {
         envelope: { sealedProjectKey: "SECURITY_EVENT_ENVELOPE_CANARY" },
         certificate: "SECURITY_EVENT_CERTIFICATE_CANARY",
       })}\n`);
+      output.write(`${JSON.stringify({
+        source: "project-security",
+        state: "locked",
+        projectId: "locked-project",
+        revision: 4,
+        reason: "Owner review",
+        lockedAt: "2030-01-01T00:00:00.000Z",
+        lockedByDeviceId: "owner-device",
+        signature: "PROJECT_LOCK_SIGNATURE_CANARY",
+        cancelledTasks: [{ taskId: "PRIVATE_TASK_CANARY" }],
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          version: 1,
+          type: "project.lock.changed",
+          transition: {
+            operationId: "lock-operation",
+            projectId: "raw-lock-project",
+            action: "lock",
+            actorDeviceId: "owner-device",
+            reason: "Raw owner review",
+            state: {
+              state: "locked",
+              revision: 7,
+              lockedAt: "2030-01-01T00:00:00.000Z",
+              lockedByDeviceId: "owner-device",
+              reason: "Raw owner review",
+            },
+            createdAt: "2030-01-01T00:00:00.000Z",
+            signature: "RAW_LOCK_SIGNATURE_CANARY",
+            nonce: "RAW_LOCK_NONCE_CANARY",
+          },
+          cancelledTaskCount: 1,
+          cancelledTasks: [{ taskId: "RAW_LOCK_TASK_CANARY", targetDeviceId: "host-device" }],
+        },
+      })}\n`);
       for await (const chunk of input) {
         for (const line of String(chunk).trim().split("\n")) {
           const command = JSON.parse(line);
@@ -221,6 +258,19 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
     expect(bridge.status().state).toBe("connected");
     expect(bridge.command({ type: "project.list" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.lock.update",
+      projectId: crypto.randomUUID(),
+      action: "lock",
+      expectedRevision: 0,
+      reason: "Owner review",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "project.lock.update",
+      projectId: crypto.randomUUID(),
+      action: "unlock",
+      signature: "RENDERER_SIGNATURE_CANARY",
+    })).toThrow("Invalid project lock command");
     expect(bridge.command({
       type: "project.create",
       projectId: crypto.randomUUID(),
@@ -481,6 +531,47 @@ describe("CoCodex GUI bridge", () => {
     });
     expect(JSON.stringify(securityEvent)).not.toContain("SECURITY_EVENT_ENVELOPE_CANARY");
     expect(JSON.stringify(securityEvent)).not.toContain("SECURITY_EVENT_CERTIFICATE_CANARY");
+    const lockSecurityEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "project-security"
+        && event.value?.state === "locked");
+    expect(lockSecurityEvent?.value).toEqual({
+      source: "project-security",
+      state: "locked",
+      projectId: "locked-project",
+      revision: 4,
+      reason: "Owner review",
+      lockedAt: "2030-01-01T00:00:00.000Z",
+      lockedByDeviceId: "owner-device",
+    });
+    expect(JSON.stringify(lockSecurityEvent)).not.toContain("PROJECT_LOCK_SIGNATURE_CANARY");
+    expect(JSON.stringify(lockSecurityEvent)).not.toContain("PRIVATE_TASK_CANARY");
+    const rawLockEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "project.lock.changed");
+    expect(rawLockEvent?.value).toMatchObject({
+      source: "server",
+      frame: {
+        version: 1,
+        type: "project.lock.changed",
+        transition: {
+          operationId: "lock-operation",
+          projectId: "raw-lock-project",
+          action: "lock",
+          reason: "Raw owner review",
+          state: {
+            state: "locked",
+            revision: 7,
+            lockedAt: "2030-01-01T00:00:00.000Z",
+            lockedByDeviceId: "owner-device",
+            reason: "Raw owner review",
+          },
+          createdAt: "2030-01-01T00:00:00.000Z",
+        },
+        cancelledTaskCount: 1,
+      },
+    });
+    expect(JSON.stringify(rawLockEvent)).not.toContain("RAW_LOCK_SIGNATURE_CANARY");
+    expect(JSON.stringify(rawLockEvent)).not.toContain("RAW_LOCK_NONCE_CANARY");
+    expect(JSON.stringify(rawLockEvent)).not.toContain("RAW_LOCK_TASK_CANARY");
     const projectCreatedEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.frame?.type === "project.created");
     expect(projectCreatedEvent?.value).toMatchObject({

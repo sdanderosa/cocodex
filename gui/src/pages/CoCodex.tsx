@@ -264,7 +264,8 @@ interface LocalPresence {
 
 interface SessionValue {
   source?: string;
-  state?: ConnectionState | "key-available" | "rotation-required" | "revoked" | "device-revoked";
+  state?: ConnectionState | "key-available" | "rotation-required" | "revoked" | "device-revoked"
+    | "active" | "locked";
   projectId?: string;
   keyEpoch?: number;
   revokedDeviceId?: string;
@@ -273,6 +274,10 @@ interface SessionValue {
   incidentId?: string;
   localDeviceRevoked?: boolean;
   keyRotationRequired?: boolean;
+  revision?: number;
+  lockedAt?: string | null;
+  lockedByDeviceId?: string | null;
+  reason?: string | null;
   approvalState?: "pending" | "resolved";
   executionEnabled?: boolean;
   fullComputerEnabled?: boolean;
@@ -751,6 +756,30 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           setSharedPrompt("");
         }
         void command({ type: "project.list" });
+      }
+      if (value?.source === "project-security"
+        && (value.state === "active" || value.state === "locked")
+        && value.projectId) {
+        const lockState = value.state;
+        setProjects(previous => previous.map(project => project.id === value.projectId
+          ? {
+              ...project,
+              lock: {
+                state: lockState,
+                revision: Number(value.revision ?? project.lock?.revision ?? 0),
+                lockedAt: value.lockedAt ?? null,
+                lockedByDeviceId: value.lockedByDeviceId ?? null,
+                reason: value.reason ?? null,
+              },
+            }
+          : project));
+        if (value.state === "locked") {
+          setAgentApprovals(previous => previous.filter(approval => approval.projectId !== value.projectId));
+          setPresence([]);
+          setNotice(t("cocodex.lock.lockedNotice"));
+        } else {
+          setNotice(t("cocodex.lock.unlockedNotice"));
+        }
       }
       if (event.channel === "error" && value?.error) setNotice(String(value.error));
       if (value?.source === "agent-approval") {
@@ -1441,6 +1470,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const selectedProjectSecurity = projectSecurity[projectId];
   const selectedProject = projects.find(project => project.id === projectId);
+  const selectedProjectLocked = selectedProject?.lock?.state === "locked";
   const selectedChat = chats.find(item => item.id === chatId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret));
@@ -1489,6 +1519,25 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             && selectedProject?.role === "owner"
             && projectMembers.some(member => isRevokedProjectMember(member) && member.role !== "owner") && (
             <small> · {t("cocodex.security.ownerRecovery")}</small>
+          )}
+        </div>
+      )}
+      {selectedProjectLocked && selectedProject && (
+        <div className="cocodex-notice" role="alert">
+          <strong>{t("cocodex.lock.title")}</strong>
+          <small> {selectedProject.lock?.reason ?? t("cocodex.lock.defaultReason")}</small>
+          {selectedProject.role === "owner" && (
+            <button type="button" className="btn btn-ghost"
+              disabled={busy || status?.state !== "connected"}
+              onClick={() => void command({
+                type: "project.lock.update",
+                projectId: selectedProject.id,
+                action: "unlock",
+                expectedRevision: selectedProject.lock?.revision,
+                reason: t("cocodex.lock.unlockReason"),
+              })}>
+              {t("cocodex.lock.unlock")}
+            </button>
           )}
         </div>
       )}
@@ -1596,7 +1645,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <button key={project.id} type="button" className={project.id === projectId ? "active" : ""}
                   onClick={() => setProjectId(project.id)}>
                   <IconServer />
-                  <span>{project.name}<small>{project.role}</small></span>
+                  <span>{project.name}<small>{project.role}
+                    {project.lock?.state === "locked" ? ` · ${t("cocodex.lock.short")}` : ""}</small></span>
                 </button>
               ))}
               {!projects.length && <p className="muted">{t("cocodex.projects.empty")}</p>}
@@ -1625,7 +1675,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                     onChange={event => setChatTitle(event.target.value)}
                     placeholder={t("cocodex.chats.name")} maxLength={120} required />
                   <button type="submit" className="btn btn-primary"
-                    disabled={status.state !== "connected" || !chatTitle.trim()}>
+                    disabled={status.state !== "connected" || selectedProjectLocked || !chatTitle.trim()}>
                     {t("cocodex.chats.create")}
                   </button>
                 </form>
@@ -1650,6 +1700,19 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               onTrust={member => void trustProjectMember(member)}
               onRemove={member => void removeProjectMember(member)}
             />}
+            {selectedProject?.role === "owner" && !selectedProjectLocked && (
+              <button type="button" className="btn btn-danger btn-ghost"
+                disabled={busy || status.state !== "connected"}
+                onClick={() => void command({
+                  type: "project.lock.update",
+                  projectId: selectedProject.id,
+                  action: "lock",
+                  expectedRevision: selectedProject.lock?.revision ?? 0,
+                  reason: t("cocodex.lock.defaultReason"),
+                })}>
+                <IconLock /> {t("cocodex.lock.action")}
+              </button>
+            )}
             {projectId && projects.find(project => project.id === projectId)?.role === "owner" && (
               <section className="cocodex-invite-people">
                 <strong>{t("cocodex.invites.people")}</strong>
@@ -1663,7 +1726,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                     && invitation.recipientDeviceId === contact.deviceId
                     && invitation.status === "pending")).map(contact => (
                   <button type="button" className="btn btn-ghost" key={contact.deviceId}
-                    disabled={busy || status.state !== "connected"}
+                    disabled={busy || status.state !== "connected" || selectedProjectLocked}
                     onClick={() => void inviteProjectMember(contact)}>
                     {t("cocodex.invites.invite", { name: contact.displayName })}
                   </button>
@@ -1765,7 +1828,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <input className="input cocodex-key-input" value={trustedRequesterFingerprint}
                   onChange={event => setTrustedRequesterFingerprint(event.target.value)}
                   placeholder={t("cocodex.agent.setup.fingerprint")} required />
-                <button className="btn btn-ghost" disabled={busy || status.state !== "connected"}>
+                <button className="btn btn-ghost"
+                  disabled={busy || status.state !== "connected" || selectedProjectLocked}>
                   {t("cocodex.agent.setup.action")}
                 </button>
               </form>}
@@ -1789,9 +1853,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </div>
               <textarea className="input" value={finalGoalDraft} onChange={event => setFinalGoalDraft(event.target.value)}
                 placeholder={t("cocodex.goal.placeholder")} rows={2} maxLength={32_768}
-                disabled={!status.running || !projectId || !sharedContext} />
+                disabled={!status.running || !projectId || !sharedContext || selectedProjectLocked} />
               <button type="submit" className="btn btn-ghost cocodex-goal-save"
-                disabled={!sharedContext || status.state !== "connected" || finalGoalDraft === sharedContext.finalGoal}>
+                disabled={!sharedContext || selectedProjectLocked || status.state !== "connected" || finalGoalDraft === sharedContext.finalGoal}>
                 {t("cocodex.goal.save")}
               </button>
             </form>
@@ -1814,7 +1878,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                   head: event.currentTarget.selectionEnd,
                 } })}
                 onBlur={() => publishPresence({ caret: null, typing: false })}
-                placeholder={t("cocodex.prompt.placeholder")} rows={3} disabled={!status.running || !projectId} />
+                placeholder={t("cocodex.prompt.placeholder")} rows={3}
+                disabled={!status.running || !projectId || selectedProjectLocked} />
               {remotePromptPresence.length > 0 && <div className="cocodex-prompt-presence" aria-live="polite">
                 {remotePromptPresence.map(member => {
                   const caret = member.caret;
@@ -1855,8 +1920,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 placeholder={agentId
                   ? t("cocodex.composer.agent", { agent: visibleAgents.find(agent => agent.id === agentId)?.name ?? agentId })
                   : t("cocodex.composer.chat")} rows={3}
-                disabled={status.state !== "connected"} />
-              <button className="btn btn-primary" disabled={!draft.trim() || status.state !== "connected"}>
+                disabled={status.state !== "connected" || selectedProjectLocked} />
+              <button className="btn btn-primary"
+                disabled={!draft.trim() || status.state !== "connected" || selectedProjectLocked}>
                 {agentId ? <><IconBot /> {t("cocodex.agent.run")}</> : t("cocodex.send")}
               </button>
             </form>

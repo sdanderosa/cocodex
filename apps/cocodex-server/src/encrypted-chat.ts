@@ -9,6 +9,7 @@ import {
 import { requireProjectMembership } from "./shared-state";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked } from "./project-locks";
 
 /**
  * The server-side chat path stores only the signed opaque project envelope.
@@ -136,6 +137,7 @@ export function appendEncryptedChatEventResult(
   input: AppendEncryptedChatInput,
   now = new Date(),
 ): AppendEncryptedChatResult {
+  assertProjectUnlocked(db, input.projectId);
   requireSharedChat(db, input.projectId, input.chatId, input.senderDeviceId);
   assertClientTimestamp(input.clientCreatedAt);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
@@ -169,28 +171,31 @@ export function appendEncryptedChatEventResult(
     }
     return { event: eventFromRow(existing), created: false };
   }
-  const result = db.query(`
-    INSERT INTO project_chat_events (
-      project_id, chat_id, event_id, sender_device_id, envelope_json,
-      client_created_at, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.projectId,
-    input.chatId,
-    input.eventId,
-    input.senderDeviceId,
-    serialized,
-    input.clientCreatedAt,
-    now.toISOString(),
-  );
-  const row = db.query(`
-    SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
-      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
-      client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
-      task_id AS taskId, final, status
-    FROM project_chat_events WHERE sequence = ?
-  `).get(Number(result.lastInsertRowid)) as EventRow;
-  return { event: eventFromRow(row), created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    const result = db.query(`
+      INSERT INTO project_chat_events (
+        project_id, chat_id, event_id, sender_device_id, envelope_json,
+        client_created_at, accepted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.projectId,
+      input.chatId,
+      input.eventId,
+      input.senderDeviceId,
+      serialized,
+      input.clientCreatedAt,
+      now.toISOString(),
+    );
+    const row = db.query(`
+      SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
+        sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
+        client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
+        task_id AS taskId, final, status
+      FROM project_chat_events WHERE sequence = ?
+    `).get(Number(result.lastInsertRowid)) as EventRow;
+    return { event: eventFromRow(row), created: true };
+  }).immediate();
 }
 
 export function encryptedChatEventsAfter(

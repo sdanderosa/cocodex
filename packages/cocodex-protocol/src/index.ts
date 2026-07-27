@@ -23,6 +23,17 @@ export {
 } from "./invitation";
 export { canonicalEd25519PublicKey, publicKeyFingerprint } from "./keys";
 export {
+  projectLockStateSchema,
+  projectLockUpdateFrameSchema,
+  projectLockTransitionSchema,
+  projectLockUpdatedFrameSchema,
+  projectLockChangedFrameSchema,
+  projectLockSigningTranscript,
+  type ProjectLockState,
+  type ProjectLockUpdateFrame,
+  type ProjectLockTransition,
+} from "./project-lock";
+export {
   createDeviceKeyCertificate,
   deviceKeyCertificateSchema,
   deviceKeyCertificateSigningTranscript,

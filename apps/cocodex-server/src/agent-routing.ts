@@ -12,6 +12,7 @@ import {
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import type { ServerIdentity } from "./identity";
 import { appendChatEventResult, requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_TASK_LIFETIME_MS = 5 * 60_000;
@@ -105,13 +106,16 @@ export function registerAgent(db: Database, input: RegisterAgentInput, now = new
   requireProjectMembership(db, input.projectId, input.hostDeviceId);
   const agent = agentDefinition(input);
   if (!agent.name) throw new Error("Agent name is required");
-  db.query(`INSERT INTO agents (
-      id, project_id, host_device_id, name, enabled, created_at,
-      primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
-    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
-    .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString(),
-      agent.primaryModel, agent.primaryEffort, agent.coAgentModel, agent.coAgentEffort,
-      agent.maxConcurrentCoAgents);
+  db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    db.query(`INSERT INTO agents (
+        id, project_id, host_device_id, name, enabled, created_at,
+        primary_model, primary_effort, coagent_model, coagent_effort, max_concurrent_coagents
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`)
+      .run(agent.id, agent.projectId, agent.hostDeviceId, agent.name, now.toISOString(),
+        agent.primaryModel, agent.primaryEffort, agent.coAgentModel, agent.coAgentEffort,
+        agent.maxConcurrentCoAgents);
+  }).immediate();
   return agent;
 }
 
@@ -120,6 +124,7 @@ export function createAgentForHost(
   input: RegisterAgentInput & { signature: string },
   now = new Date(),
 ): { agent: AgentDefinition; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   requireProjectMembership(db, input.projectId, input.hostDeviceId);
   const agent = agentDefinition({ ...input, id: input.id.trim() });
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(agent.id)) {
@@ -148,6 +153,7 @@ export function createAgentForHost(
   );
   if (!valid) throw new Error("Invalid agent definition signature");
   return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
     const existing = db.query(`
       SELECT id, project_id AS projectId, name, host_device_id AS hostDeviceId, enabled,
         primary_model AS primaryModel, primary_effort AS primaryEffort,
@@ -458,6 +464,7 @@ export function createAgentTask(
   input: CreateAgentTaskInput,
   now = new Date(),
 ): { task: AgentTask; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   requireProjectMembership(db, input.projectId, input.requesterDeviceId);
   if (input.chatId !== input.projectId) {
     throw new Error("Plaintext agent tasks are limited to the General chat");
@@ -534,16 +541,19 @@ export function createAgentTask(
   const serverSignature = sign(null, agentDispatchSigningTranscript(unsigned), identity.privateKeyPem).toString("base64url");
   const { taskId: _signedTaskId, ...dispatch } = unsigned;
   const task: AgentTask = { ...dispatch, id: input.id, status: "queued", acceptedAt, serverSignature, dependencies, inputArtifactIds: [] };
-  db.query(`INSERT INTO agent_tasks (
-    id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
-    issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json,
-    private_share_message_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
-    task.id, task.projectId, input.chatId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
-    task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
-    task.serverSignature, task.acceptedAt, JSON.stringify(dependencies), input.privateShareMessageId ?? null,
-  );
-  return { task, created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    db.query(`INSERT INTO agent_tasks (
+      id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt, nonce,
+      issued_at, expires_at, requester_signature, server_signature, status, accepted_at, dependencies_json,
+      private_share_message_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`).run(
+      task.id, task.projectId, input.chatId, task.requesterDeviceId, task.targetDeviceId, task.agentId,
+      task.prompt, task.nonce, task.issuedAt, task.expiresAt, task.requesterSignature,
+      task.serverSignature, task.acceptedAt, JSON.stringify(dependencies), input.privateShareMessageId ?? null,
+    );
+    return { task, created: true };
+  }).immediate();
 }
 
 export function expireQueuedAgentTasks(db: Database, now = new Date()): Array<{
@@ -611,6 +621,7 @@ export function pendingAgentTasks(db: Database, targetDeviceId: string, now = ne
       AND a.project_id = t.project_id
       AND a.host_device_id = t.target_device_id
       AND a.enabled = 1
+    JOIN project_lock_state pls ON pls.project_id = t.project_id AND pls.state = 'active'
     WHERE t.target_device_id = ? AND t.prompt_envelope_json IS NULL
       AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.target_device_id)
       AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.device_id = t.requester_device_id)
@@ -640,6 +651,7 @@ export function appendAgentResult(
   return db.transaction(() => {
     const task = taskById(db, taskId);
     if (!task || task.targetDeviceId !== targetDeviceId) throw new Error("Agent task is not assigned to this device");
+    assertProjectUnlocked(db, task.projectId);
     requireProjectMembership(db, task.projectId, targetDeviceId);
     const existing = db.query(`SELECT c.sequence, c.project_id AS projectId, c.event_id AS eventId,
       c.sender_device_id AS senderDeviceId, c.content, c.client_created_at AS clientCreatedAt,

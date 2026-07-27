@@ -15,6 +15,7 @@ import type { ServerIdentity } from "./identity";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { encryptedArtifactsByIds } from "./encrypted-artifacts";
 import { requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked } from "./project-locks";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_TASK_LIFETIME_MS = 5 * 60_000;
@@ -242,6 +243,7 @@ export function createEncryptedAgentTask(
   input: CreateEncryptedAgentTaskInput,
   now = new Date(),
 ): { task: EncryptedAgentTask; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   const chatId = input.chatId ?? input.projectId;
   requireSharedChat(db, input.projectId, chatId, input.requesterDeviceId);
   const dependencies = normalizeDependencies(input.dependencies, input.id);
@@ -320,17 +322,20 @@ export function createEncryptedAgentTask(
   };
   const serverSignature = signDispatch(identity.privateKeyPem, unsigned);
   const acceptedAt = now.toISOString();
-  db.query(`INSERT INTO agent_tasks (
-    id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt,
-    prompt_envelope_json, nonce, issued_at, expires_at, requester_signature,
-    server_signature, status, accepted_at, dependencies_json, input_artifact_ids_json, private_share_message_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`).run(
-    input.id, input.projectId, chatId, input.requesterDeviceId, agent.hostDeviceId, input.agentId,
-    ENCRYPTED_PROMPT_PLACEHOLDER, envelopeJson(envelope), input.nonce, input.issuedAt,
-    input.expiresAt, envelope.signature, serverSignature, acceptedAt, JSON.stringify(dependencies),
-    JSON.stringify(inputArtifactIds), input.privateShareMessageId ?? null,
-  );
-  return { task: taskFromRow(db, readTask(db, input.id)!), created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    db.query(`INSERT INTO agent_tasks (
+      id, project_id, chat_id, requester_device_id, target_device_id, agent_id, prompt,
+      prompt_envelope_json, nonce, issued_at, expires_at, requester_signature,
+      server_signature, status, accepted_at, dependencies_json, input_artifact_ids_json, private_share_message_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`).run(
+      input.id, input.projectId, chatId, input.requesterDeviceId, agent.hostDeviceId, input.agentId,
+      ENCRYPTED_PROMPT_PLACEHOLDER, envelopeJson(envelope), input.nonce, input.issuedAt,
+      input.expiresAt, envelope.signature, serverSignature, acceptedAt, JSON.stringify(dependencies),
+      JSON.stringify(inputArtifactIds), input.privateShareMessageId ?? null,
+    );
+    return { task: taskFromRow(db, readTask(db, input.id)!), created: true };
+  }).immediate();
 }
 
 function signDispatch(privateKeyPem: string, input: Parameters<typeof agentEncryptedDispatchSigningTranscript>[0]): string {
@@ -355,6 +360,7 @@ export function pendingEncryptedAgentTasks(db: Database, targetDeviceId: string,
       AND a.project_id = t.project_id
       AND a.host_device_id = t.target_device_id
       AND a.enabled = 1
+    JOIN project_lock_state pls ON pls.project_id = t.project_id AND pls.state = 'active'
     JOIN shared_chats c ON c.id = t.chat_id
       AND c.project_id = t.project_id
       AND c.state = 'active'
@@ -423,6 +429,7 @@ export function appendEncryptedAgentResult(
 ): AppendEncryptedAgentResultOutput {
   const taskRow = readTask(db, input.taskId);
   if (!taskRow || taskRow.targetDeviceId !== input.targetDeviceId) throw new Error("Encrypted agent task is not assigned to this device");
+  assertProjectUnlocked(db, taskRow.projectId);
   if (taskRow.chatId !== (input.chatId ?? taskRow.projectId)) throw new Error("Encrypted agent task belongs to another shared chat");
   requireSharedChat(db, taskRow.projectId, taskRow.chatId, input.targetDeviceId);
   if (input.final !== (input.status === "completed" || input.status === "failed")) {
@@ -439,6 +446,7 @@ export function appendEncryptedAgentResult(
   verifyEnvelopeSender(db, input.targetDeviceId, envelope);
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
+    assertProjectUnlocked(db, taskRow.projectId);
     const existing = db.query(`
       SELECT sequence, project_id AS projectId, chat_id AS chatId,
         task_id AS taskId, event_id AS eventId,

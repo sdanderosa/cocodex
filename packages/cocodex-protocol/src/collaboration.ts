@@ -50,6 +50,12 @@ import {
   projectInvitationRespondFrameSchema,
 } from "./project-invitation";
 import {
+  projectLockChangedFrameSchema,
+  projectLockStateSchema,
+  projectLockUpdatedFrameSchema,
+  projectLockUpdateFrameSchema,
+} from "./project-lock";
+import {
   sharedChatChangedFrameSchema,
   sharedChatCreateFrameSchema,
   sharedChatCreatedFrameSchema,
@@ -197,6 +203,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   projectInvitationListFrameSchema,
   projectInvitationRespondFrameSchema,
   projectInvitationCancelFrameSchema,
+  projectLockUpdateFrameSchema,
   sharedChatCreateFrameSchema,
   sharedChatListFrameSchema,
   z.object({
@@ -594,6 +601,7 @@ export const projectListResultFrameSchema = z.object({
     id: projectId,
     name: z.string().trim().min(1).max(120),
     role: z.enum(["owner", "member"]),
+    lock: projectLockStateSchema,
   }).strict()).max(10_000),
 }).strict();
 
@@ -601,6 +609,7 @@ const sharedProjectSchema = z.object({
   id: projectId,
   name: z.string().trim().min(1).max(120),
   role: z.enum(["owner", "member"]),
+  lock: projectLockStateSchema,
 }).strict();
 
 export const projectCreatedFrameSchema = z.object({
@@ -844,6 +853,8 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectDeviceRevokedFrameSchema,
   projectMemberRemovedFrameSchema,
   projectMemberListFrameSchema,
+  projectLockUpdatedFrameSchema,
+  projectLockChangedFrameSchema,
   agentListFrameSchema,
   agentCreatedFrameSchema,
   agentReadyAcceptedFrameSchema,
@@ -988,6 +999,7 @@ export interface SharedProject {
   id: string;
   name: string;
   role: "owner" | "member";
+  lock: import("./project-lock").ProjectLockState;
 }
 
 export interface ChatEvent {

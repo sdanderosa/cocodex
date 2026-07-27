@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { ChatEvent, SharedProject } from "../../../packages/cocodex-protocol/src/index.ts";
 import type { ProjectMemberView } from "../../../packages/cocodex-protocol/src/index.ts";
+import { assertProjectUnlocked } from "./project-locks";
 
 interface DeviceStatusRow {
   status: "pending" | "approved" | "revoked";
@@ -23,12 +24,22 @@ export function createProject(
   }
   const device = db.query("SELECT status FROM devices WHERE id = ?").get(ownerDeviceId) as DeviceStatusRow | null;
   if (!device || device.status !== "approved") throw new Error("Project owner device is not approved");
-  const project: SharedProject = { id: randomUUID(), name: normalized, role: "owner" };
+  const project: SharedProject = {
+    id: randomUUID(),
+    name: normalized,
+    role: "owner",
+    lock: { state: "active", revision: 0, lockedAt: null, lockedByDeviceId: null, reason: null },
+  };
   db.transaction(() => {
     db.query(`
       INSERT INTO projects (id, name, created_by_device_id, created_at)
       VALUES (?, ?, ?, ?)
     `).run(project.id, project.name, ownerDeviceId, now.toISOString());
+    db.query(`
+      INSERT INTO project_lock_state (
+        project_id, state, revision, locked_at, locked_by_device_id, reason, updated_at
+      ) VALUES (?, 'active', 0, NULL, NULL, NULL, ?)
+    `).run(project.id, now.toISOString());
     db.query(`
       INSERT INTO project_members (project_id, device_id, role, joined_at)
       VALUES (?, ?, 'owner', ?)
@@ -54,21 +65,25 @@ export function addProjectMember(
     SELECT role FROM project_members WHERE project_id = ? AND device_id = ?
   `).get(projectId, actorDeviceId) as MembershipRow | null;
   if (actor?.role !== "owner") throw new Error("Only a project owner can add members");
+  assertProjectUnlocked(db, projectId);
   const member = db.query("SELECT status FROM devices WHERE id = ?").get(memberDeviceId) as DeviceStatusRow | null;
   if (!member || member.status !== "approved") throw new Error("Project member device is not approved");
-  const existing = db.query(`
-    SELECT 1 AS present FROM project_members WHERE project_id = ? AND device_id = ?
-  `).get(projectId, memberDeviceId);
-  if (existing) return;
-  const count = db.query(`
-    SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?
-  `).get(projectId) as { count: number };
-  if (count.count >= 128) throw new Error("Project member limit reached");
-  db.query(`
-    INSERT INTO project_members (project_id, device_id, role, joined_at)
-    VALUES (?, ?, 'member', ?)
-    ON CONFLICT(project_id, device_id) DO NOTHING
-  `).run(projectId, memberDeviceId, now.toISOString());
+  db.transaction(() => {
+    assertProjectUnlocked(db, projectId);
+    const existing = db.query(`
+      SELECT 1 AS present FROM project_members WHERE project_id = ? AND device_id = ?
+    `).get(projectId, memberDeviceId);
+    if (existing) return;
+    const count = db.query(`
+      SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?
+    `).get(projectId) as { count: number };
+    if (count.count >= 128) throw new Error("Project member limit reached");
+    db.query(`
+      INSERT INTO project_members (project_id, device_id, role, joined_at)
+      VALUES (?, ?, 'member', ?)
+      ON CONFLICT(project_id, device_id) DO NOTHING
+    `).run(projectId, memberDeviceId, now.toISOString());
+  }).immediate();
 }
 
 export function removeProjectMember(
@@ -99,14 +114,26 @@ export function removeProjectMember(
 }
 
 export function listProjects(db: Database, deviceId: string): SharedProject[] {
-  return db.query(`
-    SELECT p.id, p.name, pm.role
+  const rows = db.query(`
+    SELECT p.id, p.name, pm.role,
+      json_object(
+        'state', pls.state,
+        'revision', pls.revision,
+        'lockedAt', pls.locked_at,
+        'lockedByDeviceId', pls.locked_by_device_id,
+        'reason', pls.reason
+      ) AS lockJson
     FROM projects p
     JOIN project_members pm ON pm.project_id = p.id
+    JOIN project_lock_state pls ON pls.project_id = p.id
     JOIN devices d ON d.id = pm.device_id
     WHERE pm.device_id = ? AND d.status = 'approved'
     ORDER BY p.created_at ASC, p.id ASC
-  `).all(deviceId) as SharedProject[];
+  `).all(deviceId) as Array<Omit<SharedProject, "lock"> & { lockJson: string }>;
+  return rows.map(({ lockJson, ...project }) => ({
+    ...project,
+    lock: JSON.parse(lockJson) as SharedProject["lock"],
+  }));
 }
 
 export function listProjectMembers(
@@ -161,6 +188,7 @@ export function appendChatEventResult(
   input: AppendChatInput,
   now = new Date(),
 ): AppendChatResult {
+  assertProjectUnlocked(db, input.projectId);
   requireProjectMembership(db, input.projectId, input.senderDeviceId);
   if (input.content.length < 1 || input.content.length > 32_768) {
     throw new Error("Chat content must be 1-32768 characters");
@@ -190,31 +218,34 @@ export function appendChatEventResult(
     }
     return { event: existing, created: false };
   }
-  const result = db.query(`
-    INSERT INTO chat_events (
-      project_id, chat_id, event_id, sender_device_id, content, client_created_at, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.projectId,
-    input.projectId,
-    input.eventId,
-    input.senderDeviceId,
-    input.content,
-    input.clientCreatedAt,
-    now.toISOString(),
-  );
-  const event = db.query(`
-    SELECT
-      sequence,
-      project_id AS projectId,
-      event_id AS eventId,
-      sender_device_id AS senderDeviceId,
-      content,
-      client_created_at AS clientCreatedAt,
-      accepted_at AS acceptedAt
-    FROM chat_events WHERE sequence = ?
-  `).get(Number(result.lastInsertRowid)) as ChatEvent;
-  return { event, created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    const result = db.query(`
+      INSERT INTO chat_events (
+        project_id, chat_id, event_id, sender_device_id, content, client_created_at, accepted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.projectId,
+      input.projectId,
+      input.eventId,
+      input.senderDeviceId,
+      input.content,
+      input.clientCreatedAt,
+      now.toISOString(),
+    );
+    const event = db.query(`
+      SELECT
+        sequence,
+        project_id AS projectId,
+        event_id AS eventId,
+        sender_device_id AS senderDeviceId,
+        content,
+        client_created_at AS clientCreatedAt,
+        accepted_at AS acceptedAt
+      FROM chat_events WHERE sequence = ?
+    `).get(Number(result.lastInsertRowid)) as ChatEvent;
+    return { event, created: true };
+  }).immediate();
 }
 
 export function appendChatEvent(db: Database, input: AppendChatInput, now = new Date()): ChatEvent {

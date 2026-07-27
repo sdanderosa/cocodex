@@ -7,6 +7,7 @@ import {
   type SharedChat,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_CREATE_LIFETIME_MS = 5 * 60_000;
@@ -128,6 +129,7 @@ export function createSharedChat(
   input: CreateSharedChatInput,
   now = new Date(),
 ): { chat: SharedChat; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   requireProjectMembership(db, input.projectId, input.creatorDeviceId);
   const title = input.title.trim();
   if (title.length < 1 || title.length > 120) throw new Error("Shared chat title must be 1-120 characters");
@@ -169,6 +171,7 @@ export function createSharedChat(
   if (!valid) throw new Error("Shared-chat creation signature is invalid");
 
   return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
     const existing = readSharedChat(db, input.chatId);
     if (existing) {
       if (existing.projectId !== input.projectId

@@ -408,6 +408,20 @@ client.
 
 ## Offline behavior and emergency control
 
+The project owner can use **Lock project** to stop new shared changes and
+server-routed agent work. The Client signs the transition with its enrolled
+device identity and waits for authoritative Server state; the GUI cannot claim
+owner authority. A lock immediately pauses matching local agent bridges before
+encrypted prompt decryption, aborts active remote work, clears pending
+approvals, and disables shared editors and send controls. Project history and
+private messages remain readable.
+
+Project pause is deliberately separate from the host's persistent emergency
+stop. Unlocking a project never reenables an agent the host stopped locally.
+Rejected pre-lock queued mutations are not replayed automatically after
+unlock; resubmit them explicitly against the new revision. Local OpenCodex and
+Codex behavior continues independently. See ADR 0041.
+
 When the server is offline, normal local OpenCodex use continues. The GUI shows
 disconnected/reconnecting state; shared cursors and remote execution pause.
 Queued events remain local until the server returns. `shutdown` on the

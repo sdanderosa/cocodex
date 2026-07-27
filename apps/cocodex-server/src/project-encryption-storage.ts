@@ -19,6 +19,7 @@ import {
   expirePendingProjectInvitationsForProject,
 } from "./project-invitations";
 import { generalSharedChat, insertGeneralSharedChat, requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked, projectLockState } from "./project-locks";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -823,7 +824,12 @@ export function createEncryptedProject(
         throw new Error("Project creation replay conflict");
       }
       return {
-        project: { id: projectId, name: normalizedName, role: "owner" as const },
+        project: {
+          id: projectId,
+          name: normalizedName,
+          role: "owner" as const,
+          lock: projectLockState(db, projectId),
+        },
         defaultChat: generalSharedChat(db, projectId),
         keyEpoch: 1 as const,
         envelopes,
@@ -847,6 +853,11 @@ export function createEncryptedProject(
         INSERT INTO projects (id, name, created_by_device_id, created_at)
         VALUES (?, ?, ?, ?)
       `).run(projectId, normalizedName, ownerDeviceId, timestamp);
+      db.query(`
+        INSERT INTO project_lock_state (
+          project_id, state, revision, locked_at, locked_by_device_id, reason, updated_at
+        ) VALUES (?, 'active', 0, NULL, NULL, NULL, ?)
+      `).run(projectId, timestamp);
       insertGeneralSharedChat(db, projectId, ownerDeviceId, timestamp);
       for (const recipientDeviceId of [...recipientIds].sort()) {
         db.query(`
@@ -900,7 +911,12 @@ export function createEncryptedProject(
       now.toISOString(),
     );
     return {
-      project: { id: projectId, name: normalizedName, role: "owner" as const },
+      project: {
+        id: projectId,
+        name: normalizedName,
+        role: "owner" as const,
+        lock: projectLockState(db, projectId),
+      },
       defaultChat: generalSharedChat(db, projectId),
       keyEpoch: 1 as const,
       envelopes: initialized.envelopes,
@@ -1413,6 +1429,7 @@ export function updateEncryptedProjectContext(
     : senderDeviceIdOrExpectedRevision;
   const value = chatScoped ? valueOrNow : expectedRevisionOrValue;
   const now = (chatScoped ? maybeNow : valueOrNow instanceof Date ? valueOrNow : undefined) ?? new Date();
+  assertProjectUnlocked(db, projectId);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
     throw new Error("Invalid encrypted project context revision");
   }
@@ -1438,6 +1455,7 @@ export function updateEncryptedProjectContext(
   );
   const serialized = envelopeJson(envelope);
   return db.transaction(() => {
+    assertProjectUnlocked(db, projectId);
     const existing = db.query(`
       SELECT chat_id AS chatId, envelope_json AS envelopeJson,
         revision, updated_at AS updatedAt

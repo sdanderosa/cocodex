@@ -10,6 +10,7 @@ import {
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked } from "./project-locks";
 
 export interface AppendEncryptedArtifactInput {
   artifactId: string;
@@ -87,6 +88,7 @@ export function publishEncryptedArtifact(
   input: AppendEncryptedArtifactInput,
   now = new Date(),
 ): AppendEncryptedArtifactResult {
+  assertProjectUnlocked(db, input.projectId);
   const chatId = input.chatId ?? input.projectId;
   requireSharedChat(db, input.projectId, chatId, input.authorDeviceId);
   if (input.taskId) {
@@ -122,23 +124,26 @@ export function publishEncryptedArtifact(
     return { artifact: artifactFromRow(existing), created: false };
   }
   const timestamp = now.toISOString();
-  db.query(`
-    INSERT INTO project_artifacts (id, project_id, chat_id, task_id, author_device_id, envelope_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(input.artifactId, input.projectId, chatId, input.taskId, input.authorDeviceId, serialized, timestamp, timestamp);
-  return {
-    artifact: artifactFromRow({
-      id: input.artifactId,
-      projectId: input.projectId,
-      chatId,
-      taskId: input.taskId,
-      authorDeviceId: input.authorDeviceId,
-      envelopeJson: serialized,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }),
-    created: true,
-  };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    db.query(`
+      INSERT INTO project_artifacts (id, project_id, chat_id, task_id, author_device_id, envelope_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(input.artifactId, input.projectId, chatId, input.taskId, input.authorDeviceId, serialized, timestamp, timestamp);
+    return {
+      artifact: artifactFromRow({
+        id: input.artifactId,
+        projectId: input.projectId,
+        chatId,
+        taskId: input.taskId,
+        authorDeviceId: input.authorDeviceId,
+        envelopeJson: serialized,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      created: true,
+    };
+  }).immediate();
 }
 
 export function listEncryptedArtifacts(

@@ -5,6 +5,7 @@ import {
   type AgentExecutionTranscriptInput,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 const worktreeRefPattern =
   /^worktrees\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([A-Za-z0-9._-]{1,80})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
@@ -105,6 +106,7 @@ export function acceptAgentExecutionReport(
     || row.agentId !== input.agentId) {
     throw new Error("Agent execution report does not match a task");
   }
+  assertProjectUnlocked(db, input.projectId);
   if (row.targetDeviceId !== actorDeviceId || row.hostDeviceId !== actorDeviceId
     || row.deviceStatus !== "approved" || row.enabled !== 1) {
     throw new Error("Authenticated device cannot report this agent execution");
@@ -131,6 +133,7 @@ export function acceptAgentExecutionReport(
     return { taskId: row.id, startedAt: row.startedAt, created: false };
   }
   db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
     const result = db.query(`
       UPDATE agent_tasks
       SET status = 'running', workspace_mode = ?, workspace_ref = ?,

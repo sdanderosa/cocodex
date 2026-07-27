@@ -172,6 +172,15 @@ reviewed again before release.
   complete-recipient owner-signed rotation; owner-only projects fail closed.
   Incident notices replay after reconnect until that rotation resolves them.
   No reference source or new dependency is used. See ADR 0040.
+- **Authoritative project lock:** adapt MeshCentral's
+  authoritative-server/local-agent execution boundary and the explicit
+  readable-but-not-writable restoration model documented by GitHub and GitLab
+  archives. CoCodex independently implements a signed owner transition,
+  monotonic SQLite revision, atomic task cancellation and invitation expiry,
+  durable reconnect state, and a local bridge pause that cannot override the
+  host emergency stop. No source or dependency is copied or added. A lock does
+  not revoke keys; compromised devices still require removal and rotation.
+  See ADR 0041.
 - **Authoritative project context:** the encrypted `project.context.*` path
   keeps only signed opaque envelopes in SQLite, with a monotonic server
   revision; stale optimistic writers receive a conflict instead of overwriting

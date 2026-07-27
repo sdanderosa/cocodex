@@ -315,7 +315,18 @@ test("hands a live server to a prepared process and reconnects both resident cli
       socket.send(JSON.stringify({ version: 1, type: "project.list", requestId }));
       const result = await nextFrame(socket, "project.list.result");
       expect(result.requestId).toBe(requestId);
-      expect(result.projects).toEqual([{ id: project.id, name: "Transfer Alpha", role }]);
+      expect(result.projects).toEqual([{
+        id: project.id,
+        name: "Transfer Alpha",
+        role,
+        lock: {
+          state: "active",
+          revision: 0,
+          lockedAt: null,
+          lockedByDeviceId: null,
+          reason: null,
+        },
+      }]);
 
       const chatRequestId = randomUUID();
       socket.send(JSON.stringify({ version: 1, type: "chat.subscribe", requestId: chatRequestId, projectId: project.id, afterSequence: 0 }));

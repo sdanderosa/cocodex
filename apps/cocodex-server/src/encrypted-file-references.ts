@@ -10,6 +10,7 @@ import {
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked } from "./project-locks";
 
 export interface PublishEncryptedFileReferenceInput {
   referenceId: string;
@@ -91,6 +92,7 @@ export function publishEncryptedFileReference(
   input: PublishEncryptedFileReferenceInput,
   now = new Date(),
 ): { reference: EncryptedFileReference; created: boolean } {
+  assertProjectUnlocked(db, input.projectId);
   const chatId = input.chatId ?? input.projectId;
   requireSharedChat(db, input.projectId, chatId, input.authorDeviceId);
   const artifact = db.query(`
@@ -147,35 +149,44 @@ export function publishEncryptedFileReference(
     throw new Error("Encrypted file-reference shared-chat limit of 500 was reached");
   }
   const timestamp = now.toISOString();
-  db.query(`
-    INSERT INTO project_file_references
-      (id, project_id, chat_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.referenceId,
-    input.projectId,
-    chatId,
-    input.artifactId,
-    input.authorDeviceId,
-    input.authorDeviceId,
-    serialized,
-    timestamp,
-    timestamp,
-  );
-  return {
-    reference: fromRow({
-      id: input.referenceId,
-      projectId: input.projectId,
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    const currentCount = db.query(
+      "SELECT COUNT(*) AS count FROM project_file_references WHERE project_id = ? AND chat_id = ?",
+    ).get(input.projectId, chatId) as { count: number };
+    if (currentCount.count >= 500) {
+      throw new Error("Encrypted file-reference shared-chat limit of 500 was reached");
+    }
+    db.query(`
+      INSERT INTO project_file_references
+        (id, project_id, chat_id, artifact_id, host_device_id, author_device_id, envelope_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.referenceId,
+      input.projectId,
       chatId,
-      artifactId: input.artifactId,
-      hostDeviceId: input.authorDeviceId,
-      authorDeviceId: input.authorDeviceId,
-      envelopeJson: serialized,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }),
-    created: true,
-  };
+      input.artifactId,
+      input.authorDeviceId,
+      input.authorDeviceId,
+      serialized,
+      timestamp,
+      timestamp,
+    );
+    return {
+      reference: fromRow({
+        id: input.referenceId,
+        projectId: input.projectId,
+        chatId,
+        artifactId: input.artifactId,
+        hostDeviceId: input.authorDeviceId,
+        authorDeviceId: input.authorDeviceId,
+        envelopeJson: serialized,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }),
+      created: true,
+    };
+  }).immediate();
 }
 
 export function listEncryptedFileReferences(

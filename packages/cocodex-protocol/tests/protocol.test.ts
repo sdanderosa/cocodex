@@ -430,7 +430,18 @@ describe("CoCodex protocol", () => {
       version: 1 as const,
       type: "project.list.result" as const,
       requestId: crypto.randomUUID(),
-      projects: [{ id: projectId, name: "Nocturne Launcher", role: "owner" as const }],
+      projects: [{
+        id: projectId,
+        name: "Nocturne Launcher",
+        role: "owner" as const,
+        lock: {
+          state: "active" as const,
+          revision: 0,
+          lockedAt: null,
+          lockedByDeviceId: null,
+          reason: null,
+        },
+      }],
     };
     expect(projectServerFrameSchema.parse(projectList)).toEqual(projectList);
     expect(projectServerFrameSchema.parse({

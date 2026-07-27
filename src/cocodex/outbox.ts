@@ -152,6 +152,14 @@ export async function flushDurableOutbox(
         if ("projectId" in frame
           && normalizedMessage.includes("device is not an approved project member")) {
           discardQueuedProjectEvents(paths, frame.projectId);
+        } else if ("projectId" in frame && message.startsWith("PROJECT_LOCKED:")) {
+          // A lock is an authoritative execution freeze. Never replay a
+          // pre-lock mutation after unlock; the user must explicitly resubmit
+          // it against the newly observed project state.
+          discardQueuedEvent(paths.outbox, frame.requestId);
+          options.onTerminalRejection?.(frame, message);
+          finish();
+          return;
         } else if (frame.type === "private.send"
           && normalizedMessage.includes("private-message device is not approved")) {
           // A revoked or deleted recipient can never accept this immutable

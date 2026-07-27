@@ -440,6 +440,54 @@ describe("CoCodex local agent crash recovery", () => {
     }
   });
 
+  test("does not forget a plaintext cancellation delivered before controller creation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-early-plaintext-cancel-"));
+    const journalPath = join(root, "agent-journal.json");
+    const localDeviceId = randomUUID();
+    const fixture = signedTask(localDeviceId, "queued");
+    const socket = new AcknowledgingSocket();
+    let executions = 0;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => true,
+      async *execute() {
+        executions += 1;
+        yield "must not execute";
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([
+        [fixture.task.requesterDeviceId, fixture.requesterFingerprint],
+      ]),
+      journalPath,
+    });
+    try {
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "agent.task", task: fixture.task }),
+      }));
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({
+          version: 1,
+          type: "agent.cancel",
+          taskId: fixture.task.id,
+          reason: "Project locked before verification completed.",
+        }),
+      }));
+      for (let attempt = 0; attempt < 100
+        && !socket.sent.some(frame => frame.type === "agent.result" && frame.taskId === fixture.task.id);
+        attempt += 1) await Bun.sleep(5);
+      expect(executions).toBe(0);
+      expect(socket.sent.find(frame =>
+        frame.type === "agent.result" && frame.taskId === fixture.task.id)).toMatchObject({
+        final: true,
+        status: "failed",
+      });
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("returns an encrypted terminal result when an encrypted task is cancelled", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-agent-encrypted-cancel-"));
     const journalPath = join(root, "agent-journal.json");
@@ -538,6 +586,53 @@ describe("CoCodex local agent crash recovery", () => {
       expect(detach.isEmergencyStopped()).toBeTrue();
       detach.resume();
       expect(detach.isEmergencyStopped()).toBeFalse();
+    } finally {
+      await detach();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("authoritative project pause blocks encrypted prompt decryption without clearing local emergency stop", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-agent-project-lock-"));
+    const localDeviceId = randomUUID();
+    const fixture = signedEncryptedTask(localDeviceId);
+    const socket = new AcknowledgingSocket();
+    let decryptions = 0;
+    let authorizations = 0;
+    let executions = 0;
+    const detach = attachLocalAgentBridge(socket as unknown as WebSocket, {
+      authorize: () => {
+        authorizations += 1;
+        return true;
+      },
+      async *execute() {
+        executions += 1;
+        yield "must not run";
+      },
+    }, {
+      localDeviceId,
+      serverPublicKeyPem: fixture.serverPublicKeyPem,
+      trustedRequesterFingerprints: new Map([[fixture.task.requesterDeviceId, fixture.requesterFingerprint]]),
+      journalPath: join(root, "agent-journal.json"),
+      decryptTaskPrompt: async () => {
+        decryptions += 1;
+        return "secret prompt";
+      },
+    });
+    try {
+      detach.emergencyStop("Local host stop");
+      detach.setProjectPaused(true);
+      socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ version: 1, type: "project.agent.task", task: fixture.task }),
+      }));
+      await Bun.sleep(30);
+      expect(decryptions).toBe(0);
+      expect(authorizations).toBe(0);
+      expect(executions).toBe(0);
+      expect(detach.isProjectPaused()).toBeTrue();
+      detach.setProjectPaused(false);
+      expect(detach.isProjectPaused()).toBeFalse();
+      expect(detach.isEmergencyStopped()).toBeTrue();
     } finally {
       await detach();
       rmSync(root, { recursive: true, force: true });

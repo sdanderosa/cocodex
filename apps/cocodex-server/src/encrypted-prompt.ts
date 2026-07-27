@@ -8,6 +8,7 @@ import {
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { currentProjectKeyEpochForWrite } from "./project-encryption-storage";
 import { requireSharedChat } from "./shared-chats";
+import { assertProjectUnlocked } from "./project-locks";
 
 /** Opaque, ordered Yjs updates. The server never applies the Yjs payload. */
 export interface EncryptedPromptUpdate {
@@ -96,6 +97,7 @@ export function appendEncryptedPromptUpdateResult(
   input: AppendEncryptedPromptInput,
   now = new Date(),
 ): AppendEncryptedPromptResult {
+  assertProjectUnlocked(db, input.projectId);
   requireSharedChat(db, input.projectId, input.chatId, input.senderDeviceId);
   const envelope = projectContentEnvelopeSchema.parse(input.envelope);
   if (envelope.version !== 2) throw new Error("New encrypted prompt updates require a chat-bound content envelope");
@@ -120,17 +122,20 @@ export function appendEncryptedPromptUpdateResult(
     }
     return { update: updateFromRow(existing), created: false };
   }
-  const result = db.query(`
-    INSERT INTO project_prompt_updates (
-      project_id, chat_id, update_id, sender_device_id, envelope_json, accepted_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
-  `).run(input.projectId, input.chatId, input.updateId, input.senderDeviceId, serialized, now.toISOString());
-  const row = db.query(`
-    SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
-      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
-    FROM project_prompt_updates WHERE sequence = ?
-  `).get(Number(result.lastInsertRowid)) as UpdateRow;
-  return { update: updateFromRow(row), created: true };
+  return db.transaction(() => {
+    assertProjectUnlocked(db, input.projectId);
+    const result = db.query(`
+      INSERT INTO project_prompt_updates (
+        project_id, chat_id, update_id, sender_device_id, envelope_json, accepted_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(input.projectId, input.chatId, input.updateId, input.senderDeviceId, serialized, now.toISOString());
+    const row = db.query(`
+      SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
+        sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
+      FROM project_prompt_updates WHERE sequence = ?
+    `).get(Number(result.lastInsertRowid)) as UpdateRow;
+    return { update: updateFromRow(row), created: true };
+  }).immediate();
 }
 
 export function encryptedPromptUpdatesAfter(

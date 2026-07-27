@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import * as Y from "yjs";
 import { requireProjectMembership } from "./shared-state";
+import { assertProjectUnlocked } from "./project-locks";
 
 const MAX_PROMPT_UPDATE_BYTES = 128 * 1024;
 const MAX_PROMPT_STATE_BYTES = 512 * 1024;
@@ -35,9 +36,11 @@ export function applySharedPromptUpdate(
   encodedUpdate: string,
   now = new Date(),
 ): { update: string; created: boolean } {
+  assertProjectUnlocked(db, projectId);
   requireProjectMembership(db, projectId, deviceId);
   const update = decodeUpdate(encodedUpdate);
   return db.transaction(() => {
+    assertProjectUnlocked(db, projectId);
     const existing = db.query(`SELECT project_id AS projectId, sender_device_id AS senderDeviceId,
       update_blob AS updateBlob FROM shared_prompt_updates WHERE update_id = ?`).get(updateId) as {
         projectId: string; senderDeviceId: string; updateBlob: Uint8Array;
