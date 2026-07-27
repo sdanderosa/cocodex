@@ -415,8 +415,22 @@ function Assert-CoCodexStopped([string]$Prefix) {
     } catch {
         throw "Unable to prove CoCodex processes are stopped. Close CoCodex Client, Server, and ocx, then retry."
     }
+    $ignoredShellAncestors = New-Object "System.Collections.Generic.HashSet[int]"
+    $ancestorPid = [int]$PID
+    while ($ancestorPid -gt 0) {
+        $ancestor = $processes | Where-Object { [int]$_.ProcessId -eq $ancestorPid } | Select-Object -First 1
+        if (-not $ancestor) {
+            break
+        }
+        $ancestorName = [string]$ancestor.Name
+        if ($ancestorPid -ne $PID -and $ancestorName -notin @("powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe")) {
+            break
+        }
+        [void]$ignoredShellAncestors.Add($ancestorPid)
+        $ancestorPid = [int]$ancestor.ParentProcessId
+    }
     foreach ($process in $processes) {
-        if ($process.ProcessId -eq $PID) {
+        if ($ignoredShellAncestors.Contains([int]$process.ProcessId)) {
             continue
         }
         $executable = [string]$process.ExecutablePath

@@ -73,6 +73,8 @@ describe("CoCodex private-alpha distribution", () => {
     expect(source).toContain("Assert-ReleaseArchive");
     expect(source).toContain("Assert-InstalledPackage");
     expect(source).toContain("Assert-CoCodexStopped");
+    expect(source).toContain("$ancestor.ParentProcessId");
+    expect(source).toContain('"powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe"');
     expect(source).toContain("must contain exactly one SHA-256 entry");
     expect(source).toContain("checksum file exceeds the 65536-byte validation limit");
     expect(source).toContain('$Action -eq "Install" -and');

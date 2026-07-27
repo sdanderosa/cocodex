@@ -130,6 +130,14 @@ status after stop: "running":false
 The restart command did not report success until the replacement process owned
 the PID file and the protocol-specific health response passed.
 
+The stopped-process guard initially and correctly failed closed, but a normal
+PowerShell parent command containing the selected prefix was also counted as a
+CoCodex process. The final guard ignores only its PowerShell/cmd shell-host
+ancestor chain; Bun/Node application ancestors still block mutation. The
+corrected isolated uninstall exited `0`, npm removed 126 application packages,
+and `node_modules/@sdanderosa/cocodex` no longer existed. Client, Server,
+OpenCodex, and Codex state roots were not targeted.
+
 ## Primary files
 
 - `scripts/build-cocodex-private-alpha.ts`
