@@ -3599,7 +3599,7 @@ export async function runJsonLineSession(
           if (accessProfile === "full-computer" && !fullComputerOptIn) {
             throw new Error("Full-computer access requires explicit local confirmation");
           }
-          const canonicalWorkspace = realpathSync(workspaceRoot);
+          const canonicalWorkspace = realpathSync.native(workspaceRoot);
           if (!statSync(canonicalWorkspace).isDirectory()) throw new Error("Agent workspace must be a directory");
           if (parsePath(canonicalWorkspace).root === canonicalWorkspace || canonicalWorkspace.startsWith("\\\\")) {
             throw new Error("Agent workspace cannot be a drive root or network path");

@@ -14,13 +14,15 @@ afterEach(async () => {
   for (const root of roots.splice(0)) {
     const absolute = resolve(root);
     if (!absolute.startsWith(resolve(tmpdir()))) throw new Error(`Refusing to remove non-temporary path: ${absolute}`);
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
         rmSync(absolute, { recursive: true, force: true });
         break;
       } catch (error) {
-        if (attempt === 19) throw error;
-        await Bun.sleep(25);
+        if (attempt === 39) throw error;
+        // Windows may retain a just-closed SQLite handle briefly. Keep cleanup
+        // bounded while giving the OS enough time to release that lock.
+        await Bun.sleep(100);
       }
     }
   }
