@@ -31,7 +31,8 @@ compatibility surfaces for the inherited local proxy.
 
 The GUI remains the normal OpenCodex GUI. Open the **CoCodex** page to enroll
 the device, start the resident collaboration session, select a shared project,
-edit the Yjs prompt, and set the server-authoritative **Final Goal**.
+create an encrypted Co-Project with verified contacts, edit the Yjs prompt,
+and set the server-authoritative **Final Goal**.
 
 Client state defaults to `%USERPROFILE%\.cocodex` (or `COCODEX_HOME`). It is
 separate from `.opencodex` and `.codex`; no import or migration overwrites
@@ -243,25 +244,31 @@ surfaces `rotation-required` without silently falling back to plaintext.
 
 New client installations also create a dedicated X25519 project-wrap keypair;
 it is separate from the private-message key and remains in the protected
-client state directory. An owner can initialize an encrypted project-context
-epoch through the JSON-line session by supplying the approved members' project
-wrap public keys:
+client state directory. The normal path is **CoCodex > Create Co-Project**:
+enter a name and select independently verified, project-capable contacts. The
+GUI sends only their device IDs. The resident Client resolves and verifies
+their cached certificates, generates a random project key, and creates the
+project and epoch 1 together:
 
 ```json
-{"id":"keys-1","type":"project.key.initialize","projectId":"PROJECT_ID","keyEpoch":1,"recipients":[{"deviceId":"STEPHEN_DEVICE_ID","projectWrapPublicKeyPem":"..."},{"deviceId":"KAI_DEVICE_ID","projectWrapPublicKeyPem":"..."}]}
+{"id":"create-1","type":"project.create","projectId":"NEW_PROJECT_UUID","name":"Nocturne Launcher","memberDeviceIds":["KAI_DEVICE_ID"]}
 ```
 
-Initialization is one atomic owner-signed batch: the server requires every
-currently approved member, persists all envelopes in one SQLite transaction,
-and acknowledges the request before the client reports success. The client
-persists the signed batch and generated key as a protected pending intent, so a
-process restart can replay the same request ID before encrypted outbox traffic.
-The staged key is removed on rejection or any acknowledgement whose envelope
-set does not exactly match the request. Authenticated reconnects and project
-discovery refresh all envelopes addressed to the device, so an offline member
-does not need to repeat enrollment or depend on the original broadcast. This
-prevents a partially shared key from silently putting the client into encrypted
-mode.
+Creation is one atomic owner-signed batch: the signature binds the normalized
+name, creator, complete recipient set, and exact epoch-1 envelopes. The server
+commits project, memberships, epoch, and all envelopes in one transaction and
+acknowledges the exact request before the Client reports success. The Client
+persists the signed creation and generated key as a protected pending intent,
+so a process restart replays the same request rather than generating a new
+key. A rejection or mismatched acknowledgement removes the staged key.
+Authenticated reconnects and project discovery refresh every envelope
+addressed to the device, so an offline member does not repeat enrollment or
+depend on the original broadcast. Certificates, project-wrap keys, sealed
+keys, and acknowledgement envelope batches never enter the renderer.
+
+The older `project.key.initialize` command remains only for migrating an
+already existing unkeyed administrative project. It requires one recipient
+entry per current member and is not the normal creation workflow.
 
 Then use `project.key.get` on each member client and use
 `project.context.get`/`project.context.update` for encrypted Final Goal and

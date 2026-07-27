@@ -11,6 +11,8 @@ import {
   agentExecutionAcceptedFrameSchema,
   agentTaskListFrameSchema,
   projectMemberListFrameSchema,
+  projectCreatedFrameSchema,
+  projectChangedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
   privateContactSnapshotFrameSchema,
   privateAcceptedFrameSchema,
@@ -64,6 +66,7 @@ import { acceptUsageReport, listUsageReports, usageReportProjectIds } from "./us
 import {
   getEncryptedProjectContext,
   assertLegacyProjectWriteAllowed,
+  createEncryptedProject,
   getProjectKeyEpoch,
   initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
@@ -86,6 +89,7 @@ const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
 const MAX_PRIVATE_CONTACT_LISTS_PER_SECOND = 10;
 const MAX_DEVICE_CERTIFICATE_PUBLISHES_PER_SECOND = 2;
+const MAX_PROJECT_CREATIONS_PER_MINUTE = 12;
 const MAX_PRESENCE_MEMBERS = 128;
 const PRESENCE_TTL_MS = 15_000;
 
@@ -187,6 +191,7 @@ export function startCoCodexServer(
   const privateReceiptTimes = new Map<string, number[]>();
   const privateContactListTimes = new Map<string, number[]>();
   const deviceCertificatePublishTimes = new Map<string, number[]>();
+  const projectCreationTimes = new Map<string, number[]>();
   let privateContactRevision = privateContactDirectoryRevision(db);
   const presencePruneIntervalMs = Math.min(5_000, Math.max(1_000, Math.floor(PRESENCE_TTL_MS / 3)));
   let unauthenticatedSocketCount = 0;
@@ -297,6 +302,19 @@ export function startCoCodexServer(
     }
     recent.push(now);
     deviceCertificatePublishTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowProjectCreation(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (projectCreationTimes.get(deviceId) ?? [])
+      .filter(timestamp => now - timestamp < 60_000);
+    if (recent.length >= MAX_PROJECT_CREATIONS_PER_MINUTE) {
+      projectCreationTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    projectCreationTimes.set(deviceId, recent);
     return true;
   }
 
@@ -779,6 +797,48 @@ export function startCoCodexServer(
               requestId,
               projects: listProjects(db, deviceId),
             }));
+            return;
+          }
+          if (message.type === "project.create") {
+            if (!allowProjectCreation(deviceId)) {
+              throw new Error("Project creation rate limit exceeded");
+            }
+            const created = createEncryptedProject(
+              db,
+              message.projectId,
+              message.name,
+              deviceId,
+              requestId,
+              message.envelopes,
+              message.signature,
+            );
+            socket.send(JSON.stringify(projectCreatedFrameSchema.parse({
+              version: 1,
+              type: "project.created",
+              requestId,
+              project: created.project,
+              keyEpoch: created.keyEpoch,
+              envelopes: created.envelopes,
+              created: created.created,
+            })));
+            if (created.created) {
+              for (const envelope of created.envelopes) {
+                sendToDevice(envelope.recipientDeviceId, projectChangedFrameSchema.parse({
+                  version: 1,
+                  type: "project.changed",
+                  project: {
+                    ...created.project,
+                    role: envelope.recipientDeviceId === deviceId ? "owner" : "member",
+                  },
+                }));
+                sendToDevice(envelope.recipientDeviceId, {
+                  version: 1,
+                  type: "project.key.changed",
+                  projectId: created.project.id,
+                  envelope,
+                });
+              }
+            }
             return;
           }
           if (message.type === "device.key-certificate.publish") {

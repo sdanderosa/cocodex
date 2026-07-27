@@ -166,6 +166,16 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("project.create"),
+    requestId,
+    projectId,
+    name: z.string().trim().min(1).max(120),
+    keyEpoch: z.literal(1),
+    envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
+    signature: z.string().min(64).max(256),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("device.key-certificate.publish"),
     requestId,
     certificate: z.string().min(256).max(8_192),
@@ -530,6 +540,28 @@ export const projectListResultFrameSchema = z.object({
   }).strict()).max(10_000),
 }).strict();
 
+const sharedProjectSchema = z.object({
+  id: projectId,
+  name: z.string().trim().min(1).max(120),
+  role: z.enum(["owner", "member"]),
+}).strict();
+
+export const projectCreatedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.created"),
+  requestId,
+  project: sharedProjectSchema,
+  keyEpoch: z.literal(1),
+  envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(128),
+  created: z.boolean(),
+}).strict();
+
+export const projectChangedFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("project.changed"),
+  project: sharedProjectSchema,
+}).strict();
+
 export const projectMemberViewSchema = z.object({
   deviceId,
   displayName: z.string().trim().min(1).max(80),
@@ -711,6 +743,8 @@ export const presenceAcceptedFrameSchema = z.object({
 
 export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectListResultFrameSchema,
+  projectCreatedFrameSchema,
+  projectChangedFrameSchema,
   encryptedChatSnapshotFrameSchema,
   encryptedChatAcceptedFrameSchema,
   encryptedChatEventFrameSchema,
@@ -805,6 +839,8 @@ export const privateServerFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ProjectServerFrame = z.infer<typeof projectServerFrameSchema>;
+export type ProjectCreatedFrame = z.infer<typeof projectCreatedFrameSchema>;
+export type ProjectChangedFrame = z.infer<typeof projectChangedFrameSchema>;
 export type PrivateContactView = z.infer<typeof privateContactViewSchema>;
 export type PrivateContactSnapshotFrame = z.infer<typeof privateContactSnapshotFrameSchema>;
 export type PrivateMessageEnvelope = z.infer<typeof privateMessageEnvelopeSchema>;

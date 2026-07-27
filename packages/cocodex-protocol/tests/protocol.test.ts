@@ -249,6 +249,19 @@ describe("CoCodex protocol", () => {
     };
     expect(clientFrameSchema.parse(initialize)).toEqual(initialize);
     expect(() => clientFrameSchema.parse({ ...initialize, keyEpoch: 2 })).toThrow();
+    const createProject = {
+      version: 1 as const,
+      type: "project.create" as const,
+      requestId: crypto.randomUUID(),
+      projectId,
+      name: "Nocturne Launcher",
+      keyEpoch: 1 as const,
+      envelopes: [keyEnvelope],
+      signature: Buffer.alloc(64, 7).toString("base64url"),
+    };
+    expect(clientFrameSchema.parse(createProject)).toEqual(createProject);
+    expect(() => clientFrameSchema.parse({ ...createProject, extra: true })).toThrow();
+    expect(() => clientFrameSchema.parse({ ...createProject, keyEpoch: 2 })).toThrow();
     expect(clientFrameSchema.parse(contextUpdate)).toEqual(contextUpdate);
     const rotate = {
       version: 1 as const,
@@ -359,6 +372,20 @@ describe("CoCodex protocol", () => {
       projects: [{ id: projectId, name: "Nocturne Launcher", role: "owner" as const }],
     };
     expect(projectServerFrameSchema.parse(projectList)).toEqual(projectList);
+    expect(projectServerFrameSchema.parse({
+      version: 1,
+      type: "project.created",
+      requestId: createProject.requestId,
+      project: projectList.projects[0],
+      keyEpoch: 1,
+      envelopes: [keyEnvelope],
+      created: true,
+    })).toMatchObject({ type: "project.created", created: true });
+    expect(projectServerFrameSchema.parse({
+      version: 1,
+      type: "project.changed",
+      project: { ...projectList.projects[0], role: "member" },
+    })).toMatchObject({ type: "project.changed" });
     expect(() => projectServerFrameSchema.parse({ ...projectList, extra: "withheld" })).toThrow();
     expect(() => projectServerFrameSchema.parse({ ...result, extra: true })).toThrow();
   });

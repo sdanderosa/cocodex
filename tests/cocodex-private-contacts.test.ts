@@ -20,6 +20,10 @@ function contact(displayName: string) {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
+  const projectWrap = generateKeyPairSync("x25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
   const deviceId = randomUUID();
   const fingerprint = publicKeyFingerprint(signing.publicKey);
   return {
@@ -30,6 +34,7 @@ function contact(displayName: string) {
       publicKeyPem: signing.publicKey,
       privateKeyPem: signing.privateKey,
       messagingPublicKeyPem: messaging.publicKey,
+      projectWrapPublicKeyPem: projectWrap.publicKey,
     }),
   };
 }
@@ -48,6 +53,7 @@ describe("CoCodex verified private contacts", () => {
       displayName: "Kai",
       fingerprint: kai.fingerprint,
       trusted: false,
+      projectCapable: true,
     }]);
     expect(safePrivateContacts(verified, { [kai.deviceId]: kai.fingerprint })[0]?.trusted).toBeTrue();
     expect(JSON.stringify(safePrivateContacts(verified, {}))).not.toContain("deviceKeyCertificate");

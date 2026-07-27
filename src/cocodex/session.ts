@@ -1,6 +1,7 @@
 import { createHash, randomUUID, sign } from "node:crypto";
 import {
   agentDefinitionSigningTranscript,
+  projectCreationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
   projectServerFrameSchema,
@@ -91,6 +92,8 @@ import {
 } from "./project-encryption";
 import {
   clearProjectKeyInitialization,
+  clearProjectCreation,
+  loadPendingProjectCreations,
   loadPendingProjectKeyInitializations,
   loadProjectKey,
   loadProjectKeyForEncryption,
@@ -102,6 +105,7 @@ import {
   revokeProjectKey,
   restoreProjectKeyAccess,
   stageProjectKeyInitialization,
+  stageProjectCreation,
   storeProjectKey,
 } from "./project-key-store";
 
@@ -294,6 +298,14 @@ export async function runJsonLineSession(
     frame: Record<string, unknown>;
     commandId: string;
   }>();
+  const pendingProjectCreations = new Map<string, {
+    projectId: string;
+    name: string;
+    keyEpoch: 1;
+    frame: Record<string, unknown>;
+    commandId: string;
+  }>();
+  const pendingProjectCreationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const pendingAgentConfigurations = new Map<string, {
     commandId: string;
     projectId: string;
@@ -395,6 +407,33 @@ export async function runJsonLineSession(
       commandId: pending.requestId,
     });
   }
+  for (const pending of loadPendingProjectCreations(paths.projectKeys)) {
+    if (!loadProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch)) {
+      clearProjectCreation(paths.projectKeys, pending.requestId);
+      emitError({
+        source: "project-encryption",
+        error: `Discarded pending project creation ${pending.requestId} because its local key is missing`,
+      });
+      continue;
+    }
+    const frame = {
+      version: 1 as const,
+      type: "project.create" as const,
+      requestId: pending.requestId,
+      projectId: pending.projectId,
+      name: pending.name,
+      keyEpoch: 1 as const,
+      envelopes: pending.envelopes,
+      signature: pending.signature,
+    } satisfies Record<string, unknown>;
+    pendingProjectCreations.set(pending.requestId, {
+      projectId: pending.projectId,
+      name: pending.name,
+      keyEpoch: 1,
+      frame,
+      commandId: pending.requestId,
+    });
+  }
   const assertLegacyProjectFallbackAllowed = (projectId: string): void => {
     if (loadProjectKeyState(paths.projectKeys, projectId)) {
       throw new Error(`Project ${projectId} requires encrypted content frames`);
@@ -403,6 +442,21 @@ export async function runJsonLineSession(
   const send = (frame: unknown) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("CoCodex Server is offline");
     socket.send(JSON.stringify(frame));
+  };
+  const scheduleProjectCreationRetry = (requestId: string) => {
+    if (pendingProjectCreationRetryTimers.has(requestId)) return;
+    const timer = setTimeout(() => {
+      pendingProjectCreationRetryTimers.delete(requestId);
+      const pending = pendingProjectCreations.get(requestId);
+      if (!pending) return;
+      try { send(pending.frame); }
+      catch {
+        // The durable intent remains staged. The connection supervisor will
+        // replay the exact signed frame after the next successful reconnect.
+      }
+    }, 61_000);
+    timer.unref?.();
+    pendingProjectCreationRetryTimers.set(requestId, timer);
   };
   const migrationRecordId = (projectId: string, revision: number): string => {
     const hex = createHash("sha256").update(`CoCodex legacy context migration\u0000${projectId}\u0000${revision}`).digest("hex").slice(0, 32).split("");
@@ -1792,6 +1846,7 @@ export async function runJsonLineSession(
       try { frame = JSON.parse(String(event.data)) as Record<string, any>; }
       catch { return; }
       if (frame.type === "project.list.result"
+        || frame.type === "project.created" || frame.type === "project.changed"
         || frame.type === "agent.list.result" || frame.type === "agent.created"
         || frame.type === "agent.task.list.result"
         || frame.type === "project.key.result" || frame.type === "project.key.accepted"
@@ -1844,6 +1899,41 @@ export async function runJsonLineSession(
             ok: false,
             projectId: pending.projectId,
             error: String(frame.error ?? "Project key initialization failed"),
+          });
+        }
+        const pendingCreation = pendingProjectCreations.get(frame.requestId);
+        if (pendingCreation) {
+          const serverError = String(frame.error ?? "Project creation failed");
+          if (serverError === "Project creation rate limit exceeded") {
+            scheduleProjectCreationRetry(frame.requestId);
+            emit({
+              source: "control",
+              id: pendingCreation.commandId,
+              ok: false,
+              retryable: true,
+              projectId: pendingCreation.projectId,
+              error: serverError,
+            });
+            return;
+          }
+          pendingProjectCreations.delete(frame.requestId);
+          const retryTimer = pendingProjectCreationRetryTimers.get(frame.requestId);
+          if (retryTimer) clearTimeout(retryTimer);
+          pendingProjectCreationRetryTimers.delete(frame.requestId);
+          try { clearProjectCreation(paths.projectKeys, frame.requestId); }
+          catch (error) {
+            emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+          }
+          try { removeProjectKey(paths.projectKeys, pendingCreation.projectId, pendingCreation.keyEpoch); }
+          catch (error) {
+            emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+          }
+          emit({
+            source: "control",
+            id: pendingCreation.commandId,
+            ok: false,
+            projectId: pendingCreation.projectId,
+            error: String(frame.error ?? "Project creation failed"),
           });
         }
       }
@@ -2058,6 +2148,55 @@ export async function runJsonLineSession(
         return;
       } else if (frame.type === "project.key.accepted") {
         return;
+      } else if (frame.type === "project.created") {
+        const pending = pendingProjectCreations.get(String(frame.requestId));
+        if (pending) {
+          pendingProjectCreations.delete(String(frame.requestId));
+          const retryTimer = pendingProjectCreationRetryTimers.get(String(frame.requestId));
+          if (retryTimer) clearTimeout(retryTimer);
+          pendingProjectCreationRetryTimers.delete(String(frame.requestId));
+          const expectedEnvelopes = Array.isArray(pending.frame.envelopes) ? pending.frame.envelopes : [];
+          const returnedEnvelopes = Array.isArray(frame.envelopes) ? frame.envelopes : [];
+          const project = frame.project && typeof frame.project === "object"
+            ? frame.project as Record<string, unknown>
+            : {};
+          if (String(project.id) !== pending.projectId || String(project.name) !== pending.name
+            || project.role !== "owner" || Number(frame.keyEpoch) !== pending.keyEpoch
+            || !sameProjectKeyEnvelopeSet(expectedEnvelopes, returnedEnvelopes)) {
+            clearProjectCreation(paths.projectKeys, String(frame.requestId));
+            removeProjectKey(paths.projectKeys, pending.projectId, pending.keyEpoch);
+            emit({
+              source: "control",
+              id: pending.commandId,
+              ok: false,
+              projectId: pending.projectId,
+              error: "Project creation acknowledgement did not match the request",
+            });
+          } else {
+            clearProjectCreation(paths.projectKeys, String(frame.requestId));
+            projectKeySubscriptions.add(pending.projectId);
+            emit({
+              source: "control",
+              id: pending.commandId,
+              ok: true,
+              projectId: pending.projectId,
+              project,
+              created: frame.created === true,
+            });
+          }
+        }
+        // The acknowledgement carries sealed key envelopes needed only for
+        // resident-process correlation. Never forward it to stdout/renderer.
+        return;
+      } else if (frame.type === "project.changed") {
+        const project = frame.project as Record<string, unknown>;
+        const projectId = String(project.id);
+        projectKeySubscriptions.add(projectId);
+        try {
+          send({ version: 1, type: "project.key.get", requestId: randomUUID(), projectId });
+        } catch {
+          // Reconnect project-list recovery will request the addressed key.
+        }
       } else if (frame.type === "project.key.initialized") {
         const pending = pendingProjectKeyInitializations.get(String(frame.requestId));
         if (pending) {
@@ -2236,6 +2375,10 @@ export async function runJsonLineSession(
       try { send(pending.frame); }
       catch { /* the connection supervisor will replay the exact signed create */ }
     }
+    for (const pending of pendingProjectCreations.values()) {
+      try { send(pending.frame); }
+      catch { /* the connection supervisor will retry on its next cycle */ }
+    }
     for (const pending of pendingProjectKeyInitializations.values()) {
       try { send(pending.frame); }
       catch { /* the connection supervisor will retry on its next cycle */ }
@@ -2364,6 +2507,87 @@ export async function runJsonLineSession(
         }
         if (command.type === "project.list") {
           send({ version: 1, type: "project.list", requestId: controlRequestId(command.id) });
+        } else if (command.type === "project.create") {
+          if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
+          const projectId = String(command.projectId ?? randomUUID());
+          const name = String(command.name ?? "").trim();
+          if (name.length < 1 || name.length > 120) throw new Error("Project name must be 1-120 characters");
+          if (!Array.isArray(command.memberDeviceIds) || command.memberDeviceIds.length > 127) {
+            throw new Error("Project creation requires a bounded member list");
+          }
+          const trustedDevices = loadTrustedDevices(paths.trustedDevices);
+          const memberIds = [...new Set(command.memberDeviceIds.map(String))].sort();
+          if (memberIds.includes(connection.deviceId)) {
+            throw new Error("The local owner must not be repeated in the member list");
+          }
+          const recipients = [{
+            deviceId: connection.deviceId,
+            projectWrapPublicKeyPem: identity.projectWrapPublicKeyPem,
+          }];
+          for (const memberDeviceId of memberIds) {
+            const contact = privateContacts.get(memberDeviceId);
+            if (!contact || !contact.projectWrapPublicKeyPem) {
+              throw new Error("Every selected member must be an approved project-capable contact");
+            }
+            if (trustedDevices[memberDeviceId] !== contact.fingerprint) {
+              throw new Error("Every selected member fingerprint must be independently verified");
+            }
+            recipients.push({
+              deviceId: memberDeviceId,
+              projectWrapPublicKeyPem: contact.projectWrapPublicKeyPem,
+            });
+          }
+          const projectKey = createProjectKey();
+          const envelopes = [];
+          for (const recipient of recipients) {
+            envelopes.push(await sealProjectKeyEnvelope({
+              projectId,
+              keyEpoch: 1,
+              recipientDeviceId: recipient.deviceId,
+              senderDeviceId: connection.deviceId,
+              projectKey,
+              recipientProjectWrapPublicKeyPem: recipient.projectWrapPublicKeyPem,
+              senderPrivateKeyPem: identity.privateKeyPem,
+              senderPublicKeyPem: identity.publicKeyPem,
+            }));
+          }
+          const requestId = controlRequestId(command.id);
+          const signature = sign(null, projectCreationSigningTranscript({
+            projectId,
+            name,
+            ownerDeviceId: connection.deviceId,
+            envelopes,
+          }), identity.privateKeyPem).toString("base64url");
+          const frame = {
+            version: 1 as const,
+            type: "project.create" as const,
+            requestId,
+            projectId,
+            name,
+            keyEpoch: 1 as const,
+            envelopes,
+            signature,
+          } satisfies Record<string, unknown>;
+          stageProjectCreation(paths.projectKeys, {
+            requestId,
+            projectId,
+            name,
+            keyEpoch: 1,
+            envelopes,
+            signature,
+          }, projectKey);
+          pendingProjectCreations.set(requestId, {
+            projectId,
+            name,
+            keyEpoch: 1,
+            frame,
+            commandId: String(command.id ?? requestId),
+          });
+          try { send(frame); }
+          catch {
+            // The durable signed creation remains staged for reconnect.
+          }
+          projectKeySubscriptions.add(projectId);
         } else if (command.type === "agent.configure") {
           const projectId = String(command.projectId);
           const name = String(command.name ?? "").trim();
@@ -3209,6 +3433,8 @@ export async function runJsonLineSession(
     }
   } finally {
     for (const finish of pendingAgentApprovals.values()) finish(false);
+    for (const timer of pendingProjectCreationRetryTimers.values()) clearTimeout(timer);
+    pendingProjectCreationRetryTimers.clear();
     controller.abort();
     socket?.close();
     for (const workerSocket of localAgentWorkerSockets.values()) workerSocket.close();

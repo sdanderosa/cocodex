@@ -247,23 +247,6 @@ describe("three-process CoCodex private alpha", () => {
     };
     const stephenDevice = await enroll("Stephen", stephenRoot);
     const kaiDevice = await enroll("Kai", kaiRoot);
-    const stephenKeyCertificate = await run(clientExe, [
-      "identity-card", "--state-root", stephenRoot,
-    ]);
-    const kaiKeyCertificate = await run(clientExe, [
-      "identity-card", "--state-root", kaiRoot,
-    ]);
-    const stephenDeviceCard = JSON.parse(stephenKeyCertificate) as { projectWrapPublicKeyPem: string };
-    const kaiDeviceCard = JSON.parse(kaiKeyCertificate) as { projectWrapPublicKeyPem: string };
-
-    const project = JSON.parse(await run(serverExe, [
-      "project-create", "--name", "Nocturne Launcher", "--owner-device", stephenDevice.id,
-      "--state-root", serverRoot,
-    ]));
-    await run(serverExe, [
-      "project-add-member", "--project", project.id, "--owner-device", stephenDevice.id,
-      "--member-device", kaiDevice.id, "--state-root", serverRoot,
-    ]);
     let stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
       CODEX_CLI_PATH: fixtureExe,
       COCODEX_ACCOUNT_FIXTURE: "stephen-account",
@@ -306,6 +289,42 @@ describe("three-process CoCodex private alpha", () => {
       line.source === "control" && line.id === mismatchedTrustRequest);
     expect(mismatchedTrust.ok).toBeFalse();
     expect(mismatchedTrust.error).toContain("current approved directory");
+    const trustStephen = randomUUID();
+    const trustKai = randomUUID();
+    kai.send({
+      id: trustStephen,
+      type: "device.trust",
+      deviceId: stephenDevice.id,
+      fingerprint: stephenDevice.fingerprint,
+    });
+    stephen.send({
+      id: trustKai,
+      type: "device.trust",
+      deviceId: kaiDevice.id,
+      fingerprint: kaiDevice.fingerprint,
+    });
+    await Promise.all([
+      waitFor(kai, line => line.source === "control" && line.id === trustStephen && line.ok === true),
+      waitFor(stephen, line => line.source === "control" && line.id === trustKai && line.ok === true),
+    ]);
+    const project = { id: randomUUID(), name: "Nocturne Launcher", role: "owner" };
+    const createProjectRequest = randomUUID();
+    stephen.send({
+      id: createProjectRequest,
+      type: "project.create",
+      projectId: project.id,
+      name: project.name,
+      memberDeviceIds: [kaiDevice.id],
+    });
+    await Promise.all([
+      waitFor(stephen, line => line.source === "control" && line.id === createProjectRequest
+        && line.ok === true && line.projectId === project.id && line.created === true),
+      waitFor(kai, line => line.frame?.type === "project.changed"
+        && line.frame.project?.id === project.id && line.frame.project?.role === "member"),
+      waitFor(kai, line => line.source === "project-encryption"
+        && line.state === "key-available" && line.projectId === project.id),
+    ]);
+    expect(JSON.stringify([...stephen.lines, ...kai.lines])).not.toContain("sealedProjectKey");
     const configureResidentAgent = async (
       resident: Resident,
       command: Record<string, unknown>,
@@ -582,27 +601,14 @@ describe("three-process CoCodex private alpha", () => {
       && line.receipt?.messageId === privateMessageId && line.receipt?.receipt === "read");
     traceCheckpoint("private message decrypted");
 
-    const keyInitialize = randomUUID();
-    stephen.send({
-      id: keyInitialize,
-      type: "project.key.initialize",
-      projectId: project.id,
-      keyEpoch: 1,
-      recipients: [
-        { deviceId: stephenDevice.id, projectWrapPublicKeyPem: stephenDeviceCard.projectWrapPublicKeyPem },
-        { deviceId: kaiDevice.id, projectWrapPublicKeyPem: kaiDeviceCard.projectWrapPublicKeyPem },
-      ],
-    });
-    await waitFor(stephen, line => line.source === "control" && line.id === keyInitialize
-      && line.ok === true && line.sharedRecipients === 2);
     const keyGet = randomUUID();
     kai.send({ id: keyGet, type: "project.key.get", projectId: project.id });
     await waitFor(kai, line => line.source === "control" && line.id === keyGet && line.ok === true);
     await waitFor(kai, line => line.source === "project-encryption"
       && line.state === "key-available" && line.projectId === project.id);
 
-    // Re-subscribe after project-key enrollment so both clients receive the
-    // encrypted chat stream used for encrypted agent results.
+    // Re-subscribe explicitly to prove both clients recover the already keyed
+    // project stream used for encrypted agent results.
     const encryptedChatSubS = randomUUID();
     const encryptedChatSubK = randomUUID();
     stephen.send({ id: encryptedChatSubS, type: "chat.subscribe", projectId: project.id });

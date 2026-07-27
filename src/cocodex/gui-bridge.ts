@@ -11,6 +11,8 @@ import { loadAgentSafety } from "./agent-safety";
 const MAX_EVENTS = 500;
 const RENDERER_SERVER_FRAME_TYPES = new Set([
   "project.list.result",
+  "project.created",
+  "project.changed",
   "project.member.list.result",
   "project.member.removed",
   "prompt.snapshot",
@@ -51,7 +53,7 @@ const SENSITIVE_RENDERER_KEYS = new Set([
 ]);
 const RENDERER_FRAME_FIELDS = new Set([
   "version", "type", "requestId", "projectId",
-  "projects", "members", "events", "event", "updates", "update",
+  "projects", "project", "members", "events", "event", "updates", "update",
   "context", "reports", "report", "agents", "tasks", "artifacts", "artifact",
   "references", "reference",
   "id", "name", "role", "deviceId", "displayName", "fingerprint", "trusted",
@@ -71,10 +73,11 @@ const RENDERER_FRAME_FIELDS = new Set([
   "referenceId", "artifactId", "relativePath", "commitSha", "sha256",
   "sizeBytes", "mediaType", "hostDeviceId",
   "cursor", "caret", "typing", "x", "y", "anchor", "head",
-  "final",
+  "final", "created", "keyEpoch",
 ]);
 const ALLOWED_COMMANDS = new Set([
   "project.list",
+  "project.create",
   "project.key.get",
   "project.key.share",
   "project.key.initialize",
@@ -170,6 +173,7 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           displayName: contact.displayName,
           fingerprint: contact.fingerprint,
           trusted: contact.trusted === true,
+          projectCapable: contact.projectCapable === true,
         };
       }),
     };

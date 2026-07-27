@@ -83,6 +83,21 @@ never evicts an unaccepted sender copy.
 This cache remains single-device and does not claim a ratchet, forward secrecy,
 multi-device synchronization, or private-message backup. See ADR 0035.
 
+## Atomic Co-Project bootstrap
+
+The normal Client creation path is `project.create`, not Server CLI
+pre-seeding. The resident owner selects only contacts whose exact device
+fingerprints were independently trusted, generates one random project key, and
+signs the normalized project name plus the complete epoch-1 envelope set.
+
+The Server creates the project, owner/member rows, epoch row, and all opaque
+key envelopes in one immediate SQLite transaction. A committed Client-created
+project is never observable without encryption state. Exact reconnect replay
+is idempotent; incomplete, substituted, altered, or conflicting requests roll
+back completely. The renderer sees only safe project/contact metadata, while
+the resident process owns certificates, wrap keys, envelope batches, staged
+keys, and acknowledgement matching. See ADR 0037.
+
 ## Test isolation
 
 The mandatory harness launches one server and two clients as real processes.

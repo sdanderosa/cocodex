@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite";
 import {
   decodeInvitation,
   enrollmentSigningTranscript,
+  projectCreationSigningTranscript,
   projectContentSigningTranscript,
   projectKeyEnvelopeSigningTranscript,
   websocketAuthTranscript,
@@ -243,6 +244,88 @@ function typedContentEnvelope(
 }
 
 describe("encrypted project WSS routing", () => {
+  test("creates a project over WSS, suppresses replay broadcasts, and rate-limits creation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-create-wss-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const owner = approvedDevice(db, fingerprint, "Stephen");
+    const member = approvedDevice(db, fingerprint, "Kai");
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+    const ownerSocket = await connect(server.port, owner, fingerprint);
+    const memberSocket = await connect(server.port, member, fingerprint);
+
+    const projectId = randomUUID();
+    const requestId = randomUUID();
+    const envelopes = [
+      keyEnvelope(projectId, owner, owner.id),
+      keyEnvelope(projectId, owner, member.id),
+    ];
+    const signature = sign(null, projectCreationSigningTranscript({
+      projectId,
+      name: "Nocturne Launcher",
+      ownerDeviceId: owner.id,
+      envelopes,
+    }), owner.privateKey).toString("base64url");
+    const frame = {
+      version: 1,
+      type: "project.create",
+      requestId,
+      projectId,
+      name: "Nocturne Launcher",
+      keyEpoch: 1,
+      envelopes,
+      signature,
+    };
+    const ownerCreated = nextFrame(ownerSocket, "project.created");
+    const memberChanged = nextFrame(memberSocket, "project.changed");
+    const memberKeyChanged = nextFrame(memberSocket, "project.key.changed");
+    ownerSocket.send(JSON.stringify(frame));
+    expect(await ownerCreated).toMatchObject({
+      requestId,
+      project: { id: projectId, role: "owner" },
+      created: true,
+    });
+    expect(await memberChanged).toMatchObject({ project: { id: projectId, role: "member" } });
+    expect(await memberKeyChanged).toMatchObject({
+      projectId,
+      envelope: expect.objectContaining({ recipientDeviceId: member.id }),
+    });
+
+    let replayBroadcasts = 0;
+    const replayListener = (event: MessageEvent) => {
+      const received = JSON.parse(String(event.data)) as Record<string, unknown>;
+      if (received.type === "project.changed" || received.type === "project.key.changed") {
+        replayBroadcasts += 1;
+      }
+    };
+    memberSocket.addEventListener("message", replayListener);
+    for (let replay = 0; replay < 11; replay += 1) {
+      const accepted = nextFrame(ownerSocket, "project.created");
+      ownerSocket.send(JSON.stringify(frame));
+      expect((await accepted).created).toBeFalse();
+    }
+    const limited = nextFrame(ownerSocket, "error");
+    ownerSocket.send(JSON.stringify(frame));
+    expect(await limited).toMatchObject({
+      requestId,
+      error: "Project creation rate limit exceeded",
+    });
+    await Bun.sleep(25);
+    memberSocket.removeEventListener("message", replayListener);
+    expect(replayBroadcasts).toBe(0);
+    expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?").get(projectId))
+      .toEqual({ count: 1 });
+  });
+
   test("routes opaque keys/context, enforces membership, and rejects stale/replayed writes", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-project-encryption-"));
     roots.push(root);

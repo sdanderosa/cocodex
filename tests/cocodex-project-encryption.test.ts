@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,6 +25,8 @@ import {
 import {
   canEncryptProject,
   clearProjectKeyInitialization,
+  clearProjectCreation,
+  loadPendingProjectCreations,
   loadPendingProjectKeyInitializations,
   loadProjectKey,
   loadProjectKeyForEncryption,
@@ -37,6 +39,7 @@ import {
   revokeProjectKey,
   rotateProjectKey,
   stageProjectKeyInitialization,
+  stageProjectCreation,
   storeProjectKey,
 } from "../src/cocodex/project-key-store";
 import { inspectLocalFileReference } from "../src/cocodex/file-reference";
@@ -388,6 +391,50 @@ describe("CoCodex project encryption foundation", () => {
       expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
       clearProjectKeyInitialization(path, requestId);
       expect(loadPendingProjectKeyInitializations(path)).toEqual([]);
+      expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("persists the exact signed project creation for crash-safe replay", () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-create-intent-"));
+    try {
+      const path = join(root, "project-keys.json");
+      const projectId = randomUUID();
+      const requestId = randomUUID();
+      const envelope = {
+        version: 1 as const,
+        projectId,
+        keyEpoch: 1 as const,
+        recipientDeviceId: randomUUID(),
+        senderDeviceId: randomUUID(),
+        sealedProjectKey: Buffer.alloc(80, 3).toString("base64url"),
+        senderPublicKeyPem: "x".repeat(80),
+        signature: Buffer.alloc(64, 4).toString("base64url"),
+      };
+      const creation = {
+        requestId,
+        projectId,
+        name: "Nocturne Launcher",
+        keyEpoch: 1 as const,
+        envelopes: [envelope],
+        signature: Buffer.alloc(64, 5).toString("base64url"),
+      };
+      const projectKey = createProjectKey();
+      let persistAttempts = 0;
+      expect(() => stageProjectCreation(path, creation, projectKey, () => {
+        persistAttempts += 1;
+        throw new Error("simulated atomic rename failure");
+      })).toThrow("simulated atomic rename failure");
+      expect(persistAttempts).toBe(1);
+      expect(existsSync(path)).toBeFalse();
+      stageProjectCreation(path, creation, projectKey);
+      expect(loadPendingProjectCreations(path)).toEqual([creation]);
+      expect(loadPendingProjectKeyInitializations(path)).toEqual([]);
+      expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
+      clearProjectCreation(path, requestId);
+      expect(loadPendingProjectCreations(path)).toEqual([]);
       expect(loadProjectKey(path, projectId, 1)).toEqual({ keyEpoch: 1, projectKey });
     } finally {
       rmSync(root, { recursive: true, force: true });

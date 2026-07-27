@@ -3,6 +3,7 @@ import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto"
 import {
   decodeInvitation,
   enrollmentSigningTranscript,
+  projectCreationSigningTranscript,
   projectContentSigningTranscript,
   projectKeyEnvelopeSigningTranscript,
   type ProjectContentEnvelope,
@@ -13,6 +14,7 @@ import { approveDevice, createEnrollmentChallenge, enrollDevice } from "../src/e
 import { createInvitation } from "../src/invitations";
 import {
   getEncryptedProjectContext,
+  createEncryptedProject,
   getProjectKeyEpoch,
   initializeProjectKeyEpoch,
   listProjectKeyEnvelopes,
@@ -177,6 +179,100 @@ function fileReferenceEnvelope(
 }
 
 describe("opaque project-encryption server storage", () => {
+  test("creates membership and epoch one atomically with exact replay", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const owner = approvedDevice(db, "Stephen");
+      const member = approvedDevice(db, "Kai");
+      const projectId = randomUUID();
+      const name = "Nocturne Launcher";
+      const envelopes = [
+        keyEnvelope(projectId, owner, owner.id),
+        keyEnvelope(projectId, owner, member.id),
+      ];
+      const signature = sign(null, projectCreationSigningTranscript({
+        projectId,
+        name,
+        ownerDeviceId: owner.id,
+        envelopes,
+      }), owner.privateKey).toString("base64url");
+      const creationId = randomUUID();
+
+      expect(createEncryptedProject(
+        db, projectId, name, owner.id, creationId, envelopes, signature,
+      )).toMatchObject({
+        project: { id: projectId, name, role: "owner" },
+        keyEpoch: 1,
+        created: true,
+      });
+      expect(db.query("SELECT role FROM project_members WHERE project_id = ? ORDER BY role DESC")
+        .all(projectId)).toEqual([{ role: "owner" }, { role: "member" }]);
+      expect(db.query("SELECT current_epoch AS currentEpoch FROM project_key_epochs WHERE project_id = ?")
+        .get(projectId)).toEqual({ currentEpoch: 1 });
+      expect(createEncryptedProject(
+        db, projectId, name, owner.id, creationId, [...envelopes].reverse(), signature,
+      ).created).toBeFalse();
+      expect(() => createEncryptedProject(
+        db, projectId, name, owner.id, randomUUID(), envelopes, signature,
+      )).toThrow("already been initialized");
+      const changedEnvelopes = [
+        envelopes[0],
+        keyEnvelope(projectId, owner, member.id),
+      ];
+      const changedSignature = sign(null, projectCreationSigningTranscript({
+        projectId,
+        name,
+        ownerDeviceId: owner.id,
+        envelopes: changedEnvelopes,
+      }), owner.privateKey).toString("base64url");
+      expect(() => createEncryptedProject(
+        db, projectId, name, owner.id, creationId, changedEnvelopes, changedSignature,
+      )).toThrow("replay conflict");
+
+      const rejectedProjectId = randomUUID();
+      const incomplete = [keyEnvelope(rejectedProjectId, owner, member.id)];
+      const rejectedSignature = sign(null, projectCreationSigningTranscript({
+        projectId: rejectedProjectId,
+        name: "Rejected",
+        ownerDeviceId: owner.id,
+        envelopes: incomplete,
+      }), owner.privateKey).toString("base64url");
+      expect(() => createEncryptedProject(
+        db, rejectedProjectId, "Rejected", owner.id, randomUUID(), incomplete, rejectedSignature,
+      )).toThrow("include the owner");
+      expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
+        .get(rejectedProjectId)).toEqual({ count: 0 });
+
+      const revoked = approvedDevice(db, "Revoked");
+      db.query("UPDATE devices SET status = 'revoked', revoked_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), revoked.id);
+      const revokedProjectId = randomUUID();
+      const revokedEnvelopes = [
+        keyEnvelope(revokedProjectId, owner, owner.id),
+        keyEnvelope(revokedProjectId, owner, revoked.id),
+      ];
+      const revokedSignature = sign(null, projectCreationSigningTranscript({
+        projectId: revokedProjectId,
+        name: "Revoked member",
+        ownerDeviceId: owner.id,
+        envelopes: revokedEnvelopes,
+      }), owner.privateKey).toString("base64url");
+      expect(() => createEncryptedProject(
+        db, revokedProjectId, "Revoked member", owner.id, randomUUID(), revokedEnvelopes, revokedSignature,
+      )).toThrow("must be approved");
+      expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
+        .get(revokedProjectId)).toEqual({ count: 0 });
+
+      expect(() => createEncryptedProject(
+        db, projectId, "Altered name", owner.id, creationId, envelopes, signature,
+      )).toThrow("signature");
+      expect(db.query("SELECT COUNT(*) AS count FROM projects WHERE id = ?")
+        .get(projectId)).toEqual({ count: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
   test("initializes every approved member atomically and replays by request ID", () => {
     const db = openDatabase(":memory:");
     try {

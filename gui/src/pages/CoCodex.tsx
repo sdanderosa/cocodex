@@ -6,6 +6,7 @@ import {
   reconcilePrivateContactSelection,
 } from "../cocodex-private-contact-state";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
+import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import {
   confirmProjectMemberRemoval,
   projectMemberRemovalCommand,
@@ -92,6 +93,7 @@ interface PrivateContact {
   displayName: string;
   fingerprint: string;
   trusted: boolean;
+  projectCapable: boolean;
 }
 
 type AgentStatus = "offline" | "available" | "queued" | "working" | "completed" | "failed";
@@ -231,12 +233,14 @@ interface SessionValue {
   accessProfile?: "project-only" | "full-computer";
   workspaceMode?: "shared" | "git-worktree";
   configured?: boolean;
+  ok?: boolean;
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
   contacts?: PrivateContact[];
+  project?: Project;
   frame?: {
     type?: string;
     projectId?: string;
@@ -248,6 +252,7 @@ interface SessionValue {
     typing?: boolean;
     members?: PresenceMember[] | ProjectMember[];
     projects?: Project[];
+    project?: Project;
     events?: ChatEvent[];
     event?: ChatEvent;
     context?: SharedProjectContext;
@@ -425,6 +430,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [status, setStatus] = useState<Status>();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [selectedProjectMembers, setSelectedProjectMembers] = useState<string[]>([]);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [chat, setChat] = useState<ChatEvent[]>([]);
   const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
@@ -542,6 +549,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setAgentWorkspace("");
         void loadStatus();
       }
+      const safelyCreatedProject = projectCreatedFromControl(value);
+      if (safelyCreatedProject) {
+        const nextProject = safelyCreatedProject;
+        setProjects(previous => [...previous.filter(project => project.id !== nextProject.id), nextProject]);
+        setProjectId(nextProject.id);
+        setProjectName("");
+        setSelectedProjectMembers([]);
+        setNotice(t("cocodex.projects.created", { name: nextProject.name }));
+      }
       if (value?.source === "project-encryption" && value.state === "rotation-required") {
         setNotice(t("cocodex.encryption.rotationRequired"));
       }
@@ -633,6 +649,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setProjectId(previous => listedProjects.some(project => project.id === previous)
           ? previous
           : listedProjects[0]?.id ?? "");
+      } else if ((frame?.type === "project.created" || frame?.type === "project.changed") && frame.project) {
+        const nextProject = frame.project as Project;
+        setProjects(previous => [...previous.filter(project => project.id !== nextProject.id), nextProject]);
+        if (frame.type === "project.created") {
+          setProjectId(nextProject.id);
+          setProjectName("");
+          setSelectedProjectMembers([]);
+          setNotice(t("cocodex.projects.created", { name: nextProject.name }));
+        }
       }
       if (frame?.projectId === projectId && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
         setPresence((frame.members as PresenceMember[]).map(member => ({ ...member, typing: member.typing === true })));
@@ -869,6 +894,27 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       setAgentApprovals(previous => previous.filter(item => item.id !== taskId));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const createProject = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = projectName.trim();
+    if (!name || status?.state !== "connected") return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command({
+        type: "project.create",
+        projectId: crypto.randomUUID(),
+        name,
+        memberDeviceIds: selectedProjectMembers,
+      });
+      setNotice(t("cocodex.projects.creating"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1213,6 +1259,30 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               ))}
               {!projects.length && <p className="muted">{t("cocodex.projects.empty")}</p>}
             </div>
+            <form className="cocodex-project-create" onSubmit={createProject}>
+              <input className="input" value={projectName}
+                onChange={event => setProjectName(event.target.value)}
+                placeholder={t("cocodex.projects.name")} maxLength={120} required />
+              <small>{t("cocodex.projects.members")}</small>
+              <div className="cocodex-project-create-members">
+                {privateContacts.filter(contact => contact.trusted && contact.projectCapable).map(contact => (
+                  <label key={contact.deviceId}>
+                    <input type="checkbox"
+                      checked={selectedProjectMembers.includes(contact.deviceId)}
+                      onChange={event => setSelectedProjectMembers(previous => event.target.checked
+                        ? [...previous, contact.deviceId]
+                        : previous.filter(deviceId => deviceId !== contact.deviceId))} />
+                    <span>{contact.displayName}<small>{contact.fingerprint.slice(-12)}</small></span>
+                  </label>
+                ))}
+                {!privateContacts.some(contact => contact.trusted && contact.projectCapable)
+                  && <small className="muted">{t("cocodex.projects.membersEmpty")}</small>}
+              </div>
+              <button type="submit" className="btn btn-primary"
+                disabled={busy || status.state !== "connected" || !projectName.trim()}>
+                {t("cocodex.projects.create")}
+              </button>
+            </form>
             {projectId && <ProjectMemberRoster
               members={projectMembers}
               owner={projects.find(project => project.id === projectId)?.role === "owner"}

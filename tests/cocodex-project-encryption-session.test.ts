@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ import { enrollClient } from "../src/cocodex/client";
 import { loadOrCreateClientIdentity } from "../src/cocodex/identity";
 import { clientPaths } from "../src/cocodex/paths";
 import { runJsonLineSession } from "../src/cocodex/session";
-import { loadProjectKeyState } from "../src/cocodex/project-key-store";
+import { loadPendingProjectCreations, loadProjectKeyState } from "../src/cocodex/project-key-store";
 import { queuedEvents } from "../src/cocodex/outbox";
 import { loadLocalAgentPolicies, loadLocalAgentPolicy } from "../src/cocodex/agent-policy";
 import { trustDevice } from "../src/cocodex/trusted-devices";
@@ -43,7 +44,7 @@ afterEach(async () => {
       }
     }
   }
-});
+}, 15_000);
 
 class JsonSessionHarness {
   readonly input = new PassThrough();
@@ -125,6 +126,167 @@ async function waitUntilConnectedViaProjectList(session: JsonSessionHarness): Pr
 }
 
 describe("CoCodex encrypted project context session", () => {
+  test("creates an atomically encrypted Co-Project from one client for a verified contact", async () => {
+    const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-server-"));
+    const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-stephen-"));
+    const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-project-create-kai-"));
+    roots.push(serverRoot, stephenRoot, kaiRoot);
+
+    const paths = serverPaths(serverRoot);
+    const serverIdentity = createServerIdentity(paths);
+    await createTlsIdentity(paths, "127.0.0.1");
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, serverIdentity);
+    servers.push(server);
+
+    const stephenPaths = clientPaths(stephenRoot);
+    const kaiPaths = clientPaths(kaiRoot);
+    const stephenConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Stephen", stephenPaths);
+    const kaiConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Kai", kaiPaths);
+    for (const deviceId of [stephenConnection.deviceId, kaiConnection.deviceId]) {
+      const row = db.query("SELECT fingerprint FROM devices WHERE id = ?").get(deviceId) as { fingerprint: string };
+      expect(approveDevice(db, row.fingerprint)).toBeTrue();
+    }
+    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
+    const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+    trustDevice(stephenPaths.trustedDevices, kaiConnection.deviceId, publicKeyFingerprint(kaiIdentity.publicKeyPem));
+    trustDevice(kaiPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
+
+    const stephen = new JsonSessionHarness();
+    const kai = new JsonSessionHarness();
+    const stephenRun = runJsonLineSession(stephenPaths, {
+      input: stephen.input, output: stephen.output, errorOutput: stephen.errors,
+    });
+    const kaiRun = runJsonLineSession(kaiPaths, {
+      input: kai.input, output: kai.output, errorOutput: kai.errors,
+    });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "private-contacts"
+        && Array.isArray(event.contacts)
+        && (event.contacts as Array<Record<string, unknown>>)
+          .some(contact => contact.deviceId === kaiConnection.deviceId && contact.trusted === true)),
+      kai.waitFor(event => event.source === "session" && event.state === "connected"),
+    ]);
+
+    const projectId = randomUUID();
+    const requestId = randomUUID();
+    stephen.send({
+      id: requestId,
+      type: "project.create",
+      projectId,
+      name: "Nocturne Launcher",
+      memberDeviceIds: [kaiConnection.deviceId],
+    });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "control" && event.id === requestId
+        && event.ok === true && event.projectId === projectId),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "project.changed"
+        && ((event.frame as Record<string, unknown>).project as Record<string, unknown> | undefined)?.id === projectId),
+      kai.waitFor(event => event.source === "project-encryption"
+        && event.state === "key-available" && event.projectId === projectId),
+    ]);
+
+    stephen.send({ id: randomUUID(), type: "project.list" });
+    kai.send({ id: randomUUID(), type: "project.list" });
+    const [stephenProjects, kaiProjects] = await Promise.all([
+      stephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "project.list.result"
+        && ((event.frame as Record<string, unknown>).projects as Array<Record<string, unknown>> | undefined)
+          ?.some(project => project.id === projectId && project.role === "owner") === true),
+      kai.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "project.list.result"
+        && ((event.frame as Record<string, unknown>).projects as Array<Record<string, unknown>> | undefined)
+          ?.some(project => project.id === projectId && project.role === "member") === true),
+    ]);
+    expect(stephenProjects.frame).toBeDefined();
+    expect(kaiProjects.frame).toBeDefined();
+    expect(db.query("SELECT COUNT(*) AS count FROM project_members WHERE project_id = ?").get(projectId))
+      .toEqual({ count: 2 });
+    expect(db.query("SELECT current_epoch AS currentEpoch FROM project_key_epochs WHERE project_id = ?").get(projectId))
+      .toEqual({ currentEpoch: 1 });
+    expect(db.query("SELECT COUNT(*) AS count FROM project_key_envelopes WHERE project_id = ?").get(projectId))
+      .toEqual({ count: 2 });
+    expect(stephen.serializedEvents()).not.toContain("sealedProjectKey");
+    expect(kai.serializedEvents()).not.toContain("sealedProjectKey");
+    expect(loadProjectKeyState(stephenPaths.projectKeys, projectId)?.currentEpoch).toBe(1);
+    expect(loadProjectKeyState(kaiPaths.projectKeys, projectId)?.currentEpoch).toBe(1);
+    expect(stephenIdentity.projectWrapPublicKeyPem).not.toBe(kaiIdentity.projectWrapPublicKeyPem);
+
+    // Consume the remaining creation allowance, then prove a transient limit
+    // preserves the exact durable intent and its epoch-one key. Restarting the
+    // Server clears only its in-memory limiter; the resident must replay and
+    // complete the same signed request without user intervention.
+    for (let index = 0; index < 11; index += 1) {
+      const fillerRequestId = randomUUID();
+      stephen.send({
+        id: fillerRequestId,
+        type: "project.create",
+        projectId: randomUUID(),
+        name: `Recovery allowance ${index + 1}`,
+        memberDeviceIds: [],
+      });
+      await stephen.waitFor(event => event.source === "control"
+        && event.id === fillerRequestId && event.ok === true);
+    }
+    const retryProjectId = randomUUID();
+    const retryRequestId = randomUUID();
+    stephen.send({
+      id: retryRequestId,
+      type: "project.create",
+      projectId: retryProjectId,
+      name: "Durable retry project",
+      memberDeviceIds: [],
+    });
+    expect(await stephen.waitFor(event => event.source === "control"
+      && event.id === retryRequestId && event.retryable === true)).toMatchObject({
+      ok: false,
+      projectId: retryProjectId,
+      error: "Project creation rate limit exceeded",
+    });
+    expect(loadPendingProjectCreations(stephenPaths.projectKeys)
+      .some(pending => pending.requestId === retryRequestId && pending.projectId === retryProjectId)).toBeTrue();
+    expect(loadProjectKeyState(stephenPaths.projectKeys, retryProjectId)?.currentEpoch).toBe(1);
+
+    const restartPort = server.port;
+    await server.stop(true);
+    servers.splice(servers.indexOf(server), 1);
+    await Bun.sleep(500);
+    config.port = restartPort;
+    const restartedServer = startCoCodexServer(config, db, serverIdentity);
+    servers.push(restartedServer);
+    expect(await stephen.waitFor(event => event.source === "control"
+      && event.id === retryRequestId && event.ok === true, 15_000)).toMatchObject({
+      projectId: retryProjectId,
+      created: true,
+    });
+    expect(loadPendingProjectCreations(stephenPaths.projectKeys)
+      .some(pending => pending.requestId === retryRequestId)).toBeFalse();
+    expect(loadProjectKeyState(stephenPaths.projectKeys, retryProjectId)?.currentEpoch).toBe(1);
+
+    stephen.close();
+    kai.close();
+    await Promise.all([stephenRun, kaiRun]);
+    await restartedServer.stop(true);
+    await Bun.sleep(1_500);
+    servers.splice(servers.indexOf(restartedServer), 1);
+    db.close();
+    databases.splice(databases.indexOf(db), 1);
+  }, 45_000);
+
   test("initializes a project key, encrypts context on the wire, and decrypts it on another client", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-server-"));
     const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-project-session-stephen-"));

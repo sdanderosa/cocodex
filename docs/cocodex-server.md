@@ -77,6 +77,10 @@ cocodex-server project-add-member --project PROJECT_ID --owner-device OWNER_ID -
 
 Invites are single-use and short-lived. Approval is explicit; revocation is
 checked on every authenticated connection and project operation.
+The two project CLI commands are administrative/recovery compatibility
+surfaces. The normal product flow uses the authenticated Client
+`project.create` operation, which creates the project, initial memberships,
+and encryption epoch atomically.
 
 Approved Clients publish a self-signed public device-key certificate after
 proof-of-possession authentication. The `private.contact.list` WSS request
@@ -216,6 +220,22 @@ Final Goal/context/chat/prompt/artifact/file-reference/task/result ciphertext. F
 encrypted prompts it orders and deduplicates Yjs updates without applying them;
 the clients perform the Yjs state transition after local decryption. Encrypted
 artifact rows expose only project/task/author routing metadata and timestamps.
+
+`project.create` accepts a client-generated project UUID, bounded name,
+complete owner-signed epoch-1 envelope set, and a creator signature over all
+of that meaning. The Server verifies the creator's enrolled Ed25519 key, owner
+inclusion, unique approved recipients, every envelope signature, and exact
+epoch. One immediate SQLite transaction inserts `projects`,
+`project_members`, `project_key_epochs`, and `project_key_envelopes`; any
+failure leaves none of them behind. Exact retries are idempotent, while a
+changed name, roster, request, creator, or envelope set is rejected. Connected
+members receive safe project metadata and only their addressed envelope.
+Exact replays notify only the requester; they do not rebroadcast membership or
+keys. Each authenticated device is limited to 12 creation attempts per minute
+and 128 owned projects. The private alpha treats Server-approved devices as
+eligible recipients; separate per-project invite acceptance remains required
+for broader deployments.
+See ADR 0037.
 
 The first `project.key.initialize` operation is stricter than the compatibility
 `project.key.share` route. It accepts one owner-signed epoch-1 envelope for

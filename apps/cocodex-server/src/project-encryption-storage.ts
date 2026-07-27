@@ -2,12 +2,14 @@ import { createPublicKey, verify } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   canonicalEd25519PublicKey,
+  projectCreationSigningTranscript,
   projectContentEnvelopeSchema,
   projectContentSigningTranscript,
   projectKeyEnvelopeSchema,
   projectKeyEnvelopeSigningTranscript,
   type ProjectContentEnvelope,
   type ProjectKeyEnvelope,
+  type SharedProject,
 } from "../../../packages/cocodex-protocol/src/index.ts";
 import { removeProjectMember as removeMembership, requireProjectMembership } from "./shared-state";
 
@@ -68,6 +70,13 @@ export interface ProjectKeyInitializationResult extends ProjectKeyEpochRecord {
   created: boolean;
 }
 
+export interface EncryptedProjectCreationResult {
+  project: SharedProject;
+  keyEpoch: 1;
+  envelopes: ProjectKeyEnvelope[];
+  created: boolean;
+}
+
 export interface ProjectMemberRemovalRotationResult extends ProjectKeyRotationResult {
   removedDeviceId: string;
   cancelledTasks: Array<{ taskId: string; targetDeviceId: string }>;
@@ -116,6 +125,22 @@ function verifyEnvelopeSender(
     valid = false;
   }
   if (!valid) throw new Error("Project envelope signature is invalid");
+}
+
+function verifyDeviceSignature(
+  db: Database,
+  deviceId: string,
+  transcript: Buffer,
+  signature: string,
+): void {
+  const publicKeyPem = enrolledSigningKey(db, deviceId);
+  let valid = false;
+  try {
+    valid = verify(null, transcript, createPublicKey(publicKeyPem), Buffer.from(signature, "base64url"));
+  } catch {
+    valid = false;
+  }
+  if (!valid) throw new Error("Project creation signature is invalid");
 }
 
 function parseKeyEnvelope(envelopeJson: string): ProjectKeyEnvelope {
@@ -433,6 +458,129 @@ export function initializeProjectKeyEpoch(
       keyEpoch: 1 as const,
       envelopes,
       created: true,
+    };
+  }).immediate();
+}
+
+/**
+ * Create a Co-Project, its complete initial membership, and epoch-1 key
+ * envelopes as one SQLite transaction. A successful project is therefore
+ * never observable without its encryption state.
+ */
+export function createEncryptedProject(
+  db: Database,
+  projectId: string,
+  name: string,
+  ownerDeviceId: string,
+  creationId: string,
+  values: unknown,
+  signature: string,
+  now = new Date(),
+): EncryptedProjectCreationResult {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(projectId)) {
+    throw new Error("Invalid project ID");
+  }
+  const normalizedName = name.trim();
+  if (normalizedName.length < 1 || normalizedName.length > 120) {
+    throw new Error("Project name must be 1-120 characters");
+  }
+  if (!Array.isArray(values) || values.length < 1 || values.length > 128) {
+    throw new Error("Project creation requires 1-128 key envelopes");
+  }
+  const envelopes = values.map(value => projectKeyEnvelopeSchema.parse(value));
+  const recipientIds = envelopes.map(envelope => envelope.recipientDeviceId);
+  if (!recipientIds.includes(ownerDeviceId)) {
+    throw new Error("Project creation must include the owner device");
+  }
+  if (new Set(recipientIds).size !== recipientIds.length) {
+    throw new Error("Project creation contains duplicate recipients");
+  }
+  if (envelopes.some(envelope =>
+    envelope.projectId !== projectId
+    || envelope.keyEpoch !== 1
+    || envelope.senderDeviceId !== ownerDeviceId)) {
+    throw new Error("Project creation contains an invalid epoch-1 owner envelope");
+  }
+  verifyDeviceSignature(
+    db,
+    ownerDeviceId,
+    projectCreationSigningTranscript({
+      projectId,
+      name: normalizedName,
+      ownerDeviceId,
+      envelopes,
+    }),
+    signature,
+  );
+  const approved = db.query(`
+    SELECT id FROM devices
+    WHERE id IN (${recipientIds.map(() => "?").join(",")}) AND status = 'approved'
+    ORDER BY id ASC
+  `).all(...recipientIds) as Array<{ id: string }>;
+  if (approved.length !== recipientIds.length) {
+    throw new Error("Every project member device must be approved");
+  }
+
+  return db.transaction(() => {
+    const existing = db.query(`
+      SELECT name, created_by_device_id AS createdByDeviceId
+      FROM projects WHERE id = ?
+    `).get(projectId) as { name: string; createdByDeviceId: string } | null;
+    let created = false;
+    if (!existing) {
+      const ownedProjectCount = db.query(`
+        SELECT COUNT(*) AS count FROM projects WHERE created_by_device_id = ?
+      `).get(ownerDeviceId) as { count: number };
+      if (ownedProjectCount.count >= 128) {
+        throw new Error("Project owner limit reached");
+      }
+      const timestamp = now.toISOString();
+      db.query(`
+        INSERT INTO projects (id, name, created_by_device_id, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(projectId, normalizedName, ownerDeviceId, timestamp);
+      for (const recipientDeviceId of [...recipientIds].sort()) {
+        db.query(`
+          INSERT INTO project_members (project_id, device_id, role, joined_at)
+          VALUES (?, ?, ?, ?)
+        `).run(
+          projectId,
+          recipientDeviceId,
+          recipientDeviceId === ownerDeviceId ? "owner" : "member",
+          timestamp,
+        );
+      }
+      created = true;
+    } else {
+      if (existing.name !== normalizedName || existing.createdByDeviceId !== ownerDeviceId) {
+        throw new Error("Project creation replay conflict");
+      }
+      const priorMembers = (db.query(`
+        SELECT device_id AS deviceId FROM project_members
+        WHERE project_id = ? ORDER BY device_id ASC
+      `).all(projectId) as Array<{ deviceId: string }>).map(row => row.deviceId);
+      const expectedMembers = [...recipientIds].sort();
+      if (priorMembers.length !== expectedMembers.length
+        || priorMembers.some((deviceId, index) => deviceId !== expectedMembers[index])) {
+        throw new Error("Project creation replay conflict");
+      }
+    }
+    const initialized = initializeProjectKeyEpoch(
+      db,
+      projectId,
+      ownerDeviceId,
+      creationId,
+      envelopes,
+      now,
+    );
+    if (created !== initialized.created) {
+      throw new Error("Project creation replay state is inconsistent");
+    }
+    return {
+      project: { id: projectId, name: normalizedName, role: "owner" as const },
+      keyEpoch: 1 as const,
+      envelopes: initialized.envelopes,
+      created,
     };
   }).immediate();
 }

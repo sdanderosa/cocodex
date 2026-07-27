@@ -27,6 +27,7 @@ export interface PrivateContactAuthority {
 
 export interface CachedPrivateContact extends PrivateContactView {
   messagingPublicKeyPem: string;
+  projectWrapPublicKeyPem: string | null;
 }
 
 export interface SafePrivateContact {
@@ -34,6 +35,7 @@ export interface SafePrivateContact {
   displayName: string;
   fingerprint: string;
   trusted: boolean;
+  projectCapable: boolean;
 }
 
 export function verifyPrivateContactSnapshot(
@@ -57,6 +59,7 @@ export function verifyPrivateContactSnapshot(
     verifiedContacts.set(contact.deviceId, {
       ...contact,
       messagingPublicKeyPem: certificate.messagingPublicKeyPem,
+      projectWrapPublicKeyPem: certificate.projectWrapPublicKeyPem ?? null,
     });
   }
   return verifiedContacts;
@@ -71,6 +74,7 @@ export function safePrivateContacts(
     displayName: contact.displayName,
     fingerprint: contact.fingerprint,
     trusted: trustedFingerprints[contact.deviceId] === contact.fingerprint,
+    projectCapable: contact.projectWrapPublicKeyPem !== null,
   }));
 }
 

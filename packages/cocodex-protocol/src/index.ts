@@ -34,6 +34,8 @@ export {
   projectKeyChangedFrameSchema,
   projectKeyRotatedFrameSchema,
   projectKeyRotationRequiredFrameSchema,
+  projectCreatedFrameSchema,
+  projectChangedFrameSchema,
   projectMemberRemovedFrameSchema,
   projectMemberViewSchema,
   projectMemberListFrameSchema,
@@ -77,6 +79,8 @@ export {
   type ProjectKeyChangedFrame,
   type ProjectKeyRotatedFrame,
   type ProjectKeyRotationRequiredFrame,
+  type ProjectCreatedFrame,
+  type ProjectChangedFrame,
   type ProjectMemberRemovedFrame,
   type ProjectMemberView,
   type ProjectMemberListFrame,
@@ -99,6 +103,10 @@ export {
   type ArtifactType,
   type SharedProject,
 } from "./collaboration";
+export {
+  projectCreationSigningTranscript,
+  type ProjectCreationSigningInput,
+} from "./project-creation";
 export * from "./agent-signing";
 export {
   PROJECT_CONTENT_AUTH_TAG_BYTES,

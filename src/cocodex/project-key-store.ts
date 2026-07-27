@@ -11,6 +11,7 @@ export interface StoredProjectKeyStore {
   projects: Record<string, Record<string, string>>;
   states?: Record<string, StoredProjectKeyState>;
   pendingInitializations?: Record<string, StoredProjectKeyInitialization>;
+  pendingCreations?: Record<string, StoredProjectCreation>;
 }
 
 export interface StoredProjectKeyInitialization {
@@ -18,6 +19,15 @@ export interface StoredProjectKeyInitialization {
   projectId: string;
   keyEpoch: 1;
   envelopes: ProjectKeyEnvelope[];
+}
+
+export interface StoredProjectCreation {
+  requestId: string;
+  projectId: string;
+  name: string;
+  keyEpoch: 1;
+  envelopes: ProjectKeyEnvelope[];
+  signature: string;
 }
 
 /**
@@ -162,6 +172,24 @@ function validatePendingInitialization(value: unknown): StoredProjectKeyInitiali
   return { requestId: record.requestId, projectId: record.projectId, keyEpoch: 1, envelopes };
 }
 
+function validatePendingCreation(value: unknown): StoredProjectCreation {
+  const initialization = validatePendingInitialization(value);
+  const record = value as Record<string, unknown>;
+  if (typeof record.name !== "string" || record.name.trim().length < 1 || record.name.trim().length > 120) {
+    throw new Error("Project key store contains invalid pending project creation");
+  }
+  if (typeof record.signature !== "string"
+    || Buffer.from(record.signature, "base64url").byteLength !== 64
+    || Buffer.from(record.signature, "base64url").toString("base64url") !== record.signature) {
+    throw new Error("Project key store contains invalid pending project creation");
+  }
+  return {
+    ...initialization,
+    name: record.name.trim(),
+    signature: record.signature,
+  };
+}
+
 function validateStore(value: unknown): StoredProjectKeyStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Project key store is invalid");
   const record = value as Record<string, unknown>;
@@ -206,11 +234,23 @@ function validateStore(value: unknown): StoredProjectKeyStore {
       pendingInitializations[requestId] = initialization;
     }
   }
+  const pendingCreations: Record<string, StoredProjectCreation> = {};
+  if (record.pendingCreations !== undefined) {
+    if (!record.pendingCreations || typeof record.pendingCreations !== "object" || Array.isArray(record.pendingCreations)) {
+      throw new Error("Project key store contains invalid pending project creations");
+    }
+    for (const [requestId, rawCreation] of Object.entries(record.pendingCreations as Record<string, unknown>)) {
+      const creation = validatePendingCreation(rawCreation);
+      if (creation.requestId !== requestId) throw new Error("Project key store contains mismatched pending project creation ID");
+      pendingCreations[requestId] = creation;
+    }
+  }
   return {
     version: STORE_VERSION,
     projects,
     ...(Object.keys(states).length > 0 ? { states } : {}),
     ...(Object.keys(pendingInitializations).length > 0 ? { pendingInitializations } : {}),
+    ...(Object.keys(pendingCreations).length > 0 ? { pendingCreations } : {}),
   };
 }
 
@@ -276,41 +316,50 @@ export function storeProjectKey(path: string, projectId: string, keyEpoch: numbe
  * The pending batch is retained until the server acknowledgement is observed,
  * so a client restart can safely replay the idempotent request.
  */
+function stageProjectKeyInStore(
+  store: StoredProjectKeyStore,
+  projectId: string,
+  keyEpoch: number,
+  projectKey: Uint8Array,
+): StoredProjectKeyStore {
+  const key = Buffer.from(projectKey);
+  if (key.byteLength !== PROJECT_KEY_BYTES) throw new Error("Project encryption key has an invalid length");
+  const state = readProjectKeyState(store, projectId) ?? defaultProjectKeyState(undefined);
+  if (state.revoked) throw new Error("Project key access has been revoked");
+  const existingEncoded = store.projects[projectId]?.[String(keyEpoch)];
+  if (existingEncoded !== undefined) {
+    const existing = decodeKey(existingEncoded);
+    if (!existing) throw new Error("Project key store contains an invalid key");
+    if (!existing.equals(key)) throw new Error("Project key epoch already contains a different key");
+  } else if (state.currentEpoch !== null && keyEpoch < state.currentEpoch) {
+    throw new Error(`Project key epoch ${keyEpoch} is stale; current epoch is ${state.currentEpoch}`);
+  }
+  const projects = {
+    ...store.projects,
+    [projectId]: {
+      ...(store.projects[projectId] ?? {}),
+      [String(keyEpoch)]: key.toString("base64url"),
+    },
+  };
+  return writeProjectKeyState({ ...store, projects }, projectId, {
+    ...state,
+    currentEpoch: Math.max(state.currentEpoch ?? keyEpoch, keyEpoch),
+    rotationRequired: false,
+  });
+}
+
 export function stageProjectKeyInitialization(
   path: string,
   initialization: StoredProjectKeyInitialization,
   projectKey: Uint8Array,
 ): void {
   const validated = validatePendingInitialization(initialization);
-  const key = Buffer.from(projectKey);
-  if (key.byteLength !== PROJECT_KEY_BYTES) throw new Error("Project encryption key has an invalid length");
   const store = loadProjectKeyStore(path);
-  const state = readProjectKeyState(store, validated.projectId) ?? defaultProjectKeyState(undefined);
-  if (state.revoked) throw new Error("Project key access has been revoked");
-  const existingEncoded = store.projects[validated.projectId]?.[String(validated.keyEpoch)];
-  if (existingEncoded !== undefined) {
-    const existing = decodeKey(existingEncoded);
-    if (!existing) throw new Error("Project key store contains an invalid key");
-    if (!existing.equals(key)) throw new Error("Project key epoch already contains a different key");
-  } else if (state.currentEpoch !== null && validated.keyEpoch < state.currentEpoch) {
-    throw new Error(`Project key epoch ${validated.keyEpoch} is stale; current epoch is ${state.currentEpoch}`);
-  }
-  const projects = {
-    ...store.projects,
-    [validated.projectId]: {
-      ...(store.projects[validated.projectId] ?? {}),
-      [String(validated.keyEpoch)]: key.toString("base64url"),
-    },
-  };
-  const nextState: StoredProjectKeyState = {
-    ...state,
-    currentEpoch: Math.max(state.currentEpoch ?? validated.keyEpoch, validated.keyEpoch),
-    rotationRequired: false,
-  };
+  const staged = stageProjectKeyInStore(store, validated.projectId, validated.keyEpoch, projectKey);
   saveProjectKeyStore(path, {
-    ...writeProjectKeyState({ ...store, projects }, validated.projectId, nextState),
+    ...staged,
     pendingInitializations: {
-      ...(store.pendingInitializations ?? {}),
+      ...(staged.pendingInitializations ?? {}),
       [validated.requestId]: validated,
     },
   });
@@ -330,6 +379,42 @@ export function clearProjectKeyInitialization(path: string, requestId: string): 
   saveProjectKeyStore(path, {
     ...withoutPendingInitializations,
     ...(Object.keys(pendingInitializations).length > 0 ? { pendingInitializations } : {}),
+  });
+}
+
+/** Persist a client-created project key and the exact signed create request. */
+export function stageProjectCreation(
+  path: string,
+  creation: StoredProjectCreation,
+  projectKey: Uint8Array,
+  persist: (path: string, store: StoredProjectKeyStore) => void = saveProjectKeyStore,
+): void {
+  const validated = validatePendingCreation(creation);
+  const store = loadProjectKeyStore(path);
+  const staged = stageProjectKeyInStore(store, validated.projectId, validated.keyEpoch, projectKey);
+  persist(path, {
+    ...staged,
+    pendingCreations: {
+      ...(staged.pendingCreations ?? {}),
+      [validated.requestId]: validated,
+    },
+  });
+}
+
+export function loadPendingProjectCreations(path: string): StoredProjectCreation[] {
+  return Object.values(loadProjectKeyStore(path).pendingCreations ?? {});
+}
+
+export function clearProjectCreation(path: string, requestId: string): void {
+  validateRequestId(requestId);
+  const store = loadProjectKeyStore(path);
+  if (!store.pendingCreations?.[requestId]) return;
+  const pendingCreations = { ...store.pendingCreations };
+  delete pendingCreations[requestId];
+  const { pendingCreations: _discarded, ...withoutPendingCreations } = store;
+  saveProjectKeyStore(path, {
+    ...withoutPendingCreations,
+    ...(Object.keys(pendingCreations).length > 0 ? { pendingCreations } : {}),
   });
 }
 

@@ -53,6 +53,7 @@ describe("CoCodex GUI bridge", () => {
           displayName: "Kai",
           fingerprint: "AAAA-BBBB",
           trusted: true,
+          projectCapable: true,
           deviceKeyCertificate: "PRIVATE_CONTACT_CERTIFICATE_CANARY",
           messagingPublicKeyPem: "PRIVATE_CONTACT_PUBLIC_KEY_CANARY",
         }],
@@ -83,6 +84,17 @@ describe("CoCodex GUI bridge", () => {
             recipientEncryptionPublicKeyPem: "PUBLIC_KEY_CANARY",
             senderSignature: "SIGNATURE_CANARY",
           }],
+        },
+      })}\n`);
+      output.write(`${JSON.stringify({
+        source: "server",
+        frame: {
+          type: "project.created",
+          requestId: "create-request",
+          project: { id: "project", name: "Nocturne Launcher", role: "owner" },
+          keyEpoch: 1,
+          created: true,
+          envelopes: [{ sealedProjectKey: "CREATE_SEALED_PROJECT_KEY_CANARY" }],
         },
       })}\n`);
       output.write(`${JSON.stringify({
@@ -154,6 +166,12 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
     expect(bridge.status().state).toBe("connected");
     expect(bridge.command({ type: "project.list" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "project.create",
+      projectId: crypto.randomUUID(),
+      name: "Nocturne Launcher",
+      memberDeviceIds: ["contact-device"],
+    }).accepted).toBe(true);
     expect(bridge.command({
       type: "context.get",
       projectId: crypto.randomUUID(),
@@ -234,6 +252,8 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
 
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "project.create"
+      && value.name === "Nocturne Launcher")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
@@ -296,6 +316,7 @@ describe("CoCodex GUI bridge", () => {
         displayName: "Kai",
         fingerprint: "AAAA-BBBB",
         trusted: true,
+        projectCapable: true,
       }],
     });
     const keyEvent = bridge.eventsAfter(0).events
@@ -326,6 +347,18 @@ describe("CoCodex GUI bridge", () => {
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SEALED_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_PUBLIC_KEY_CANARY");
     expect(JSON.stringify(acceptedKeyEvent)).not.toContain("ACCEPTED_SIGNATURE_CANARY");
+    const projectCreatedEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.frame?.type === "project.created");
+    expect(projectCreatedEvent?.value).toMatchObject({
+      source: "server",
+      frame: {
+        type: "project.created",
+        project: { id: "project", name: "Nocturne Launcher", role: "owner" },
+        keyEpoch: 1,
+        created: true,
+      },
+    });
+    expect(JSON.stringify(projectCreatedEvent)).not.toContain("CREATE_SEALED_PROJECT_KEY_CANARY");
     const rendererEvents = JSON.stringify(bridge.eventsAfter(0).events);
     expect(rendererEvents).not.toContain("DEVICE_CERTIFICATE_CANARY");
     expect(rendererEvents).not.toContain("UNKNOWN_CIPHERTEXT_CANARY");
