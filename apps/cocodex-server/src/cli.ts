@@ -19,6 +19,7 @@ import { registerAgent } from "./agent-routing";
 import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
+import { databaseAdminSummary } from "./admin-status";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
 import { initializeServerAuthority, prepareServerAuthority, requireActiveServerAuthority, serverAuthorityStatus } from "./server-state";
 import { encodeServerAuthorityCertificate, serverTransferTargetSchema, type ServerTransferTarget } from "../../../packages/cocodex-protocol/src/index.ts";
@@ -189,9 +190,13 @@ async function run(): Promise<void> {
     case "status": {
       const config = existsSync(paths.config) ? loadConfig(paths) : undefined;
       let authority: string | null = null;
+      let database: ReturnType<typeof databaseAdminSummary> | null = null;
       if (config && existsSync(paths.database)) {
         const db = openDatabase(paths.database);
-        try { authority = serverAuthorityStatus(db); }
+        try {
+          authority = serverAuthorityStatus(db);
+          database = databaseAdminSummary(db);
+        }
         finally { db.close(); }
       }
       console.log(JSON.stringify({
@@ -202,6 +207,7 @@ async function run(): Promise<void> {
         publicHost: config?.publicHost ?? null,
         port: config?.port ?? null,
         authority,
+        database,
         serverFingerprint: config && existsSync(config.tlsCertificate)
           ? tlsCertificateFingerprint(config.tlsCertificate) : null,
       }));

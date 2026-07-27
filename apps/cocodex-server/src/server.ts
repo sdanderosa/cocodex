@@ -2,6 +2,7 @@ import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import type { Database } from "bun:sqlite";
+import { buildAdminStatus } from "./admin-status";
 import {
   clientFrameSchema,
   decodeInvitation,
@@ -248,6 +249,7 @@ export function startCoCodexServer(
   if (!recordedIdentity) initializeServerAuthority(db, identity.fingerprint, "active");
   requireActiveServerAuthority(db);
   const certificateFingerprint = tlsCertificateFingerprint(config.tlsCertificate);
+  const startedAt = new Date().toISOString();
   const sockets = new Set<ServerWebSocket<SocketData>>();
   const presenceByProject = new Map<string, Map<string, PresenceState>>();
   const presenceUpdateTimes = new Map<string, number[]>();
@@ -771,12 +773,17 @@ export function startCoCodexServer(
         if (!verifyAdminToken(adminToken(request) ?? "", config.adminTokenHash)) {
           return json({ error: "Admin authentication required" }, 401);
         }
-        return json({
-          service: "cocodex-server",
-          epoch: serverEpoch(db),
-          connectedDevices: [...sockets].filter(socket => socket.data.authenticatedDeviceId).length,
-          certificateFingerprint,
-        });
+        const authenticated = [...sockets].filter(socket => socket.data.authenticatedDeviceId);
+        return json(buildAdminStatus(config, db, identity.fingerprint, {
+          startedAt,
+          authenticatedSockets: authenticated.length,
+          authenticatedDeviceIds: authenticated
+            .map(socket => socket.data.authenticatedDeviceId)
+            .filter((deviceId): deviceId is string => typeof deviceId === "string"),
+          agentWorkerSockets: authenticated.filter(socket => socket.data.agentReady).length,
+          unauthenticatedSockets: unauthenticatedSocketCount,
+          activePresenceProjects: presenceByProject.size,
+        }));
       }
       if (request.method === "POST" && url.pathname === "/v1/enrollment/challenge") {
         try {

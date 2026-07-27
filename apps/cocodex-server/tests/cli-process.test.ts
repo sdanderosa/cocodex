@@ -64,7 +64,21 @@ test("the separate server process initializes, serves TLS, and restarts after te
   expect(await new Response(init.stdout).text()).toContain('"initialized":true');
   const initializedStatus = await runCli(cli, ["status", "--state-root", root]);
   expect(initializedStatus.exitCode).toBe(0);
-  expect(JSON.parse(initializedStatus.stdout)).toMatchObject({ initialized: true, running: false, port });
+  expect(JSON.parse(initializedStatus.stdout)).toMatchObject({
+    initialized: true,
+    running: false,
+    port,
+    database: {
+      health: "ok",
+      quickCheck: "ok",
+      foreignKeyViolations: 0,
+      counts: {
+        devices: { pending: 0, approved: 0, revoked: 0 },
+        projects: 0,
+        privateCiphertexts: 0,
+      },
+    },
+  });
 
   const start = () => Bun.spawn([
     process.execPath,

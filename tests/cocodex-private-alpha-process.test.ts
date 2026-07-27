@@ -226,9 +226,10 @@ describe("three-process CoCodex private alpha", () => {
     await buildArtifacts(serverExe, clientExe, fixtureExe);
     if (process.platform === "win32") await Bun.sleep(500);
     traceCheckpoint("artifacts built");
-    await run(serverExe, [
+    const initializedServer = JSON.parse(await run(serverExe, [
       "init", "--public-host", "127.0.0.1", "--port", String(port), "--state-root", serverRoot,
-    ], { COCODEX_DISABLE_PORT_MAPPING: "1" });
+    ], { COCODEX_DISABLE_PORT_MAPPING: "1" })) as { adminToken: string };
+    expect(initializedServer.adminToken.length).toBeGreaterThanOrEqual(32);
 
     const startServer = () => startResident(serverExe, ["start", "--state-root", serverRoot]);
     let server = startServer();
@@ -478,6 +479,34 @@ describe("three-process CoCodex private alpha", () => {
     traceCheckpoint("clients connected");
     const stephenPid = stephen.process.pid;
     const kaiPid = kai.process.pid;
+    const liveAdminResponse = await fetch(`https://127.0.0.1:${port}/v1/admin/status`, {
+      headers: { authorization: `Bearer ${initializedServer.adminToken}` },
+      tls: { rejectUnauthorized: false },
+    });
+    expect(liveAdminResponse.status).toBe(200);
+    const liveAdmin = await liveAdminResponse.json() as Record<string, any>;
+    expect(liveAdmin).toMatchObject({
+      status: "running",
+      authority: { state: "active", epoch: 1 },
+      endpoint: { listeningPort: port, transport: "TLS/WSS" },
+      connections: {
+        authenticatedSockets: 5,
+        uniqueDevices: 2,
+        agentWorkerSockets: 3,
+        unauthenticatedSockets: 0,
+      },
+      database: {
+        health: "ok",
+        counts: {
+          devices: { pending: 0, approved: 2, revoked: 0 },
+          projects: 1,
+          memberships: 2,
+          agents: 3,
+        },
+      },
+    });
+    expect(JSON.stringify(liveAdmin)).not.toContain(initializedServer.adminToken);
+    expect(JSON.stringify(liveAdmin)).not.toContain(serverRoot);
 
     const projectsS = randomUUID();
     const projectsK = randomUUID();

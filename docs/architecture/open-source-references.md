@@ -35,7 +35,11 @@ reviewed again before release.
   certificate and monotonically increasing epoch; never run two writable server
   authorities for the same project state.
 - **Execution boundary:** independently adapt MeshCentral's server-routes /
-  local-agent-executes pattern.
+  local-agent-executes pattern. The authenticated administration status also
+  follows this separation: the Server projects only bounded authority,
+  connection, trusted-device, project, and database aggregates; it exposes no
+  raw shell, workspace, prompt, result, or stored ciphertext. No MeshCentral
+  source or dependency is used. See ADR 0045.
 - **Device identity:** independently adapt Syncthing's cryptographic
   fingerprint and explicit trust model using Ed25519 identities protected by
   the operating system. Exactly one first device has a permanent local-only

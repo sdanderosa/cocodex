@@ -169,7 +169,23 @@ epoch before checking the retired-source fence.
 Never place a passphrase directly in shell history for a real deployment—prefer
 `--passphrase-file` with a protected file. The health endpoint is
 `GET /healthz`; authenticated admin status is `GET /v1/admin/status` with the
-initialization token.
+initialization token:
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:COCODEX_ADMIN_TOKEN" }
+Invoke-RestMethod -Uri https://YOUR_PUBLIC_HOST:19463/v1/admin/status `
+  -Headers $headers
+```
+
+The authenticated response includes authority state and epoch, configured
+TLS/WSS endpoint, certificate fingerprint and validity, process uptime,
+authenticated/distinct-device/agent-worker connection counts, active
+presence-project count, and bounded SQLite integrity, logical-size, and record
+counts. It never returns the token, state path, names, public keys, prompts,
+results, message or project ciphertext, audit details, provider credentials,
+or workspace information. The local `cocodex-server status` command reports
+the same database aggregate while stopped, but does not claim live connection
+state. See ADR 0045.
 
 ## Security boundary
 
