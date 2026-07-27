@@ -21,6 +21,7 @@ export function historyRestoreIncomplete(configDir = getConfigDir()): boolean {
 
 export const PKG = "@bitkyc08/opencodex";
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../opencodex/src/update
+const PACKAGE_JSON = join(HERE, "..", "..", "package.json");
 
 export type Installer = "bun" | "npm" | "source";
 export type Channel = "latest" | "preview";
@@ -33,10 +34,22 @@ export function detectInstall(): Installer {
 
 export function currentVersion(): string {
   try {
-    return (JSON.parse(readFileSync(join(HERE, "..", "..", "package.json"), "utf8")).version as string) ?? "?";
+    return (JSON.parse(readFileSync(PACKAGE_JSON, "utf8")).version as string) ?? "?";
   } catch {
     return "?";
   }
+}
+
+export function currentPackageName(): string {
+  try {
+    return (JSON.parse(readFileSync(PACKAGE_JSON, "utf8")).name as string) ?? "?";
+  } catch {
+    return "?";
+  }
+}
+
+export function registryUpdateSupported(packageName = currentPackageName()): boolean {
+  return packageName === PKG;
 }
 
 export function defaultUpdateTag(current: string): Channel {
@@ -79,6 +92,7 @@ function logSpawnOutput(label: string, result: { stdout?: string | Buffer | null
 
 /** Latest published version from the registry (best-effort; null if npm isn't available). */
 export function latestVersion(tag: string): string | null {
+  if (!registryUpdateSupported()) return null;
   const npm = npmSpawnTarget("npm");
   const r = spawnSync(npm.bin, ["view", `${PKG}@${tag}`, "version"], { encoding: "utf8", timeout: 12000, windowsHide: true, shell: npm.shell });
   return r.status === 0 ? (r.stdout.trim() || null) : null;
@@ -135,6 +149,14 @@ export function checkUpdatePackageIntegrity(
  * in the Node bin launcher before Bun starts, so Windows does not replace the running Bun binary.
  */
 export async function runUpdate(): Promise<void> {
+  if (!registryUpdateSupported()) {
+    console.error(
+      `This ${currentPackageName()} build is not connected to the ${PKG} release feed.\n`
+      + "Install a newer verified CoCodex private-alpha package with its bundled "
+      + "Install-CoCodex.ps1 script. Local Client and Server state is preserved.",
+    );
+    return;
+  }
   const installer = detectInstall();
   const current = currentVersion();
   const tag = updateTag(current);

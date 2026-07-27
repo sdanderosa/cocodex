@@ -46,6 +46,34 @@ Client state defaults to `%USERPROFILE%\.cocodex` (or `COCODEX_HOME`). It is
 separate from `.opencodex` and `.codex`; no import or migration overwrites
 those directories.
 
+### Install the Windows private alpha
+
+Download the complete `cocodex-windows-private-alpha-<commit>` artifact from a
+successful maintainer-dispatched **CoCodex Windows private alpha** GitHub
+Actions run. Pull-request runs test but never publish an installable bundle.
+Keep its four files together, confirm `RELEASE.json` names the intended source
+commit and tree, then run from that extracted directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\Install-CoCodex.ps1 -Action Install
+```
+
+Node.js 22.12 or newer with npm 10 or newer is required. The installer verifies the archive,
+release manifest, running installer, exact package identity, and
+integrity-locked dependency graph before npm runs, then installs `cocodex`,
+`ccx`, `cocodex-server`,
+`ccx-server`, and `ocx`, and smoke-tests the Client, Server, and inherited local
+runtime. Open a new terminal if the newly added command path is not visible in
+the current one.
+
+Stop CoCodex Client, Server, and `ocx`, then install a newer downloaded bundle
+with `-Action Update`. Use `-Action Verify`
+to re-run command smokes and `-Action Uninstall` to remove application files.
+Update and uninstall preserve `.cocodex`, `.cocodex-server`, `.opencodex`, and
+`.codex`. Do not use `ocx update` for a CoCodex build; it deliberately refuses
+the upstream OpenCodex registry feed. See ADR 0048.
+
 ## Importing an existing OpenCodex installation
 
 The Client has an explicit, local-only import flow for an existing

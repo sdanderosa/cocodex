@@ -6,6 +6,7 @@ Current CoCodex operator documentation:
 - [CoCodex Server](cocodex-server.md)
 - [Open-source architecture references](architecture/open-source-references.md)
 - [Private-alpha evidence](evidence/private-alpha.md)
+- [Verified Windows private-alpha distribution](evidence/verified-windows-private-alpha-distribution.md)
 - [Architecture decisions](adr/)
 
 This folder contains investigations and diagnostic notes. It is not the primary user manual and it

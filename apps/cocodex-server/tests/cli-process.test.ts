@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,7 +52,7 @@ async function runCli(
   return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
-test("the separate server process initializes, serves TLS, and restarts after termination", async () => {
+test("the separate server process initializes, serves TLS, and verifies a healthy restart", async () => {
   const root = mkdtempSync(join(tmpdir(), "cocodex-process-"));
   roots.push(root);
   const port = reservePort();
@@ -99,19 +99,60 @@ test("the separate server process initializes, serves TLS, and restarts after te
   const first = start();
   const firstHealth = await waitForHealth(port);
   expect(await firstHealth.json()).toEqual({ ok: true, service: "cocodex-server", protocol: 1 });
-  first.kill(9);
-  await first.exited;
-
-  const second = start();
   try {
+    const restarted = await runCli(cli, ["restart", "--state-root", root]);
+    expect(restarted.exitCode).toBe(0);
+    const restartResult = JSON.parse(restarted.stdout);
+    expect(restartResult).toMatchObject({
+      restarted: true,
+      running: true,
+      stateRoot: root,
+      endpoint: `https://127.0.0.1:${port}`,
+    });
+    expect(restartResult.pid).toBeInteger();
+    expect(restartResult.pid).not.toBe(first.pid);
+    expect(await first.exited).toBeInteger();
     const secondHealth = await waitForHealth(port);
     expect(secondHealth.status).toBe(200);
     const runningStatus = await runCli(cli, ["status", "--state-root", root]);
-    expect(JSON.parse(runningStatus.stdout)).toMatchObject({ initialized: true, running: true });
+    expect(JSON.parse(runningStatus.stdout)).toMatchObject({
+      initialized: true,
+      running: true,
+      pid: restartResult.pid,
+    });
   } finally {
     const stopped = await runCli(cli, ["stop", "--state-root", root]);
     expect(stopped.exitCode).toBe(0);
-    await second.exited;
+  }
+}, 30_000);
+
+test("a failed bind removes the exact startup PID record", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cocodex-failed-start-"));
+  roots.push(root);
+  const port = reservePort();
+  const cli = join(import.meta.dir, "..", "src", "cli.ts");
+  const initialized = await runCli(cli, [
+    "init",
+    "--public-host", "127.0.0.1",
+    "--port", String(port),
+    "--state-root", root,
+  ], { ...process.env, COCODEX_DISABLE_PORT_MAPPING: "1" });
+  expect(initialized.exitCode).toBe(0);
+
+  const blocker = Bun.listen({
+    hostname: "127.0.0.1",
+    port,
+    socket: { data() {} },
+  });
+  try {
+    const failed = await runCli(cli, ["start", "--state-root", root]);
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stderr.length).toBeGreaterThan(0);
+    expect(existsSync(join(root, "server.pid"))).toBeFalse();
+    const status = await runCli(cli, ["status", "--state-root", root]);
+    expect(JSON.parse(status.stdout)).toMatchObject({ initialized: true, running: false, pid: null });
+  } finally {
+    blocker.stop(true);
   }
 }, 20_000);
 

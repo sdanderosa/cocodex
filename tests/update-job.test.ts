@@ -13,7 +13,12 @@ import {
   updateJobPath,
   type UpdateJobState,
 } from "../src/update/job";
-import { checkUpdatePackageIntegrity, updateCommand, updateCommandStr } from "../src/update/index";
+import {
+  checkUpdatePackageIntegrity,
+  registryUpdateSupported,
+  updateCommand,
+  updateCommandStr,
+} from "../src/update/index";
 
 type SpawnResult = { status: number | null; stdout: string };
 function fakeSpawn(result: SpawnResult): typeof import("node:child_process").spawnSync {
@@ -69,6 +74,23 @@ describe("GUI update check", () => {
 
     expect(result.canUpdate).toBe(false);
     expect(result.reason).toBe("latest_unavailable");
+  });
+
+  test("never replaces a CoCodex private-alpha package from the OpenCodex registry", () => {
+    const result = checkForUpdate("latest", {
+      currentVersion: () => "0.1.0-alpha.1",
+      detectInstall: () => "npm",
+      latestVersion: () => "99.0.0",
+      registryUpdateSupported: () => false,
+    });
+
+    expect(registryUpdateSupported("@sdanderosa/cocodex")).toBeFalse();
+    expect(registryUpdateSupported("@bitkyc08/opencodex")).toBeTrue();
+    expect(result.canUpdate).toBeFalse();
+    expect(result.updateAvailable).toBeFalse();
+    expect(result.latestVersion).toBeNull();
+    expect(result.reason).toBe("private_alpha_package");
+    expect(result.command).toContain("Install-CoCodex.ps1");
   });
 
   test("treats equal versions as already current", () => {

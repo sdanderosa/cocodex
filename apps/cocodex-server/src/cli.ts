@@ -76,6 +76,56 @@ function requireStopped(paths: ReturnType<typeof serverPaths>): void {
   if (pid) throw new Error(`CoCodex Server is running with PID ${pid}; stop it first`);
 }
 
+function localHealthHost(hostname: string): string {
+  if (hostname === "0.0.0.0" || hostname === "::" || hostname === "[::]") return "127.0.0.1";
+  return hostname;
+}
+
+async function waitForHealthyRestart(
+  paths: ReturnType<typeof serverPaths>,
+  child: ReturnType<typeof Bun.spawn>,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const config = loadConfig(paths);
+  const endpoint = `https://${localHealthHost(config.hostname)}:${config.port}/healthz`;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    const exitCode = await Promise.race([
+      child.exited,
+      Bun.sleep(100).then(() => undefined),
+    ]);
+    if (exitCode !== undefined) {
+      throw new Error(`Replacement CoCodex Server exited before becoming healthy (exit ${exitCode})`);
+    }
+    if (runningPid(paths) !== child.pid) {
+      lastError = new Error("Replacement CoCodex Server does not own the Server PID file");
+      continue;
+    }
+    try {
+      const response = await fetch(endpoint, {
+        signal: AbortSignal.timeout(1_000),
+        tls: { rejectUnauthorized: false },
+      });
+      const body = await response.json() as Record<string, unknown>;
+      if (response.ok && body.ok === true && body.service === "cocodex-server" && body.protocol === 1) {
+        return;
+      }
+      lastError = new Error(`Replacement health endpoint returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  try { process.kill(child.pid, "SIGTERM"); } catch { /* child already exited */ }
+  await Promise.race([child.exited, Bun.sleep(2_000)]);
+  if (runningPid(paths) === child.pid) {
+    try { process.kill(child.pid, "SIGKILL"); } catch { /* child already exited */ }
+    try { rmSync(paths.pid, { force: true }); } catch { /* report the startup failure below */ }
+  }
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
+  throw new Error(`Replacement CoCodex Server did not become healthy within ${timeoutMs}ms${detail}`);
+}
+
 function usage(): void {
   console.log(`CoCodex Server
 
@@ -244,10 +294,19 @@ async function run(): Promise<void> {
       }
       const script = Bun.argv[1];
       const args = script?.endsWith(".ts") ? [script, "start"] : ["start"];
-      Bun.spawn([process.execPath, ...args, "--state-root", paths.root], {
+      const child = Bun.spawn([process.execPath, ...args, "--state-root", paths.root], {
         stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true,
       });
-      console.log(JSON.stringify({ restarted: true, stateRoot: paths.root }));
+      await waitForHealthyRestart(paths, child);
+      child.unref();
+      const config = loadConfig(paths);
+      console.log(JSON.stringify({
+        restarted: true,
+        running: true,
+        stateRoot: paths.root,
+        pid: child.pid,
+        endpoint: `https://${config.publicHost}:${config.port}`,
+      }));
       return;
     }
     case "backup": {
@@ -415,7 +474,16 @@ async function run(): Promise<void> {
         rmSync(paths.pid);
       }
       writeFileSync(paths.pid, `${process.pid}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      const running = startCoCodexServer(config, db, identity);
+      let running: ReturnType<typeof startCoCodexServer>;
+      try {
+        running = startCoCodexServer(config, db, identity);
+      } catch (error) {
+        db.close();
+        if (existsSync(paths.pid) && readFileSync(paths.pid, "utf8").trim() === String(process.pid)) {
+          rmSync(paths.pid, { force: true });
+        }
+        throw error;
+      }
       console.log(JSON.stringify({
         ready: true,
         hostname: running.hostname,

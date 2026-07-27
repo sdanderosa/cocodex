@@ -42,6 +42,31 @@ The private alpha therefore requires the same Windows account for `init`,
 service account is unsupported; a future service installer must create or
 restore state under its final service identity.
 
+### Install the Windows private alpha
+
+CoCodex Client and CoCodex Server are separate applications delivered in one
+verified Windows bundle. Download the complete
+`cocodex-windows-private-alpha-<commit>` artifact from a successful
+maintainer-dispatched **CoCodex Windows private alpha** GitHub Actions run.
+Pull-request runs cannot publish a distributable artifact. Keep its archive, checksum,
+installer, and release manifest together, and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\Install-CoCodex.ps1 -Action Install
+cocodex-server --help
+```
+
+The installer requires Node.js 22.12 or newer with npm 10 or newer and verifies the whole
+bundle, package identity, and integrity-locked dependency graph before
+installing. Stop Server, Client, and `ocx` before `-Action Update`; it replaces
+application files from a newer verified bundle without deleting Server state.
+`-Action Uninstall` removes the npm
+application package but deliberately preserves `.cocodex-server` and every
+other CoCodex/OpenCodex/Codex state root. The bundle is not yet
+Authenticode-signed; trust it only when downloaded as a complete artifact from
+the intended repository commit. See ADR 0048.
+
 ## Initialize and host
 
 ```powershell

@@ -8,7 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,15 @@ const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "apps", "cocodex-server", "src", "cli.ts");
 const REAL_BUN_MIN_BYTES = 1_000_000;
+
+function installedPackageName() {
+  try {
+    return JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")).name
+      || "@sdanderosa/cocodex";
+  } catch {
+    return "@sdanderosa/cocodex";
+  }
+}
 
 function findBunBinary(bunDirectory) {
   for (const name of ["bun.exe", "bun"]) {
@@ -32,7 +41,7 @@ function fail(message) {
     `CoCodex Server: ${message}\n` +
       "The installed Bun runtime is unavailable. Reinstall with lifecycle\n" +
       "scripts and optional dependencies enabled:\n" +
-      "  npm install -g @bitkyc08/opencodex\n" +
+      `  npm install -g ${installedPackageName()}\n` +
       "If your package manager blocks dependency builds, explicitly approve bun.",
   );
   process.exit(1);
