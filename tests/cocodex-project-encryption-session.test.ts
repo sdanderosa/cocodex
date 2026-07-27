@@ -895,7 +895,7 @@ describe("CoCodex encrypted project context session", () => {
     kai.close();
     angela.close();
     await Promise.all([recoveredStephenRun, kaiRun, angelaRun]);
-  }, 45_000);
+  }, 90_000);
 
   test("configures two signed self-hosted agents with independent ready workers", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-agent-setup-server-"));

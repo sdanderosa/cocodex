@@ -127,7 +127,11 @@ async function waitFor(
     }
     await Bun.sleep(25);
   }
-  throw new Error(`Timed out. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))}`);
+  const diagnostics = resident.lines
+    .filter(line => line.source === "error" || line.source === "private"
+      || line.source === "private-receipt" || line.frame?.type?.startsWith?.("private."))
+    .slice(-30);
+  throw new Error(`Timed out. stderr=${resident.errors.join(" | ")} lines=${JSON.stringify(resident.lines.slice(-10))} diagnostics=${JSON.stringify(diagnostics)}`);
 }
 
 async function waitForAfter(
@@ -1151,10 +1155,29 @@ describe("three-process CoCodex private alpha", () => {
       waitForAfter(kai, workerReconnectCheckpointK,
         line => line.frame?.type === "agent.ready.accepted" && line.frame.agentId === sueAgentId),
     ]);
-    await Promise.all([
+    const offlinePrivateRecovery = await Promise.allSettled([
       waitFor(stephen, line => line.source === "private" && line.message?.text === offlinePrivateS),
       waitFor(kai, line => line.source === "private" && line.message?.text === offlinePrivateK),
     ]);
+    const offlinePrivateFailures = offlinePrivateRecovery
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (offlinePrivateFailures.length > 0) {
+      const queuedTypes = (stateRoot: string) => {
+        const parsed = JSON.parse(readFileSync(join(stateRoot, "outbox.json"), "utf8")) as {
+          events: Array<{ type: string; requestId: string }>;
+        };
+        return parsed.events.map(event => ({ type: event.type, requestId: event.requestId }));
+      };
+      const recoveryDb = new Database(join(serverRoot, "server.sqlite3"), { readonly: true });
+      const storedPrivateMessages = recoveryDb.query(
+        "SELECT message_id, sender_device_id, recipient_device_id FROM private_messages ORDER BY sequence",
+      ).all();
+      recoveryDb.close();
+      throw new Error(`${offlinePrivateFailures.map(result => String(result.reason)).join("\n")}`
+        + `\nStephen outbox=${JSON.stringify(queuedTypes(stephenRoot))}`
+        + `\nKai outbox=${JSON.stringify(queuedTypes(kaiRoot))}`
+        + `\nServer private messages=${JSON.stringify(storedPrivateMessages)}`);
+    }
     const [stephenPrivateMailbox, kaiPrivateMailbox] = await Promise.all([
       waitForMailbox(join(stephenRoot, "private-mailbox.json"), 3),
       waitForMailbox(join(kaiRoot, "private-mailbox.json"), 3, { messageId: privateMessageId, receipt: "read" }),

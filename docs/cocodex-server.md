@@ -31,6 +31,17 @@ The default state directory is `%USERPROFILE%\.cocodex-server` (or
 server Ed25519 identity, configuration, and PID file. Keep it separate from
 client state and back it up while the server is stopped.
 
+On Windows, the Server authority and TLS private-key files contain
+purpose-bound DPAPI `CurrentUser` ciphertext rather than raw PEM, under the
+existing current-user NTFS ACL. Server start unwraps each key only into the
+headless process. Copying those live files to another machine or Windows
+account will not migrate the Server; use the protected recovery command below,
+which rewraps restored keys for the restoring user. See ADR 0047.
+The private alpha therefore requires the same Windows account for `init`,
+`start`, and `restart`. Running that root later as LocalSystem or another
+service account is unsupported; a future service installer must create or
+restore state under its final service identity.
+
 ## Initialize and host
 
 ```powershell
@@ -142,7 +153,8 @@ The version-2 recovery archive encrypts and authenticates the complete stopped
 Server state: normalized configuration, checkpointed SQLite database, Server
 Ed25519 identity, and TLS identity. A successful restore over existing Server
 state preserves that previous root in the reported `rollbackPath`; inspect the
-restored Server before deliberately removing it. Use a high-entropy passphrase
+restored Server before deliberately removing it. Restored Windows private keys
+are written back as user-bound DPAPI envelopes, never raw PEM. Use a high-entropy passphrase
 stored separately. `COCODEX_BACKUP_PASSPHRASE` is supported for automation,
 but `--passphrase-file` avoids placing it in process arguments or shell history.
 

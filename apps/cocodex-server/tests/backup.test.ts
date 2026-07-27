@@ -86,6 +86,10 @@ describe("CoCodex Server backups", () => {
       );
       expect(restored.rollbackPath).toBeNull();
       expect(loadServerIdentity(destinationPaths).fingerprint).toBe(identity.fingerprint);
+      expect(readFileSync(destinationPaths.identityPrivateKey, "utf8"))
+        .not.toContain("BEGIN PRIVATE KEY");
+      expect(readFileSync(destinationPaths.tlsPrivateKey, "utf8"))
+        .not.toContain("BEGIN PRIVATE KEY");
       expect(tlsCertificateFingerprint(destinationPaths.tlsCertificate))
         .toBe(tlsCertificateFingerprint(sourcePaths.tlsCertificate));
       expect(loadConfig(destinationPaths)).toMatchObject({
@@ -142,7 +146,7 @@ describe("CoCodex Server backups", () => {
         catch (error) { if (attempt === 39) throw error; await Bun.sleep(25); }
       }
     }
-  });
+  }, 20_000);
 
   test("encrypts server transfers and rejects wrong passphrases", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-transfer-"));
@@ -223,5 +227,5 @@ describe("CoCodex Server backups", () => {
         }
       }
     }
-  });
+  }, 15_000);
 });

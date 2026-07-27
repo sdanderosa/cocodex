@@ -5,6 +5,14 @@ provider credentials, Codex accounts, local usage, device private keys, agent
 workspaces, and execution policy on the local computer. CoCodex Server never
 receives those secrets and never executes a local shell command.
 
+On Windows, the device-signing, private-messaging, and project-wrap private
+keys are purpose-bound with DPAPI `CurrentUser` and additionally restricted by
+current-user NTFS ACLs. Their files contain versioned ciphertext envelopes,
+not raw private-key PEM. Existing PEM keys migrate in place without changing
+the public identity. They normally open only for the same Windows user on the
+same machine; malware already executing as that user remains outside this
+at-rest threat boundary. See ADR 0047.
+
 ## Build and run locally
 
 From the repository root:
@@ -463,4 +471,5 @@ accounts and workspaces remain usable independently.
 
 Do not copy `connection.json`, device private keys, messaging private keys, or
 agent policy files to the server or another device. Use a fresh enrollment and
-explicit trust for a replacement installation.
+explicit trust for a replacement installation. Copying a DPAPI envelope is not
+a device-migration or backup mechanism.

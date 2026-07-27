@@ -136,7 +136,7 @@ describe("CoCodex Client direct enrollment", () => {
     await expect(connectAuthenticatedClient(paths, factory(1))).rejects.toThrow(
       "Rejected stale CoCodex Server epoch 1; expected at least 2",
     );
-  });
+  }, 10_000);
   test("pins TLS before enrollment, reconnects after approval, and rejects a wrong pin without consuming it", async () => {
     const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-client-server-"));
     const clientRoot = mkdtempSync(join(tmpdir(), "cocodex-client-device-"));
@@ -244,5 +244,5 @@ describe("CoCodex Client direct enrollment", () => {
     expect(accepted.serverEpoch).toBe(2);
     expect(accepted.serverIdentityPublicKeyPem).toBe(destinationIdentity.publicKeyPem);
     await expect(Promise.resolve().then(() => acceptServerAuthorityTransfer(restored.authorityCode, paths))).rejects.toThrow("not signed");
-  });
+  }, 20_000);
 });

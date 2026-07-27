@@ -3,8 +3,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import selfsigned from "selfsigned";
-import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
+import { hardenSecretDir } from "../../../src/lib/windows-secret-acl";
+import { readProtectedSecret, writeProtectedSecret } from "../../../src/lib/local-protected-secret";
 import type { ServerPaths } from "./paths";
+
+const SERVER_TLS_PURPOSE = "cocodex.server.tls-private-key";
+
+export function writeTlsPrivateKey(path: string, value: string): void {
+  writeProtectedSecret(path, SERVER_TLS_PURPOSE, value);
+}
+
+export function readTlsPrivateKey(path: string): string {
+  return readProtectedSecret(path, SERVER_TLS_PURPOSE).toString("utf8");
+}
 
 export async function createTlsIdentity(paths: ServerPaths, publicHost = "localhost"): Promise<void> {
   if (existsSync(paths.tlsCertificate) || existsSync(paths.tlsPrivateKey)) {
@@ -38,8 +49,7 @@ export async function createTlsIdentity(paths: ServerPaths, publicHost = "localh
   );
   mkdirSync(dirname(paths.tlsPrivateKey), { recursive: true });
   hardenSecretDir(dirname(paths.tlsPrivateKey), { required: true });
-  writeFileSync(paths.tlsPrivateKey, generated.private, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  hardenSecretPath(paths.tlsPrivateKey, { required: true });
+  writeTlsPrivateKey(paths.tlsPrivateKey, generated.private);
   writeFileSync(paths.tlsCertificate, generated.cert, { encoding: "utf8", mode: 0o644, flag: "wx" });
 }
 

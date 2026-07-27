@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import type { Database } from "bun:sqlite";
 import { buildAdminStatus } from "./admin-status";
+import { readTlsPrivateKey } from "./tls";
 import {
   clientFrameSchema,
   decodeInvitation,
@@ -754,7 +755,7 @@ export function startCoCodexServer(
     port: config.port,
     tls: {
       cert: readFileSync(config.tlsCertificate),
-      key: readFileSync(config.tlsPrivateKey),
+      key: readTlsPrivateKey(config.tlsPrivateKey),
     },
     async fetch(request, bunServer) {
       const url = new URL(request.url);

@@ -29,9 +29,14 @@ import { Database } from "bun:sqlite";
 import { publicKeyFingerprint } from "../../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
 import { loadConfig, type ServerConfig } from "./config";
-import type { ServerIdentity } from "./identity";
+import {
+  readServerIdentityPrivateKey,
+  writeServerIdentityPrivateKey,
+  type ServerIdentity,
+} from "./identity";
 import { serverPaths, type ServerPaths } from "./paths";
 import { serverAuthorityStatus, serverEpoch, serverIdentityFingerprint } from "./server-state";
+import { readTlsPrivateKey, writeTlsPrivateKey } from "./tls";
 
 const RECOVERY_BACKUP_VERSION = 2 as const;
 const RECOVERY_PAYLOAD_VERSION = 1 as const;
@@ -392,11 +397,26 @@ function writeStagedState(
   };
   writeProtectedFile(staged.config, `${JSON.stringify(restoredConfig, null, 2)}\n`);
   writeProtectedFile(staged.database, database);
-  writeProtectedFile(staged.identityPrivateKey, payload.identityPrivateKeyPem);
+  writeServerIdentityPrivateKey(staged.identityPrivateKey, payload.identityPrivateKeyPem);
   writeProtectedFile(staged.identityPublicKey, payload.identityPublicKeyPem, true);
-  writeProtectedFile(staged.tlsPrivateKey, payload.tlsPrivateKeyPem);
+  writeTlsPrivateKey(staged.tlsPrivateKey, payload.tlsPrivateKeyPem);
   writeProtectedFile(staged.tlsCertificate, payload.tlsCertificatePem, true);
   return staged;
+}
+
+function validateRestoredPrivateKeys(
+  paths: ServerPaths,
+  payload: RecoveryPayload,
+  expectedIdentityFingerprint: string,
+  expectedTlsFingerprint: string,
+): void {
+  validateKeyAndCertificateRelationships({
+    ...payload,
+    identityPrivateKeyPem: readServerIdentityPrivateKey(paths.identityPrivateKey),
+    identityPublicKeyPem: readFileSync(paths.identityPublicKey, "utf8"),
+    tlsPrivateKeyPem: readTlsPrivateKey(paths.tlsPrivateKey),
+    tlsCertificatePem: readFileSync(paths.tlsCertificate, "utf8"),
+  }, expectedIdentityFingerprint, expectedTlsFingerprint);
 }
 
 function safeRemoveStage(stageRoot: string, parent: string, prefix: string): void {
@@ -480,20 +500,22 @@ export function createEncryptedServerRecoveryBackup(
     db.close();
   }
   const payloadConfig = recoveryConfig(config);
+  const identityPrivateKeyPem = readServerIdentityPrivateKey(paths.identityPrivateKey);
+  const tlsPrivateKeyPem = readTlsPrivateKey(paths.tlsPrivateKey);
   const payload: RecoveryPayload = {
     version: RECOVERY_PAYLOAD_VERSION,
     config: payloadConfig,
     databaseBase64Url: database.toString("base64url"),
-    identityPrivateKeyPem: readFileSync(paths.identityPrivateKey, "utf8"),
+    identityPrivateKeyPem,
     identityPublicKeyPem: readFileSync(paths.identityPublicKey, "utf8"),
-    tlsPrivateKeyPem: readFileSync(paths.tlsPrivateKey, "utf8"),
+    tlsPrivateKeyPem,
     tlsCertificatePem: readFileSync(paths.tlsCertificate, "utf8"),
     sha256: {
       config: sha256(canonicalJson(payloadConfig)),
       database: sha256(database),
-      identityPrivateKey: sha256(readFileSync(paths.identityPrivateKey)),
+      identityPrivateKey: sha256(identityPrivateKeyPem),
       identityPublicKey: sha256(readFileSync(paths.identityPublicKey)),
-      tlsPrivateKey: sha256(readFileSync(paths.tlsPrivateKey)),
+      tlsPrivateKey: sha256(tlsPrivateKeyPem),
       tlsCertificate: sha256(readFileSync(paths.tlsCertificate)),
     },
   };
@@ -611,13 +633,19 @@ export function restoreEncryptedServerRecoveryBackup(
   const stageRoot = mkdtempSync(resolve(parent, stagePrefix));
   try {
     const staged = writeStagedState(paths, stageRoot, payload, database);
+    validateRestoredPrivateKeys(
+      staged,
+      payload,
+      archive.serverFingerprint,
+      archive.tlsFingerprint,
+    );
     validateStagedDatabase(staged.database, identity.fingerprint, archive.serverEpoch);
     const rollbackPath = swapStateRoot(paths, stageRoot, () => {
       const finalConfig = loadConfig(paths);
       if (finalConfig.publicHost !== archive.publicHost || finalConfig.port !== archive.port) {
         throw new Error("CoCodex restored configuration does not match its archive");
       }
-      const finalIdentityPrivate = readFileSync(paths.identityPrivateKey, "utf8");
+      const finalIdentityPrivate = readServerIdentityPrivateKey(paths.identityPrivateKey);
       const finalIdentityPublic = readFileSync(paths.identityPublicKey, "utf8");
       if (!publicDer(finalIdentityPrivate).equals(publicDer(finalIdentityPublic))
         || publicKeyFingerprint(finalIdentityPublic) !== archive.serverFingerprint) {
@@ -626,6 +654,12 @@ export function restoreEncryptedServerRecoveryBackup(
       if (tlsFingerprint(readFileSync(paths.tlsCertificate, "utf8")) !== archive.tlsFingerprint) {
         throw new Error("CoCodex restored TLS verification failed");
       }
+      validateRestoredPrivateKeys(
+        paths,
+        payload,
+        archive.serverFingerprint,
+        archive.tlsFingerprint,
+      );
       validateStagedDatabase(paths.database, identity.fingerprint, archive.serverEpoch);
     });
     return { archive, rollbackPath };

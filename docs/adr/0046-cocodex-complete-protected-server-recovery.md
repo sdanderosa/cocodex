@@ -89,9 +89,9 @@ a planned move to a new host/identity or changed endpoint, use the
 destination-bound authority-transfer flow from ADR 0017 so clients receive a
 source-signed new identity and the source retires itself.
 
-This decision protects private keys inside backup files. It does not by itself
-change how live Server private keys are protected on local disk; OS-backed key
-storage remains a separate product requirement.
+This decision protects private keys inside backup files. ADR 0047 subsequently
+adds Windows DPAPI `CurrentUser` custody for the live Server authority and TLS
+private-key files and makes restore rewrap them for the restoring Windows user.
 
 ## Evidence requirement
 

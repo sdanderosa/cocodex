@@ -1,12 +1,13 @@
-import { generateKeyPairSync } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   createDeviceKeyCertificate as createProtocolDeviceKeyCertificate,
   verifyDeviceKeyCertificate as verifyProtocolDeviceKeyCertificate,
   type DeviceKeyCertificate,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import type { ClientPaths } from "./paths";
-import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { hardenSecretDir } from "../lib/windows-secret-acl";
+import { readProtectedSecret, writeProtectedSecret } from "../lib/local-protected-secret";
 
 export type { DeviceKeyCertificate };
 
@@ -17,6 +18,30 @@ export interface ClientIdentity {
   messagingPrivateKeyPem: string;
   projectWrapPublicKeyPem?: string;
   projectWrapPrivateKeyPem?: string;
+}
+
+const DEVICE_SIGNING_PURPOSE = "cocodex.client.device-signing-key";
+const PRIVATE_MESSAGING_PURPOSE = "cocodex.client.private-messaging-key";
+const PROJECT_WRAP_PURPOSE = "cocodex.client.project-wrap-key";
+
+function readPrivateKey(path: string, purpose: string): string {
+  return readProtectedSecret(path, purpose).toString("utf8");
+}
+
+function writePrivateKey(path: string, purpose: string, value: string): void {
+  writeProtectedSecret(path, purpose, value);
+}
+
+function assertKeyPair(privateKeyPem: string, publicKeyPem: string, label: string): void {
+  let derived: Buffer;
+  let expected: Buffer;
+  try {
+    derived = createPublicKey(privateKeyPem).export({ format: "der", type: "spki" });
+    expected = createPublicKey(publicKeyPem).export({ format: "der", type: "spki" });
+  } catch {
+    throw new Error(`CoCodex ${label} key is invalid`);
+  }
+  if (!derived.equals(expected)) throw new Error(`CoCodex ${label} keypair does not match`);
 }
 
 export function createDeviceKeyCertificate(deviceId: string, identity: ClientIdentity): string {
@@ -46,40 +71,41 @@ export function loadOrCreateClientIdentity(paths: ClientPaths): ClientIdentity {
   }
   if (privateExists && messagingPrivateExists) {
     hardenSecretDir(paths.root, { required: true });
-    hardenSecretPath(paths.identityPrivateKey, { required: true });
     let projectWrapPrivateKeyPem: string;
     let projectWrapPublicKeyPem: string;
     if (projectWrapPrivateExists) {
-      hardenSecretPath(paths.projectWrapPrivateKey, { required: true });
-      projectWrapPrivateKeyPem = readFileSync(paths.projectWrapPrivateKey, "utf8");
+      projectWrapPrivateKeyPem = readPrivateKey(paths.projectWrapPrivateKey, PROJECT_WRAP_PURPOSE);
       projectWrapPublicKeyPem = readFileSync(paths.projectWrapPublicKey, "utf8");
     } else {
       const projectWrap = generateKeyPairSync("x25519", {
         publicKeyEncoding: { type: "spki", format: "pem" },
         privateKeyEncoding: { type: "pkcs8", format: "pem" },
       });
-      writeFileSync(paths.projectWrapPrivateKey, projectWrap.privateKey, {
-        encoding: "utf8", flag: "wx", mode: 0o600,
-      });
-      hardenSecretPath(paths.projectWrapPrivateKey, { required: true });
+      writePrivateKey(paths.projectWrapPrivateKey, PROJECT_WRAP_PURPOSE, projectWrap.privateKey);
       writeFileSync(paths.projectWrapPublicKey, projectWrap.publicKey, {
         encoding: "utf8", flag: "wx", mode: 0o644,
       });
       projectWrapPrivateKeyPem = projectWrap.privateKey;
       projectWrapPublicKeyPem = projectWrap.publicKey;
     }
+    const privateKeyPem = readPrivateKey(paths.identityPrivateKey, DEVICE_SIGNING_PURPOSE);
+    const publicKeyPem = readFileSync(paths.identityPublicKey, "utf8");
+    const messagingPrivateKeyPem = readPrivateKey(paths.messagingPrivateKey, PRIVATE_MESSAGING_PURPOSE);
+    const messagingPublicKeyPem = readFileSync(paths.messagingPublicKey, "utf8");
+    assertKeyPair(privateKeyPem, publicKeyPem, "device-signing");
+    assertKeyPair(messagingPrivateKeyPem, messagingPublicKeyPem, "private-messaging");
+    assertKeyPair(projectWrapPrivateKeyPem, projectWrapPublicKeyPem, "project-wrap");
     return {
-      privateKeyPem: readFileSync(paths.identityPrivateKey, "utf8"),
-      publicKeyPem: readFileSync(paths.identityPublicKey, "utf8"),
-      messagingPrivateKeyPem: readFileSync(paths.messagingPrivateKey, "utf8"),
-      messagingPublicKeyPem: readFileSync(paths.messagingPublicKey, "utf8"),
+      privateKeyPem,
+      publicKeyPem,
+      messagingPrivateKeyPem,
+      messagingPublicKeyPem,
       projectWrapPrivateKeyPem,
       projectWrapPublicKeyPem,
     };
   }
   if (privateExists) {
     hardenSecretDir(paths.root, { required: true });
-    hardenSecretPath(paths.identityPrivateKey, { required: true });
     const messagingPair = generateKeyPairSync("x25519", {
       publicKeyEncoding: { type: "spki", format: "pem" },
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -88,27 +114,22 @@ export function loadOrCreateClientIdentity(paths: ClientPaths): ClientIdentity {
       publicKeyEncoding: { type: "spki", format: "pem" },
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
     });
-    writeFileSync(paths.messagingPrivateKey, messagingPair.privateKey, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    hardenSecretPath(paths.messagingPrivateKey, { required: true });
+    writePrivateKey(paths.messagingPrivateKey, PRIVATE_MESSAGING_PURPOSE, messagingPair.privateKey);
     writeFileSync(paths.messagingPublicKey, messagingPair.publicKey, {
       encoding: "utf8",
       flag: "wx",
       mode: 0o644,
     });
-    writeFileSync(paths.projectWrapPrivateKey, projectWrapPair.privateKey, {
-      encoding: "utf8", flag: "wx", mode: 0o600,
-    });
-    hardenSecretPath(paths.projectWrapPrivateKey, { required: true });
+    writePrivateKey(paths.projectWrapPrivateKey, PROJECT_WRAP_PURPOSE, projectWrapPair.privateKey);
     writeFileSync(paths.projectWrapPublicKey, projectWrapPair.publicKey, {
       encoding: "utf8", flag: "wx", mode: 0o644,
     });
+    const privateKeyPem = readPrivateKey(paths.identityPrivateKey, DEVICE_SIGNING_PURPOSE);
+    const publicKeyPem = readFileSync(paths.identityPublicKey, "utf8");
+    assertKeyPair(privateKeyPem, publicKeyPem, "device-signing");
     return {
-      privateKeyPem: readFileSync(paths.identityPrivateKey, "utf8"),
-      publicKeyPem: readFileSync(paths.identityPublicKey, "utf8"),
+      privateKeyPem,
+      publicKeyPem,
       messagingPrivateKeyPem: messagingPair.privateKey,
       messagingPublicKeyPem: messagingPair.publicKey,
       projectWrapPrivateKeyPem: projectWrapPair.privateKey,
@@ -129,33 +150,19 @@ export function loadOrCreateClientIdentity(paths: ClientPaths): ClientIdentity {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
-  hardenSecretPath(paths.identityPrivateKey, { required: true });
-  writeFileSync(paths.identityPrivateKey, pair.privateKey, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  if (process.platform !== "win32") chmodSync(paths.identityPrivateKey, 0o600);
+  writePrivateKey(paths.identityPrivateKey, DEVICE_SIGNING_PURPOSE, pair.privateKey);
   writeFileSync(paths.identityPublicKey, pair.publicKey, {
     encoding: "utf8",
     flag: "wx",
     mode: 0o644,
   });
-  writeFileSync(paths.messagingPrivateKey, messagingPair.privateKey, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  hardenSecretPath(paths.messagingPrivateKey, { required: true });
+  writePrivateKey(paths.messagingPrivateKey, PRIVATE_MESSAGING_PURPOSE, messagingPair.privateKey);
   writeFileSync(paths.messagingPublicKey, messagingPair.publicKey, {
     encoding: "utf8",
     flag: "wx",
     mode: 0o644,
   });
-  writeFileSync(paths.projectWrapPrivateKey, projectWrapPair.privateKey, {
-    encoding: "utf8", flag: "wx", mode: 0o600,
-  });
-  hardenSecretPath(paths.projectWrapPrivateKey, { required: true });
+  writePrivateKey(paths.projectWrapPrivateKey, PROJECT_WRAP_PURPOSE, projectWrapPair.privateKey);
   writeFileSync(paths.projectWrapPublicKey, projectWrapPair.publicKey, {
     encoding: "utf8", flag: "wx", mode: 0o644,
   });

@@ -1,8 +1,9 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { publicKeyFingerprint } from "../../../packages/cocodex-protocol/src/index.ts";
-import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
+import { hardenSecretDir } from "../../../src/lib/windows-secret-acl";
+import { readProtectedSecret, writeProtectedSecret } from "../../../src/lib/local-protected-secret";
 import type { ServerPaths } from "./paths";
 
 export interface ServerIdentity {
@@ -11,12 +12,16 @@ export interface ServerIdentity {
   fingerprint: string;
 }
 
-function writeSecret(path: string, value: string): void {
+const SERVER_IDENTITY_PURPOSE = "cocodex.server.identity-signing-key";
+
+export function writeServerIdentityPrivateKey(path: string, value: string): void {
   mkdirSync(dirname(path), { recursive: true });
   hardenSecretDir(dirname(path), { required: true });
-  writeFileSync(path, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  hardenSecretPath(path, { required: true });
-  if (process.platform !== "win32") chmodSync(path, 0o600);
+  writeProtectedSecret(path, SERVER_IDENTITY_PURPOSE, value);
+}
+
+export function readServerIdentityPrivateKey(path: string): string {
+  return readProtectedSecret(path, SERVER_IDENTITY_PURPOSE).toString("utf8");
 }
 
 export function createServerIdentity(paths: ServerPaths): ServerIdentity {
@@ -27,7 +32,7 @@ export function createServerIdentity(paths: ServerPaths): ServerIdentity {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
-  writeSecret(paths.identityPrivateKey, pair.privateKey);
+  writeServerIdentityPrivateKey(paths.identityPrivateKey, pair.privateKey);
   mkdirSync(dirname(paths.identityPublicKey), { recursive: true });
   writeFileSync(paths.identityPublicKey, pair.publicKey, {
     encoding: "utf8",
@@ -43,9 +48,19 @@ export function createServerIdentity(paths: ServerPaths): ServerIdentity {
 
 export function loadServerIdentity(paths: ServerPaths): ServerIdentity {
   hardenSecretDir(paths.root, { required: true });
-  hardenSecretPath(paths.identityPrivateKey, { required: true });
   const publicKeyPem = readFileSync(paths.identityPublicKey, "utf8");
-  const privateKeyPem = readFileSync(paths.identityPrivateKey, "utf8");
+  const privateKeyPem = readServerIdentityPrivateKey(paths.identityPrivateKey);
+  let derivedPublic: Buffer;
+  let expectedPublic: Buffer;
+  try {
+    derivedPublic = createPublicKey(privateKeyPem).export({ format: "der", type: "spki" });
+    expectedPublic = createPublicKey(publicKeyPem).export({ format: "der", type: "spki" });
+  } catch {
+    throw new Error("CoCodex Server identity key is invalid");
+  }
+  if (!derivedPublic.equals(expectedPublic)) {
+    throw new Error("CoCodex Server identity keypair does not match");
+  }
   return {
     publicKeyPem,
     privateKeyPem,

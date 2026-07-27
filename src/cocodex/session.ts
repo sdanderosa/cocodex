@@ -126,6 +126,15 @@ interface ControlCommand extends Record<string, unknown> {
   type: string;
 }
 
+export function inboundPrivateEnvelope(
+  frame: { type: "private.accepted" | "private.message"; message: PrivateMailboxMessage },
+): PrivateMailboxMessage | undefined {
+  // Only a delivery event advances the inbound mailbox. An acknowledgement
+  // for this device's own send can carry a later global message sequence and
+  // must not skip an earlier delivery accepted from another socket.
+  return frame.type === "private.message" ? frame.message : undefined;
+}
+
 type CachedProjectMember = Omit<ProjectMemberView, "deviceKeyCertificate"> & {
   projectWrapPublicKeyPem: string | null;
   trusted: boolean;
@@ -2677,9 +2686,23 @@ export async function runJsonLineSession(
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        queuePrivateEnvelope(frame.message);
+        // An outbound acknowledgement can race an earlier inbound message
+        // accepted from another socket. Advancing the shared mailbox cursor
+        // here would skip that earlier ciphertext on the next snapshot. The
+        // local sent history is already acknowledged above; a later snapshot
+        // may safely replay this outbound envelope to advance the cursor after
+        // all earlier mailbox rows have been observed.
+        const inbound = inboundPrivateEnvelope({
+          type: "private.accepted",
+          message: frame.message as PrivateMailboxMessage,
+        });
+        if (inbound) queuePrivateEnvelope(inbound);
       } else if (frame.type === "private.message") {
-        queuePrivateEnvelope(frame.message);
+        const inbound = inboundPrivateEnvelope({
+          type: "private.message",
+          message: frame.message as PrivateMailboxMessage,
+        });
+        if (inbound) queuePrivateEnvelope(inbound);
       } else if (frame.type === "private.receipt") {
         rememberPrivateReceipt(frame.receipt);
       } else if (frame.type === "project.key.result") {
