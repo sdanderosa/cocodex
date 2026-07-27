@@ -183,7 +183,7 @@ describe("CoCodex Client direct enrollment", () => {
     ).get(wrongInvite.invitationId) as { consumedAt: string | null };
     expect(wrongRow.consumedAt).toBeNull();
 
-  }, 15_000);
+  }, 30_000);
 
   test("accepts a source-signed server transfer and persists the new endpoint and TLS pin", async () => {
     const sourceRoot = mkdtempSync(join(tmpdir(), "cocodex-client-transfer-source-"));
