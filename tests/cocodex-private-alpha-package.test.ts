@@ -78,6 +78,12 @@ describe("CoCodex private-alpha distribution", () => {
     expect(source).toContain("Assert-ReleaseArchive");
     expect(source).toContain("Assert-InstalledPackage");
     expect(source).toContain("Assert-CoCodexStopped");
+    expect(source).toContain("Get-CoCodexBlockingProcesses");
+    expect(source).toContain("Get-CoCodexBlockingProcesses $prefix -IgnoreAllAncestors");
+    expect(source).toContain('Join-Path $Prefix "node_modules\\@sdanderosa\\cocodex"');
+    expect(source).toContain('TrimEnd("\\") + "\\"');
+    expect(source).toContain("blockingProcesses = @($blockingProcesses)");
+    expect(source).toContain("readyForUpdate = ($blockingProcesses.Count -eq 0)");
     expect(source).toContain("$ancestor.ParentProcessId");
     expect(source).toContain('"powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe"');
     expect(source).toContain("must contain exactly one SHA-256 entry");
@@ -87,6 +93,10 @@ describe("CoCodex private-alpha distribution", () => {
     expect(source).toContain('Join-Path $Prefix "node_modules\\.bin"');
     expect(source).toContain('Read-TarTextEntry $Archive "package/package.json"');
     expect(source).toContain("Client state (~\\.cocodex), Server state (~\\.cocodex-server)");
+    expect(source).toContain('[ValidateSet("Install", "Update", "Check", "Verify", "Uninstall")]');
+    const checkAt = source.indexOf('if ($Action -eq "Check")');
+    expect(checkAt).toBeGreaterThan(checksumAt);
+    expect(source.indexOf("Write-InstallRootManifest $prefix")).toBeGreaterThan(checkAt);
     expect(source).not.toContain("Remove-Item");
   });
 

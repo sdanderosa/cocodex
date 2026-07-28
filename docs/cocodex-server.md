@@ -142,6 +142,36 @@ After Windows restart or application update, verify `service status` reports
 `binaryPathMatches: true`, and `ready: true`. Run `service install` against the
 same state root to repair retained assets or registration; do not initialize a
 new authority as a repair step.
+### Verify and apply a Server update
+
+CoCodex Server has a separate operator-facing update check but reuses the one
+verified private-alpha application bundle from ADR 0048. It never uses the
+inherited OpenCodex registry updater. Download the complete newer bundle from
+the intended successful workflow/commit, keep its four release files together,
+and run:
+
+```powershell
+cocodex-server update-check --bundle C:\Path\To\CoCodex-Release
+```
+
+The command is read-only. It independently verifies the archive,
+`RELEASE.json`, and `Install-CoCodex.ps1`, then runs the installer's bounded
+`Check` action. Its JSON reports current and target versions, source commit,
+archive digest, application prefix, direct Server PID, Windows-service state,
+blockers, preserved state roots, and exact external update argv.
+
+Do not apply while `readiness.ready` is false. Stop the direct Server or service
+and close every other CoCodex Client/runtime process. Then run the reported
+PowerShell executable and argument array as an external command. The action is
+`Update`, not `Install`, and updates the shared verified application files while
+preserving `.cocodex`, `.cocodex-server`, `.opencodex`, and `.codex`.
+
+After the installer succeeds, direct-process hosts can run
+`cocodex-server start`. Service-mode hosts should run
+`cocodex-server service install --state-root SAME_ROOT` to rewrite retained
+assets from the new package and start the existing registration, then require
+`service status` to report the same user, automatic startup, matching binary,
+and TLS readiness. Never run `init` as an update or repair step.
 
 ## Enrollment and projects
 

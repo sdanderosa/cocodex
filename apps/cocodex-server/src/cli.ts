@@ -21,6 +21,7 @@ import { registerAgent } from "./agent-routing";
 import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
+import { checkServerUpdate } from "./server-update";
 import { databaseAdminSummary } from "./admin-status";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
 import {
@@ -143,6 +144,7 @@ Usage:
   cocodex-server stop [--state-root PATH]
   cocodex-server restart [--state-root PATH]
   cocodex-server status [--state-root PATH]
+  cocodex-server update-check --bundle DIRECTORY [--state-root PATH]
   cocodex-server service install|start|stop|status|uninstall [--state-root PATH]
   cocodex-server network-diagnose [--port PORT] [--state-root PATH]
   cocodex-server backup --output FILE [--passphrase-file FILE] [--state-root PATH]
@@ -205,7 +207,14 @@ async function run(): Promise<void> {
       }));
       return;
     }
-    case "service": {
+    case "update-check": {
+      if (["help", "--help", "-h"].includes(Bun.argv[3] ?? "")) {
+        console.log("Usage: cocodex-server update-check --bundle DIRECTORY [--state-root PATH]");
+        return;
+      }
+      console.log(JSON.stringify(checkServerUpdate(paths, requiredOption("--bundle")), null, 2));
+      return;
+    }    case "service": {
       const action = Bun.argv[3] ?? "status";
       if (["help", "--help", "-h"].includes(action)) {
         console.log("Usage: cocodex-server service install|start|stop|status|uninstall [--state-root PATH]");

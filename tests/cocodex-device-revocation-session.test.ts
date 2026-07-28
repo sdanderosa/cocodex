@@ -31,17 +31,17 @@ afterEach(async () => {
   for (const database of databases.splice(0)) database.close();
   Bun.gc(true);
   for (const root of roots.splice(0)) {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       try {
         rmSync(root, { recursive: true, force: true });
         break;
       } catch (error) {
-        if (attempt === 199) throw error;
+        if (attempt === 299) throw error;
         await Bun.sleep(100);
       }
     }
   }
-}, 30_000);
+}, 45_000);
 
 class JsonSessionHarness {
   readonly input = new PassThrough();

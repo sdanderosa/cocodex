@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet("Install", "Update", "Verify", "Uninstall")]
+    [ValidateSet("Install", "Update", "Check", "Verify", "Uninstall")]
     [string]$Action = "Install",
     [string]$PackagePath,
     [string]$ChecksumPath,
@@ -428,7 +428,7 @@ function Write-InstallRootManifest([string]$Prefix, [string]$Archive, $Package) 
     }
 }
 
-function Assert-CoCodexStopped([string]$Prefix) {
+function Get-CoCodexBlockingProcesses([string]$Prefix, [switch]$IgnoreAllAncestors) {
     $packageRoot = [System.IO.Path]::GetFullPath((Join-Path $Prefix "node_modules\@sdanderosa\cocodex"))
     try {
         $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
@@ -443,12 +443,13 @@ function Assert-CoCodexStopped([string]$Prefix) {
             break
         }
         $ancestorName = [string]$ancestor.Name
-        if ($ancestorPid -ne $PID -and $ancestorName -notin @("powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe")) {
+        if (-not $IgnoreAllAncestors -and $ancestorPid -ne $PID -and $ancestorName -notin @("powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe")) {
             break
         }
         [void]$ignoredShellAncestors.Add($ancestorPid)
         $ancestorPid = [int]$ancestor.ParentProcessId
     }
+    $blocking = @()
     foreach ($process in $processes) {
         if ($ignoredShellAncestors.Contains([int]$process.ProcessId)) {
             continue
@@ -464,17 +465,28 @@ function Assert-CoCodexStopped([string]$Prefix) {
             [System.StringComparison]::OrdinalIgnoreCase
         ) -ge 0)
         if ($underPrefix -or $usesPackage) {
-            throw "CoCodex process $($process.ProcessId) is still running. Stop Client, Server, and ocx before $Action."
+            $blocking += [pscustomobject]@{
+                processId = [int]$process.ProcessId
+                name = [string]$process.Name
+            }
         }
     }
+    return @($blocking)
 }
 
+function Assert-CoCodexStopped([string]$Prefix) {
+    $blocking = @(Get-CoCodexBlockingProcesses $Prefix)
+    if ($blocking.Count -gt 0) {
+        $process = $blocking[0]
+        throw "CoCodex process $($process.processId) is still running. Stop Client, Server, and ocx before $Action."
+    }
+}
 $archive = $null
 $verifiedHash = $null
 $release = $null
 $releaseVersion = ""
 $releasePackage = $null
-if ($Action -eq "Install" -or $Action -eq "Update") {
+if ($Action -eq "Install" -or $Action -eq "Update" -or $Action -eq "Check") {
     $archive = Resolve-ReleaseFile $PackagePath "*.tgz" "CoCodex package archive"
     $checksum = Resolve-ReleaseFile $ChecksumPath "SHA256SUMS.txt" "checksum file"
     $releasePath = Resolve-ReleaseFile $ReleaseManifestPath "RELEASE.json" "release manifest"
@@ -495,6 +507,30 @@ $nodeVersion = Assert-NodeVersion
 $npmVersion = Assert-NpmVersion $npm
 $prefix = Resolve-Prefix $npm $NpmPrefix
 
+if ($Action -eq "Check") {
+    # The read-only check is launched by cocodex-server itself. Ignore that
+    # exact caller chain so it does not report itself as an update blocker;
+    # mutating actions retain the stricter shell-only exclusion above.
+    $blockingProcesses = @(Get-CoCodexBlockingProcesses $prefix -IgnoreAllAncestors)
+    [pscustomobject]@{
+        verified = $true
+        product = [string]$release.product
+        channel = [string]$release.channel
+        packageName = [string]$release.packageName
+        version = [string]$releaseVersion
+        archive = [System.IO.Path]::GetFileName($archive)
+        sha256 = [string]$verifiedHash
+        sourceCommit = [string]$release.sourceCommit
+        requiredNodeVersion = [string]$release.requiredNodeVersion
+        requiredNpmMajor = [int]$release.requiredNpmMajor
+        nodeVersion = [string]$nodeVersion
+        npmVersion = [string]$npmVersion
+        applicationPrefix = [string]$prefix
+        blockingProcesses = @($blockingProcesses)
+        readyForUpdate = ($blockingProcesses.Count -eq 0)
+    } | ConvertTo-Json -Depth 8 -Compress
+    exit 0
+}
 if ($Action -eq "Uninstall") {
     Assert-CoCodexStopped $prefix
     & $npm uninstall --prefix $prefix $PackageName
