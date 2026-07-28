@@ -43,7 +43,16 @@ children.push(Bun.spawn(
     cwd: resolve(root, "gui"),
     stdout: "inherit",
     stderr: "inherit",
-    env: { ...process.env, OPENCODEX_PROXY_TARGET: proxyUrl },
+    // Tauri's beforeDevCommand does not consistently propagate its platform
+    // marker into the child Vite process. Pass the target explicitly so the
+    // desktop bundle never falls back to same-origin `/healthz` (which Vite
+    // serves as the SPA shell when no proxy is configured).
+    env: {
+      ...process.env,
+      OPENCODEX_PROXY_TARGET: proxyUrl,
+      VITE_API_BASE: process.env.VITE_API_BASE ?? proxyUrl,
+      TAURI_ENV_PLATFORM: process.env.TAURI_ENV_PLATFORM ?? "desktop",
+    },
   },
 ));
 
