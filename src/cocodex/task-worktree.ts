@@ -193,6 +193,22 @@ function verifyOwnedWorktree(
   };
 }
 
+/**
+ * Resolve a task workspace only from the local ownership registry. Callers
+ * still compare the returned metadata with the server-authoritative task
+ * view before performing any task-scoped operation.
+ */
+export function loadOwnedTaskWorkspace(
+  taskId: string,
+  registryPath: string,
+  gitCommand = "git",
+): TaskWorkspace {
+  const ownership = loadOwnership(registryPath);
+  const entry = ownership.tasks[taskId];
+  if (!entry) throw new Error("No locally owned task worktree was found for this task");
+  return verifyOwnedWorktree(gitCommand, entry);
+}
+
 export function prepareTaskWorkspace(
   policy: LocalAgentPolicy,
   task: AgentTask,

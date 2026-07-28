@@ -181,6 +181,15 @@
 .cocodex-private-form { border-top: 1px solid var(--border); padding: 12px; display: grid; gap: 8px; }
 .cocodex-private-compose-mode { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid color-mix(in srgb, #8b5cf6 40%, var(--border)); border-radius: var(--radius-xs); background: color-mix(in srgb, #8b5cf6 8%, var(--raised)); color: var(--muted); font-size: var(--text-caption); }
 .cocodex-key-input { font-family: var(--mono); font-size: var(--text-caption); }
+.cocodex-git-integration { border-bottom-color: color-mix(in srgb, #8b5cf6 45%, var(--border)); }
+.cocodex-git-integration-card[data-status="ready"] { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.cocodex-git-integration-card[data-status="blocked"],
+.cocodex-git-integration-card[data-status="revision-required"] { border-color: color-mix(in srgb, var(--amber) 50%, var(--border)); }
+.cocodex-git-integration-card[data-status="integrated"] { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.cocodex-git-integration-card code { color: var(--faint); font-size: var(--text-caption); }
+.cocodex-git-integration-blockers { color: var(--amber) !important; overflow-wrap: anywhere; }
+.cocodex-git-integration-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.cocodex-git-integration-actions .btn { flex: 1 1 auto; font-size: var(--text-caption); padding: 6px 8px; }
 @media (max-width: 1180px) {
   .cocodex-shell { grid-template-columns: 200px minmax(360px, 1fr); }
   .cocodex-private { grid-column: 1 / -1; min-height: 360px; }

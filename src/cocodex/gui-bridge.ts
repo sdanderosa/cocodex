@@ -84,6 +84,9 @@ const RENDERER_FRAME_FIELDS = new Set([
   "final", "created", "keyEpoch",
   "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
   "operationId", "cancelledTaskCount",
+  "integration", "blocked", "preview", "currentTargetCommit", "expectedTargetCommit",
+  "changedFiles", "conflicts", "overlaps", "blockedReasons", "integrationCommit", "targetCommit",
+  "commit", "queued",
 ]);
 const ALLOWED_COMMANDS = new Set([
   "device.approval.list",
@@ -137,6 +140,8 @@ const ALLOWED_COMMANDS = new Set([
   "artifact.publish",
   "artifact.list",
   "project.artifact.publish",
+  "git.integration.preview",
+  "git.integration.integrate",
   "project.artifact.list",
   "project.file-reference.publish",
   "project.file-reference.list",
@@ -581,6 +586,21 @@ export class CoCodexGuiBridge {
           && (typeof command.reason !== "string" || command.reason.trim().length < 1
             || command.reason.trim().length > 512))) {
         throw new Error("Invalid project lock command");
+      }
+    }
+    if (command.type === "git.integration.preview" || command.type === "git.integration.integrate") {
+      const allowed = new Set(["id", "type", "projectId", "chatId", "taskId", "expectedTargetCommit"]);
+      const uuid = /^[0-9a-f-]{36}$/i;
+      const commit = /^[0-9a-f]{40,64}$/i;
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !uuid.test(command.projectId)
+        || typeof command.taskId !== "string" || !uuid.test(command.taskId)
+        || (command.chatId !== undefined
+          && (typeof command.chatId !== "string" || !uuid.test(command.chatId)))
+        || (command.expectedTargetCommit !== undefined
+          && (typeof command.expectedTargetCommit !== "string" || !commit.test(command.expectedTargetCommit)))
+        || (command.type === "git.integration.integrate" && command.expectedTargetCommit === undefined)) {
+        throw new Error("Invalid Git integration command");
       }
     }
     const id = typeof command.id === "string" && command.id.length > 0

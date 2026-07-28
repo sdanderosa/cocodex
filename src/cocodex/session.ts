@@ -19,6 +19,7 @@ import {
   publicKeyFingerprint,
   type Artifact,
   type AgentTask,
+  type AgentTaskView,
   type EncryptedAgentTask,
   type ChatEvent,
   type FileReferencePlaintext,
@@ -51,6 +52,16 @@ import {
 } from "./agent-safety";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
 import { runLocalCodexTurn } from "./local-codex";
+import {
+  GitIntegrationBlockedError,
+  integrateTask,
+  previewTaskIntegration,
+  resolveGitTargetCommit,
+  type GitIntegrationArtifact,
+  type GitIntegrationPeer,
+  type GitIntegrationPreview,
+  type GitIntegrationRequest,
+} from "./git-integration";
 import { reportAgentExecution } from "./agent-execution-client";
 import { createAgentRequest, loadClientConnection, maintainAuthenticatedClient } from "./client";
 import {
@@ -60,7 +71,7 @@ import {
 } from "./identity";
 import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox, queuedEvents } from "./outbox";
 import type { ClientPaths } from "./paths";
-import { prepareTaskWorkspace, samePhysicalPath } from "./task-worktree";
+import { loadOwnedTaskWorkspace, prepareTaskWorkspace, samePhysicalPath } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
 import {
   openSignedPrivateMessage,
@@ -238,6 +249,24 @@ function controlRequestId(value: unknown): string {
     : randomUUID();
 }
 
+function shareableGitIntegrationPreview(
+  preview: GitIntegrationPreview,
+): Omit<GitIntegrationPreview, "repositoryRoot" | "worktreePath"> {
+  const { repositoryRoot: _repositoryRoot, worktreePath: _worktreePath, ...shareable } = preview;
+  return shareable;
+}
+
+function gitIntegrationArtifactContent(
+  preview: GitIntegrationPreview,
+  artifact: GitIntegrationArtifact,
+): string {
+  return JSON.stringify({
+    version: 1,
+    integration: artifact,
+    preview: shareableGitIntegrationPreview(preview),
+  }, null, 2);
+}
+
 function canonicalProjectKeyEnvelope(value: unknown): string {
   const envelope = projectKeyEnvelopeSchema.parse(value);
   return JSON.stringify([
@@ -273,6 +302,8 @@ const PROJECT_MUTATION_COMMANDS = new Set([
   "agent.configure",
   "artifact.publish",
   "project.artifact.publish",
+  "git.integration.preview",
+  "git.integration.integrate",
   "project.file-reference.publish",
   "private.share",
   "project.invite.create",
@@ -322,6 +353,7 @@ export async function runJsonLineSession(
   const usageSubscriptions = new Set<string>();
   const agentSubscriptions = new Set<string>();
   const agentTaskSubscriptions = new Set<string>();
+  const agentTaskViews = new Map<string, AgentTaskView>();
   const legacyContextSnapshots = new Map<string, { revision: number; finalGoal: string; context: Record<string, unknown> }>();
   let privateMailbox: PrivateMailboxState = loadPrivateMailbox(paths.privateMailbox, connection.deviceId);
   let privateHistory: PrivateHistoryState = loadPrivateHistory(paths.privateHistory, connection.deviceId);
@@ -1136,6 +1168,117 @@ export async function runJsonLineSession(
     }));
     return flushChain;
   };
+  const gitIntegrationRequestFor = (command: ControlCommand): {
+    task: AgentTaskView;
+    chatId: string;
+    request: GitIntegrationRequest;
+  } => {
+    const taskId = String(command.taskId ?? "");
+    const projectId = String(command.projectId ?? "");
+    if (!taskId || !projectId) throw new Error("Git integration requires a project and task ID");
+    const task = agentTaskViews.get(taskId);
+    if (!task || task.projectId !== projectId) {
+      throw new Error("The server-authoritative task record is not loaded for this project");
+    }
+    const taskChatId = String(task.chatId ?? task.projectId);
+    if (command.chatId !== undefined && String(command.chatId) !== taskChatId) {
+      throw new Error("The task does not belong to the selected chat");
+    }
+    if (task.targetDeviceId !== connection.deviceId) {
+      throw new Error("Only the device that owns the task worktree can integrate it");
+    }
+    if (task.status !== "completed") {
+      throw new Error("Only a completed task can be integrated");
+    }
+    if (task.workspaceMode !== "git-worktree"
+      || !task.workspaceRef || !task.branch || !task.baseCommit || !task.mergeTarget) {
+      throw new Error("The task has no complete Git worktree assignment");
+    }
+    const policy = ensureLocalAgentPolicy(task.agentId);
+    if (policy.projectId !== projectId || policy.workspaceMode !== "git-worktree") {
+      throw new Error("The task does not match a local Git-worktree agent policy");
+    }
+    const runtime = agentRuntimePaths(
+      paths,
+      policy.agentId,
+      localAgentLegacyRuntime.get(policy.agentId) === true,
+    );
+    const workspace = loadOwnedTaskWorkspace(task.id, runtime.worktreeRegistry);
+    if (workspace.mode !== "git-worktree"
+      || workspace.workspaceRef !== task.workspaceRef
+      || workspace.branch !== task.branch
+      || workspace.baseCommit?.toLowerCase() !== task.baseCommit.toLowerCase()
+      || workspace.mergeTarget !== task.mergeTarget) {
+      throw new Error("The local task ownership record does not match the server task");
+    }
+    const expectedTargetCommit = command.expectedTargetCommit === undefined
+      ? command.type === "git.integration.preview"
+        ? resolveGitTargetCommit(policy.workspaceRoot, workspace.mergeTarget)
+        : (() => { throw new Error("Integration requires the expected target commit from a fresh preview"); })()
+      : String(command.expectedTargetCommit);
+    const peers: GitIntegrationPeer[] = [...agentTaskViews.values()]
+      .filter(peer => peer.id !== task.id
+        && peer.projectId === task.projectId
+        && String(peer.chatId ?? peer.projectId) === taskChatId
+        && peer.targetDeviceId === connection.deviceId
+        && peer.workspaceMode === "git-worktree"
+        && typeof peer.branch === "string"
+        && typeof peer.baseCommit === "string"
+        && peer.status !== "failed")
+      .map(peer => ({
+        taskId: peer.id,
+        branch: peer.branch!,
+        baseCommit: peer.baseCommit!,
+      }));
+    return {
+      task,
+      chatId: taskChatId,
+      request: {
+        taskId: task.id,
+        projectId: task.projectId,
+        agentId: task.agentId,
+        repositoryRoot: policy.workspaceRoot,
+        worktreePath: workspace.workingDirectory,
+        branch: workspace.branch,
+        baseCommit: workspace.baseCommit,
+        mergeTarget: workspace.mergeTarget,
+        expectedTargetCommit,
+        peers,
+      },
+    };
+  };
+
+  const publishGitIntegrationArtifact = async (
+    projectId: string,
+    chatId: string,
+    artifact: GitIntegrationArtifact,
+    preview: GitIntegrationPreview,
+    requestId: string,
+  ): Promise<{ queued: boolean }> => {
+    const integrated = artifact.status === "integrated";
+    const summary = integrated
+      ? "Integrated " + artifact.branch + " into " + artifact.mergeTarget
+        + " at " + String(artifact.integrationCommit ?? "").slice(0, 12) + "."
+      : "Revision required before integrating " + artifact.branch + ": "
+        + preview.blockedReasons.join(", ") + ".";
+    const frame = await encryptedArtifactFrame(
+      projectId,
+      chatId,
+      artifact.artifactId,
+      artifact.taskId,
+      integrated ? "commit" : "review",
+      integrated ? "Git integration completed" : "Git integration requires revision",
+      summary,
+      gitIntegrationArtifactContent(preview, artifact),
+      integrated ? "integrated" : "ready",
+      requestId,
+    );
+    encryptedArtifactSubscriptions.add(projectId + ":" + chatId);
+    enqueueDurableEvent(paths, frame);
+    const delivered = await flush();
+    return { queued: delivered === 0 };
+  };
+
   const queuePrivateReceipt = (messageId: string, receipt: "delivered" | "read"): boolean => {
     try {
       enqueueDurableEvent(paths, {
@@ -3029,6 +3172,22 @@ export async function runJsonLineSession(
           }
         }
       }
+      if (frame.type === "agent.task.list.result") {
+        const tasks = Array.isArray(frame.tasks) ? frame.tasks as AgentTaskView[] : [];
+        for (const [taskId, cached] of agentTaskViews) {
+          if (cached.projectId === String(frame.projectId)
+            && String(cached.chatId ?? cached.projectId) === String(frame.chatId)
+            && !tasks.some(task => task.id === cached.id)) {
+            agentTaskViews.delete(taskId);
+          }
+        }
+        for (const task of tasks) {
+          if (task.projectId === String(frame.projectId)
+            && String(task.chatId ?? task.projectId) === String(frame.chatId)) {
+            agentTaskViews.set(task.id, task);
+          }
+        }
+      }
       if ((frame.type === "context.result" || frame.type === "context.updated" || frame.type === "context.changed")
         && frame.context && typeof frame.context === "object" && !Array.isArray(frame.context)) {
         const context = frame.context as Record<string, unknown>;
@@ -3754,6 +3913,75 @@ export async function runJsonLineSession(
             projectId,
             chatId,
           });
+        } else if (command.type === "git.integration.preview"
+          || command.type === "git.integration.integrate") {
+          const { chatId, request } = gitIntegrationRequestFor(command);
+          if (command.type === "git.integration.preview") {
+            const preview = previewTaskIntegration(request);
+            emit({
+              source: "control",
+              id: command.id,
+              ok: true,
+              integration: "preview",
+              projectId: request.projectId,
+              chatId,
+              taskId: request.taskId,
+              blocked: preview.status === "blocked",
+              preview: shareableGitIntegrationPreview(preview),
+            });
+          } else {
+            if (!loadProjectKeyForEncryption(paths.projectKeys, request.projectId)) {
+              throw new Error("Git integration requires an encrypted project for the shared artifact");
+            }
+            try {
+              const result = integrateTask(request);
+              const publication = await publishGitIntegrationArtifact(
+                request.projectId,
+                chatId,
+                result.artifact,
+                result.preview,
+                controlRequestId(command.id),
+              );
+              emit({
+                source: "control",
+                id: command.id,
+                ok: true,
+                integration: "integrated",
+                projectId: request.projectId,
+                chatId,
+                taskId: request.taskId,
+                commit: result.commit,
+                queued: publication.queued,
+                artifactId: result.artifact.artifactId,
+                preview: shareableGitIntegrationPreview(result.preview),
+                artifact: result.artifact,
+              });
+            } catch (error) {
+              if (!(error instanceof GitIntegrationBlockedError)) throw error;
+              const publication = await publishGitIntegrationArtifact(
+                request.projectId,
+                chatId,
+                error.artifact,
+                error.preview,
+                controlRequestId(command.id),
+              );
+              emit({
+                source: "control",
+                id: command.id,
+                ok: false,
+                integration: "revision-required",
+                blocked: true,
+                projectId: request.projectId,
+                chatId,
+                taskId: request.taskId,
+                error: error.message,
+                queued: publication.queued,
+                artifactId: error.artifact.artifactId,
+                preview: shareableGitIntegrationPreview(error.preview),
+                artifact: error.artifact,
+              });
+            }
+          }
         } else if (command.type === "project.key.get") {
           const projectId = String(command.projectId);
           projectKeySubscriptions.add(projectId);

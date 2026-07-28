@@ -440,3 +440,156 @@ plugin, explicit permission gate, package integration, and plaintext-free
 dispatch are verified; a visible operating-system toast remains manual
 user-observed acceptance. All artifacts remain unsigned private-alpha outputs
 and are not approved for publication while broader product gaps remain.
+
+## Git integration slice rebuild and packaged ownership verification - 2026-07-28
+
+The fresh source gates after the explicit Git preview/integration workflow were:
+
+```text
+complete repository: 4,265 passed, 4 skipped, 0 failed
+complete repository expectations: 21,696 across 359 files
+explicit CoCodex: 178 passed, 0 failed, 2,061 expectations
+CoCodex TypeScript: exit 0
+GUI lint: 0 errors, one pre-existing hook warning
+GUI production build: exit 0
+privacy scan: exit 0
+Rust: 2 passed, 0 failed
+Clippy -D warnings: exit 0
+```
+
+`bun run build:tauri` exited `0`, compiled the 629-module sidecar, built the
+150-module GUI, and produced fresh MSI and NSIS bundles.
+
+Fresh artifact identities:
+
+```text
+NSIS installer
+  30,548,379 bytes
+  SHA-256 19B1A9FE2368E8B760940F2E6D22FBAD0FFD417E1E97AE6214F9FECDDC7ABE0D
+
+MSI installer
+  43,872,256 bytes
+  SHA-256 DF52C0E0588FF58157D5B5B723BA09EBFC4CF7EBF32177C0A332A45B44990967
+
+Bundled runtime
+  104,830,464 bytes
+  SHA-256 78FDFB51D040A240FCE0DED04E0CE5EA67C6AD62377DC1E4558C941DE7931EB3
+
+Release desktop executable
+  11,850,240 bytes
+  SHA-256 04BA3960159A45FC77EE8804CD8A60B54EBA7ABB3904151EFE34B1DEB26FB6DA
+
+NSIS-installed desktop payload
+  11,850,240 bytes
+  SHA-256 4A1D1031E84FCB850BBB4D71A5ED8BBF54B300600D4BB6BE0F838843CC1D9055
+
+MSI-extracted desktop payload
+  11,850,240 bytes
+  SHA-256 96129C1DDA1DDA787562CF714C4A8C863645DA0E1FE56EEA432E9ED53D6FF805
+```
+
+The NSIS installer completed a fresh isolated silent install with exit `0`.
+The installed desktop was launched with isolated `APPDATA`, `LOCALAPPDATA`,
+`CODEX_HOME`, `OPENCODEX_HOME`, and `COCODEX_HOME` roots while foreign PID
+3704 owned `127.0.0.1:10100`. Its log recorded:
+
+```text
+foreign compatible runtime rejected pid=3704; showing disconnected interface
+```
+
+Its only direct child was WebView2, the bundled-runtime count was zero, and
+closing the exact desktop PID left PID 3704 listening. Silent uninstall exited
+`0` and removed the isolated install root.
+
+Fresh MSI administrative extraction exited `0`. The extracted runtime hash
+matched the bundled runtime exactly. The extracted desktop likewise launched
+only WebView2, matched the foreign-owner rejection log, started zero bundled
+runtimes, and left PID 3704 as the port owner after exact desktop cleanup. The
+MSI extraction root was removed.
+
+These artifacts are fresh evidence for this source revision, but remain
+unsigned private-alpha outputs and do not establish completion of the broader
+product brief.
+## Current resident/UI Git slice build and package smoke - 2026-07-28
+
+This is the current artifact set after the resident Client/GUI Git integration
+wiring and all listed release gates:
+
+NSIS installer
+  30,560,370 bytes
+  SHA-256 28A1E20370B08C6B96CC55B0C2739C2991FBF4BE40DF4C81D560E3EA8383E523
+
+MSI installer
+  43,876,352 bytes
+  SHA-256 0F6FF5466999ACB2B392F3162A6D5EF8436E60F2641285E12DB670C57CEA9FFB
+
+Bundled runtime
+  104,850,944 bytes
+  SHA-256 83F522E46FC34EDBD95448941EC73ADC576F51E758F79546340C847C0695066A
+
+Release desktop executable
+  11,851,264 bytes
+  SHA-256 0D83260A23764749993F633F5A26AAD1400440BC2CCBC14A83D3E5E492C1FF2E
+
+Fresh NSIS silent installation exited 0. Its installed desktop payload had
+SHA-256 B889C54F569B11ABDD29132E7CCC10372DA8C9522F5763F93BAC0CC6768C4FDB.
+Launching with isolated app-state roots while foreign PID 3704 owned
+127.0.0.1:10100 produced only an Edge WebView2 direct child and logged:
+
+foreign compatible runtime rejected pid=3704; showing disconnected interface
+
+The exact smoke PID was stopped only after verifying its executable path, the
+silent uninstall exited 0, and the temporary NSIS root was removed. PID 3704
+remained the listener.
+
+Fresh MSI administrative extraction exited 0. The extracted desktop payload had
+SHA-256 FE81FD984F1A1F2668205AE55A924C0AD2A908452CAE69B4DDC230F6A95A63D5.
+The extracted cocodex-runtime.exe had SHA-256
+83F522E46FC34EDBD95448941EC73ADC576F51E758F79546340C847C0695066A,
+matching the bundled runtime exactly. Its exact smoke PID had only an Edge
+WebView2 child, started zero cocodex-runtime*.exe processes, logged the same
+foreign-owner rejection, and left PID 3704 as port owner. The temporary MSI
+root was removed. No foreign listener or pre-existing msiexec.exe was stopped.
+
+Post-smoke home verification: the installed opencodex-proxy scheduled task was
+Running, /healthz returned status ok, codexAccountMode remained direct, and
+PID 3704 still resolved to the user-installed OpenCodex Bun executable. The
+desktop repair shortcut remained present and targeted
+C:\Users\Stephen\.opencodex\repair-codex.ps1.
+## Final source/package freeze and ownership smoke - 2026-07-28
+
+Final artifacts after the final full regression and final dedicated CoCodex
+gate:
+
+NSIS installer
+  30,540,912 bytes
+  SHA-256 C27E6CE031A9FFE165851F1001641B6BBBD40560D0271C1702A41BC9998849FE
+
+MSI installer
+  43,872,256 bytes
+  SHA-256 8DD85F21C7BC9C903117C74C2393A4CD50EAF8CA3B11C45B129B82F6859C3D5E
+
+Bundled runtime
+  104,850,944 bytes
+  SHA-256 83F522E46FC34EDBD95448941EC73ADC576F51E758F79546340C847C0695066A
+
+Release desktop executable
+  11,851,264 bytes
+  SHA-256 D3790CAC4EF8D52BC4320EC6688FAF2AFF34CC66485E82B61258EA21A70CE6CA
+Final NSIS smoke: silent installation exit 0; installed desktop payload SHA-256
+2E483DB1DD07C004E550B9218EF1C79CB23E8EF08AA9DF2515C512B068C926F7; zero
+cocodex-runtime child processes; only Edge WebView2 as a direct child; foreign
+PID 3704 rejection logged; port owner remained 3704; exact smoke PID was
+stopped by path and silent uninstall removed the temporary root.
+
+Final MSI smoke: administrative extraction exit 0; extracted desktop payload
+SHA-256 05727998044FE46A95E1DEF000905C4E7F1A0D06F3A621A55EE9936EA41EAB58;
+extracted runtime SHA-256 83F522E46FC34EDBD95448941EC73ADC576F51E758F79546340C847C0695066A,
+matching the bundled runtime; zero bundled runtime processes; only Edge
+WebView2 as a direct child; foreign PID 3704 rejection logged; port owner
+remained 3704; extraction root removed. No foreign listener or pre-existing
+msiexec.exe was stopped.
+
+Final home check: opencodex-proxy scheduled task Running, /healthz status ok,
+codexAccountMode direct, Repair Codex.lnk present and targeting the protected
+repair script. Temporary smoke roots remaining: 0.

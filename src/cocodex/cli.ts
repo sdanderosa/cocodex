@@ -52,6 +52,13 @@ import {
   summarizeOpenCodexImportPlan,
 } from "./opencodex-import";
 import { runLocalCodexTurn } from "./local-codex";
+import {
+  GitIntegrationBlockedError,
+  integrateTask,
+  previewTaskIntegration,
+  type GitIntegrationPeer,
+  type GitIntegrationRequest,
+} from "./git-integration";
 
 function option(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -82,6 +89,28 @@ function nextFrame(socket: WebSocket, type: string): Promise<Record<string, unkn
     socket.addEventListener("message", listener);
   });
 }
+function gitIntegrationRequest(): GitIntegrationRequest {
+  const peersPath = option("--peers-file");
+  let peers: GitIntegrationPeer[] | undefined;
+  if (peersPath) {
+    const parsed: unknown = JSON.parse(readFileSync(peersPath, "utf8"));
+    if (!Array.isArray(parsed)) throw new Error("--peers-file must contain a JSON array");
+    peers = parsed as GitIntegrationPeer[];
+  }
+  return {
+    taskId: required("--task"),
+    projectId: required("--project"),
+    agentId: required("--agent"),
+    repositoryRoot: required("--repository"),
+    worktreePath: required("--worktree"),
+    branch: required("--branch"),
+    baseCommit: required("--base-commit"),
+    mergeTarget: required("--merge-target"),
+    expectedTargetCommit: required("--expected-target-commit"),
+    peers,
+  };
+}
+
 async function run(): Promise<void> {
   const paths = clientPaths(option("--state-root"));
   switch (Bun.argv[2] ?? "help") {
@@ -443,6 +472,20 @@ async function run(): Promise<void> {
       socket.close();
       return;
     }
+    case "git-preview": {
+      console.log(JSON.stringify(previewTaskIntegration(gitIntegrationRequest()), null, 2));
+      return;
+    }
+    case "git-integrate": {
+      try {
+        console.log(JSON.stringify(integrateTask(gitIntegrationRequest()), null, 2));
+      } catch (error) {
+        if (!(error instanceof GitIntegrationBlockedError)) throw error;
+        console.error(JSON.stringify({ integrated: false, preview: error.preview, artifact: error.artifact }, null, 2));
+        process.exitCode = 2;
+      }
+      return;
+    }
     case "session": {
       await runJsonLineSession(paths);
       return;
@@ -566,6 +609,8 @@ Usage:
   cocodex private-listen --trust-fingerprint FP [--after SEQUENCE] [--state-root PATH]
   cocodex chat-send --project ID --message TEXT [--state-root PATH]
   cocodex request-agent --project ID --agent ID --prompt TEXT [--state-root PATH]
+  cocodex git-preview --task ID --project ID --agent ID --repository PATH --worktree PATH --branch NAME --base-commit SHA --merge-target NAME --expected-target-commit SHA [--peers-file JSON]
+  cocodex git-integrate --task ID --project ID --agent ID --repository PATH --worktree PATH --branch NAME --base-commit SHA --merge-target NAME --expected-target-commit SHA [--peers-file JSON]
   cocodex connect [--json-lines] [--state-root PATH]
 
 Short alias: ccx`);
@@ -573,7 +618,7 @@ Short alias: ccx`);
 }
 
 run().then(
-  () => process.exit(0),
+  () => process.exit(process.exitCode ?? 0),
   error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

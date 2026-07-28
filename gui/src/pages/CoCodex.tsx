@@ -220,6 +220,46 @@ interface Artifact {
   updatedAt: string;
 }
 
+interface GitIntegrationPreviewView {
+  status: "ready" | "blocked";
+  taskId: string;
+  projectId: string;
+  agentId: string;
+  branch: string;
+  baseCommit: string;
+  mergeTarget: string;
+  expectedTargetCommit: string;
+  currentTargetCommit: string;
+  changedFiles: string[];
+  conflicts: string[];
+  overlaps: Array<{ taskId: string; branch: string; files: string[] }>;
+  blockedReasons: string[];
+}
+
+interface GitIntegrationArtifactView {
+  status: "integrated" | "revision-required";
+  artifactId: string;
+  projectId: string;
+  taskId: string;
+  agentId: string;
+  branch: string;
+  mergeTarget: string;
+  baseCommit: string;
+  targetCommit: string;
+  integrationCommit: string | null;
+  changedFiles: string[];
+  conflicts: string[];
+  overlaps: Array<{ taskId: string; branch: string; files: string[] }>;
+  revision: number;
+  createdAt: string;
+}
+
+interface GitIntegrationState {
+  status: "ready" | "blocked" | "integrated" | "revision-required";
+  preview?: GitIntegrationPreviewView;
+  artifact?: GitIntegrationArtifactView;
+  error?: string;
+}
 export interface FileReference {
   referenceId: string;
   projectId: string;
@@ -326,6 +366,12 @@ interface SessionValue {
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
+  integration?: "preview" | "integrated" | "revision-required";
+  blocked?: boolean;
+  preview?: GitIntegrationPreviewView;
+  artifact?: GitIntegrationArtifactView;
+  commit?: string;
+  queued?: boolean;
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
   senderDeviceId?: string;
@@ -551,6 +597,93 @@ export function TaskDependencyGraph({
     })}
   </div>;
 }
+export function GitIntegrationReview({
+  tasks,
+  integrations,
+  localDeviceId,
+  connected,
+  locked,
+  onPreview,
+  onIntegrate,
+}: {
+  tasks: AgentTaskView[];
+  integrations: Record<string, GitIntegrationState>;
+  localDeviceId?: string;
+  connected: boolean;
+  locked: boolean;
+  onPreview: (taskId: string) => void;
+  onIntegrate: (taskId: string, expectedTargetCommit: string) => void;
+}) {
+  const t = useT();
+  const candidates = tasks.filter(task =>
+    task.status === "completed"
+    && task.targetDeviceId === localDeviceId
+    && task.workspaceMode === "git-worktree");
+  if (!candidates.length) return null;
+  return (
+    <section className="cocodex-agents cocodex-git-integration">
+      <div className="cocodex-section-head">
+        <div>
+          <strong>{t("cocodex.gitIntegration.title")}</strong>
+          <small>{t("cocodex.gitIntegration.subtitle")}</small>
+        </div>
+        <IconKey />
+      </div>
+      <div className="cocodex-agent-list">
+        {candidates.map(task => {
+          const state = integrations[task.id];
+          const preview = state?.preview;
+          const ready = preview?.status === "ready";
+          const integrated = state?.status === "integrated";
+          return (
+            <article
+              className={"cocodex-agent-card cocodex-git-integration-card status-" + (state?.status ?? "unreviewed")}
+              key={task.id} data-status={state?.status ?? "unreviewed"}>
+              <div className="cocodex-agent-card-head">
+                <span className={"cocodex-agent-status status-" + (integrated ? "completed" : ready ? "available" : "queued")}
+                  aria-hidden="true" />
+                <strong>{task.agentName}</strong>
+                <small>{task.branch ?? t("cocodex.gitIntegration.worktree")}</small>
+              </div>
+              <code>{task.id.slice(0, 12)}</code>
+              {!preview && <small>{t("cocodex.gitIntegration.notReviewed")}</small>}
+              {preview && <small>
+                {preview.status === "ready" ? t("cocodex.gitIntegration.ready") : t("cocodex.gitIntegration.blocked")}
+                {" · "}{preview.changedFiles.length} {t(preview.changedFiles.length === 1 ? "cocodex.gitIntegration.changedFile" : "cocodex.gitIntegration.changedFiles")}
+              </small>}
+              {preview?.blockedReasons.length ? (
+                <small className="cocodex-git-integration-blockers">
+                  {t("cocodex.gitIntegration.blockers", { reasons: preview.blockedReasons.join(", ") })}
+                </small>
+              ) : null}
+              {state?.artifact && <small>
+                {state.artifact.status === "integrated"
+                  ? t("cocodex.gitIntegration.integratedAt", { commit: state.artifact.integrationCommit?.slice(0, 12) ?? "unknown" })
+                  : t("cocodex.gitIntegration.revisionArtifact")}
+              </small>}
+              {state?.error && <small className="cocodex-git-integration-blockers">{state.error}</small>}
+              <div className="cocodex-git-integration-actions">
+                <button className="btn btn-ghost" type="button"
+                  disabled={!connected || locked}
+                  onClick={() => onPreview(task.id)}>
+                  {preview ? t("cocodex.gitIntegration.refresh") : t("cocodex.gitIntegration.review")}
+                </button>
+                {ready && !integrated && (
+                  <button className="btn btn-primary" type="button"
+                    disabled={!connected || locked}
+                    onClick={() => onIntegrate(task.id, preview.expectedTargetCommit)}>
+                    {t("cocodex.gitIntegration.integrate")}
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function ChatTimeline({
   messages,
   tasks,
@@ -765,6 +898,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [agents, setAgents] = useState<AgentView[]>([]);
   const [tasks, setTasks] = useState<AgentTaskView[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [gitIntegrations, setGitIntegrations] = useState<Record<string, GitIntegrationState>>({});
   const [fileReferences, setFileReferences] = useState<FileReference[]>([]);
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([]);
   const [artifactTitle, setArtifactTitle] = useState("");
@@ -921,6 +1055,30 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         setAgentWorkspace("");
         void loadStatus();
       }
+      if (value?.source === "control"
+        && (value.integration === "preview"
+          || value.integration === "integrated"
+          || value.integration === "revision-required")
+        && typeof value.taskId === "string" && value.preview) {
+        const preview = value.preview;
+        const integrationStatus = value.integration === "preview"
+          ? preview.status
+          : value.integration;
+        setGitIntegrations(previous => ({
+          ...previous,
+          [value.taskId!]: {
+            status: integrationStatus,
+            preview,
+            ...(value.artifact ? { artifact: value.artifact } : {}),
+            ...(typeof value.error === "string" ? { error: value.error } : {}),
+          },
+        }));
+        if (value.integration === "integrated") {
+          setNotice(t("cocodex.gitIntegration.completedNotice"));
+        } else if (value.integration === "revision-required") {
+          setNotice(t("cocodex.gitIntegration.blockedNotice"));
+        }
+      }
       const safelyCreatedProject = projectCreatedFromControl(value);
       if (safelyCreatedProject) {
         const nextProject = safelyCreatedProject;
@@ -1046,6 +1204,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           setAgents([]);
           setTasks([]);
           setArtifacts([]);
+          setGitIntegrations({});
           setFileReferences([]);
           setSelectedArtifactIds([]);
           dispatchReferenceArtifactSelection({ type: "project-changed" });
@@ -1336,6 +1495,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     setFinalGoalDraft("");
     setTasks([]);
     setArtifacts([]);
+    setGitIntegrations({});
     setFileReferences([]);
     setSelectedArtifactIds([]);
     dispatchReferenceArtifactSelection({ type: "project-changed" });
@@ -1707,6 +1867,26 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const previewGitIntegration = useCallback((taskId: string) => {
+    if (!projectId || !chatId) return;
+    void command({
+      type: "git.integration.preview",
+      projectId,
+      chatId,
+      taskId,
+    }).catch(error => setNotice(error instanceof Error ? error.message : String(error)));
+  }, [chatId, command, projectId]);
+
+  const integrateGitIntegration = useCallback((taskId: string, expectedTargetCommit: string) => {
+    if (!projectId || !chatId || !expectedTargetCommit) return;
+    void command({
+      type: "git.integration.integrate",
+      projectId,
+      chatId,
+      taskId,
+      expectedTargetCommit,
+    }).catch(error => setNotice(error instanceof Error ? error.message : String(error)));
+  }, [chatId, command, projectId]);
   const publishArtifact = async (event: FormEvent) => {
     event.preventDefault();
     if (!projectId) return;
@@ -2620,6 +2800,10 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </div>
               <div className="cocodex-agent-list">
                 <TaskDependencyGraph tasks={visibleTasks} artifacts={visibleArtifacts} />
+                <GitIntegrationReview tasks={visibleTasks} integrations={gitIntegrations}
+                  localDeviceId={status.deviceId} connected={status.state === "connected"}
+                  locked={selectedProjectLocked} onPreview={previewGitIntegration}
+                  onIntegrate={integrateGitIntegration} />
               </div>
             </section>
             </>}

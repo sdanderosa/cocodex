@@ -381,6 +381,35 @@ describe("CoCodex GUI bridge", () => {
       type: "agent.task.list",
       projectId: crypto.randomUUID(),
     }).accepted).toBe(true);
+    const integrationProjectId = crypto.randomUUID();
+    const integrationChatId = crypto.randomUUID();
+    const integrationTaskId = crypto.randomUUID();
+    expect(bridge.command({
+      type: "git.integration.preview",
+      projectId: integrationProjectId,
+      chatId: integrationChatId,
+      taskId: integrationTaskId,
+    }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "git.integration.integrate",
+      projectId: integrationProjectId,
+      chatId: integrationChatId,
+      taskId: integrationTaskId,
+      expectedTargetCommit: "0123456789abcdef0123456789abcdef01234567",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "git.integration.integrate",
+      projectId: integrationProjectId,
+      chatId: integrationChatId,
+      taskId: integrationTaskId,
+    })).toThrow("Invalid Git integration command");
+    expect(() => bridge.command({
+      type: "git.integration.preview",
+      projectId: integrationProjectId,
+      chatId: integrationChatId,
+      taskId: integrationTaskId,
+      repositoryRoot: "renderer-controlled-path",
+    })).toThrow("Invalid Git integration command");
     const referenceProjectId = crypto.randomUUID();
     const referenceArtifactId = crypto.randomUUID();
     expect(bridge.command({
@@ -441,6 +470,10 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "git.integration.preview"
+      && value.taskId === integrationTaskId)).toBe(true);
+    expect(received.some((value: any) => value.type === "git.integration.integrate"
+      && value.expectedTargetCommit === "0123456789abcdef0123456789abcdef01234567")).toBe(true);
     expect(received.some((value: any) => value.type === "presence.update"
       && value.projectId === presenceProjectId
       && value.relativeCaret?.anchor === "AQIDBA=="

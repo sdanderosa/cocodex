@@ -30,9 +30,9 @@ Status meanings:
 | Shared prompt/presence/cursors | Partial | Yjs merge, stable RelativePositions, batching, reconnect, pointer/caret/typing transport | Rich inline remote caret/selection overlay and one-run exactly-two-cursor proof |
 | Named agents/direct remote control | Proven | Signed immutable definitions, host leases, trusted control, independent workers and queues | Persistent rich activity history and task editing |
 | Runtime sessions/context independence | Proven | Durable scoped CLI resume, reset boundaries, controlled rotation and live cache metrics | Official-session open/status affordance in UI |
-| Task dependencies/artifacts | Proven for authority and visibility | Server dependency gate, encrypted artifacts, Lucas-Angela-Sue handoff, new compact dependency graph | Git integration/conflict workflow remains |
+| Task dependencies/artifacts | Partial, with resident Client/GUI Git integration slice | Server dependency gate, encrypted artifacts, Lucas-Angela-Sue handoff, compact dependency graph, real Git preview/merge/revision tests, encrypted commit/review publication | Include the workflow in the single 70-step run |
 | Co-agents | Partial | Signed model/effort/concurrency config and CLI-enforced concurrent-thread limit | Maximum total spawns, provider/tool/file/network allowlists, live child IDs/status/results/artifacts |
-| Git worktrees | Partial | Per-task locked branches/worktrees, dirty/detached refusal, ownership report | Overlap detection, tests, merge/conflict/revision/integration artifact workflow |
+| Git worktrees | Partial | Per-task locked branches/worktrees, dirty/detached refusal, ownership report, overlap/conflict/revision/integration tests, resident review controls | Include the full workflow in the single 70-step run and complete broader product acceptance |
 | Full Computer | Proven for host-user mode | Explicit opt-in, durable emergency controls, `danger-full-access` mapping and real fixture evidence | Resource locks outside Git |
 | Elevated helper | Missing | ADR 0021 explicitly excludes it | Separate privileged app, install/enable lifecycle, signed local-only requests, confirmation policy |
 | Official browser capability | Missing/partial preservation | Tasks run through official Codex CLI and user config is preserved | Detect support, status/events, disabled/watch/shared-control UX, privacy-safe summaries |
@@ -58,7 +58,7 @@ Status meanings:
 | 21-26 Sue/Lucas/Angela definitions, models, co-agent config, final goal | Proven | Three-process fixtures verify host/model/effort/concurrency definitions and final goal |
 | 27-31 direct Lucas/Sue execution and idle Angela | Proven | Host-local markers and no-start-before-instruction checks |
 | 32-35 Angela consumes Lucas, chronological activity, independent concurrent contexts | Proven | Barrier-based concurrent agents, artifact input and persistent isolated CLI sessions; chat-first timeline tests |
-| 36-39 Lucas/Angela/Sue artifact chain and integration | Partial | Encrypted artifact chain is proven; Sue consumes both, but a real Git merge/integration workflow is not |
+| 36-39 Lucas/Angela/Sue artifact chain and integration | Partial | Encrypted artifact chain, explicit Git preview/merge/revision workflow, encrypted integration artifacts, and GUI controls are proven separately | Exercise the complete chain in the one uninterrupted scenario |
 | 40-41 same authoritative history and separate usage | Proven | Server history and signed per-device usage reports |
 | 42-48 private exchange, ciphertext, local decrypt, isolation and explicit Sue share | Proven for text/single-device sealed boxes | Does not satisfy mature ratchet/multi-device/attachment requirements |
 | 49-52 Sue Full Computer and Server-only routing | Proven | Explicit host-user full-computer fixture; not elevated-helper mode |
@@ -71,9 +71,17 @@ Status meanings:
 The current private-alpha foundation is substantial and tested, but the
 authoritative product is not complete. The missing mature ratchet, private
 attachments/multi-device fan-out, elevated helper, browser-control surface,
-Git integration workflow, Server service/update path, signed distribution, and
+Server service/update path, signed distribution, and
 single uninterrupted 70-step acceptance run are release blockers.
 
 The NSIS/MSI hashes recorded before the task-graph slice are now stale relative
 to the current GUI source. They remain historical evidence only and must be
 rebuilt after the next release-candidate freeze.
+
+## Current Git/UI slice correction - 2026-07-28
+
+The resident Client now publishes integration outcomes through the existing
+encrypted Server artifact route, and the GUI exposes explicit review/integrate
+controls. The remaining gap is inclusion in the single uninterrupted 70-step
+scenario, not a missing Server/GUI publication path. The broader product
+release blockers listed above remain binding.
