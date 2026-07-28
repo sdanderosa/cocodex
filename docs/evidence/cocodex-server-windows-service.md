@@ -181,3 +181,50 @@ git diff --check: passed
 The known lint warning remains
 `gui/src/use-app-route-state.ts:84` for `applyHashAction`; it predates this
 slice and is not represented as fixed.
+
+
+## Clean-commit installed-package evidence
+
+The feature commit used for package validation is:
+
+```text
+commit: a5e84476ad5e94cf00d1b838c45471c09ac62bea
+tree:   d5de11bf2bc29779554a891084c17ebd0fbb339f
+```
+
+The strict clean-tree builder produced:
+
+```text
+archive: sdanderosa-cocodex-0.1.0-alpha.1.tgz
+SHA-256: 09dd139701900f2616f4eb310653e6a5fcc0c22dd4f3ee3d4497903313aa3c9c
+```
+
+The archive contains `bin/ccx-server.mjs` and
+`apps/cocodex-server/src/windows-service.ts`. A raw npm dependency install
+was intentionally rejected by the installed-tree verifier when npm ignored
+nested package overrides and selected an unlocked transitive dependency. The
+temporary prefix was cleaned; no drift was accepted.
+
+The authoritative `Install-CoCodex.ps1` path then wrote the root override
+contract, installed and verified all 126 locked dependencies with Node
+24.18.0/npm 11.16.0, and passed the installed lifecycle verifier:
+
+```text
+local runtime: port 53470, service opencodex, GUI HTTP 200
+standalone Server: port 53496
+initial Server PID: 32872
+restarted Server PID: 34344
+stopped status: true
+state-preserving uninstall: passed
+temporary prefix removed: true
+```
+
+That first installed-verifier attempt also exposed that verifier-owned
+`ocx stop` consulted the user's real service metadata. The verifier now
+retains the exact launcher subprocess and applies bounded SIGTERM/SIGKILL only
+to that owned process. Its source-contract test forbids global
+`run(ocx, ["stop"])`. The successful installed pass above ran with the
+user's foreign home service still present and did not stop it.
+
+
+The final post-verifier complete repository rerun passed 4,265 tests with 4 skips, 0 failures, and 21,704 expectations across 359 files.
