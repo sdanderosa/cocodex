@@ -86,7 +86,7 @@ describe("standalone CoCodex Server process", () => {
       tls: { rejectUnauthorized: false },
     });
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, service: "cocodex-server", protocol: 1 });
+    expect(await health.json()).toEqual({ ok: true, service: "cocodex-server", protocol: 1, processId: child.pid });
 
     const unauthorized = await fetch(`https://127.0.0.1:${port}/v1/admin/status`, {
       tls: { rejectUnauthorized: false },

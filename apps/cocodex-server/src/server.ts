@@ -783,7 +783,7 @@ export function startCoCodexServer(
     async fetch(request, bunServer) {
       const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/healthz") {
-        return json({ ok: true, service: "cocodex-server", protocol: 1 });
+        return json({ ok: true, service: "cocodex-server", protocol: 1, processId: process.pid });
       }
       if (request.method === "GET" && url.pathname === "/v1/server-info") {
         return json({

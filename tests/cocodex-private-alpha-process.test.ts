@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
+import { decodeInvitation } from "@cocodex/protocol";
 
 const root = resolve(import.meta.dir, "..");
 const bun = resolve(root, "node_modules/bun/bin/bun.exe");
@@ -29,18 +30,18 @@ afterEach(async () => {
   }
   Bun.gc(true);
   for (const directory of temporaryRoots.splice(0)) {
-    for (let attempt = 0; attempt < 30; attempt += 1) {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       try {
         rmSync(directory, { recursive: true, force: true });
         break;
       } catch (error) {
-        if (attempt === 29) throw error;
-        await Bun.sleep(50);
+        if (attempt === 299) throw error;
+        await Bun.sleep(100);
       }
     }
   }
   if (process.platform === "win32") await Bun.sleep(1_000);
-});
+}, 45_000);
 
 async function run(command: string, args: string[], env: Record<string, string | undefined> = {}) {
   const child = Bun.spawn([command, ...args], {
@@ -58,6 +59,26 @@ async function run(command: string, args: string[], env: Record<string, string |
   if (exitCode !== 0) throw new Error(`${command} ${args.join(" ")} failed (${exitCode}): ${stderr || stdout}`);
   if (process.platform === "win32") await Bun.sleep(100);
   return stdout.trim();
+}
+
+async function runResult(
+  command: string,
+  args: string[],
+  env: Record<string, string | undefined> = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const child = Bun.spawn([command, ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+    windowsHide: true,
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
 function collectLines(
@@ -111,6 +132,18 @@ function startResident(command: string, args: string[], env: Record<string, stri
 
 function processEnv(): Record<string, string | undefined> {
   return { ...process.env };
+}
+
+function reservePort(): number {
+  const reservation = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("reserved"),
+  });
+  const port = reservation.port;
+  reservation.stop(true);
+  if (port === undefined) throw new Error("Bun did not allocate a transfer port");
+  return port;
 }
 
 async function waitFor(
@@ -207,10 +240,10 @@ async function buildArtifacts(serverExe: string, clientExe: string, fixtureExe: 
 }
 
 describe("three-process CoCodex private alpha", () => {
-  test("two resident clients recover chat, local execution, and private ciphertext across restart", async () => {
+  test("runs the authoritative 70-step three-process acceptance scenario without replacing resident clients", async () => {
     const temp = mkdtempSync(join(tmpdir(), "cocodex-private-alpha-"));
     temporaryRoots.push(temp);
-    const serverRoot = join(temp, "server");
+    let serverRoot = join(temp, "server");
     const stephenRoot = join(temp, "stephen");
     const kaiRoot = join(temp, "kai");
     const stephenWorkspace = join(temp, "stephen-workspace");
@@ -241,9 +274,9 @@ describe("three-process CoCodex private alpha", () => {
     await waitFor(server, line => line.ready === true);
 
     const enroll = async (name: string, stateRoot: string) => {
-      const invitation = await run(serverExe, ["invite", "--state-root", serverRoot]);
+      const invitationCode = await run(serverExe, ["invite", "--state-root", serverRoot]);
       const result = JSON.parse(await run(clientExe, [
-        "enroll", "--invite", invitation, "--name", name, "--state-root", stateRoot,
+        "enroll", "--invite", invitationCode, "--name", name, "--state-root", stateRoot,
       ]));
       const devices = JSON.parse(await run(serverExe, ["devices", "--state-root", serverRoot]));
       const device = devices.find((item: any) => item.id === result.deviceId);
@@ -251,10 +284,12 @@ describe("three-process CoCodex private alpha", () => {
         ...device,
         verificationPhrase: result.verificationPhrase,
         approvalExpiresAt: result.approvalExpiresAt,
+        invitationCode,
       } as {
         id: string;
         fingerprint: string;
         verificationPhrase: string;
+        invitationCode: string;
         approvalExpiresAt: string;
       };
     };
@@ -269,6 +304,37 @@ describe("three-process CoCodex private alpha", () => {
     });
     await waitFor(stephen, line => line.source === "session" && line.state === "connected");
     const kaiDevice = await enroll("Kai", kaiRoot);
+    const replayRoot = join(temp, "invitation-replay");
+    const replay = await runResult(clientExe, [
+      "enroll", "--invite", kaiDevice.invitationCode, "--name", "Kai", "--state-root", replayRoot,
+    ]);
+    expect(replay.exitCode).not.toBe(0);
+    expect(replay.stderr).toContain("already used");
+
+    const outsiderRoot = join(temp, "outsider");
+    const outsider = await runResult(clientExe, [
+      "connect", "--json-lines", "--state-root", outsiderRoot,
+    ]);
+    expect(outsider.exitCode).not.toBe(0);
+    expect(outsider.stderr).toMatch(/connection\.json|not enrolled/i);
+
+    const copiedToken = await run(serverExe, ["invite", "--state-root", serverRoot]);
+    const copiedInvitation = decodeInvitation(copiedToken);
+    const copiedTokenUrl = "https://" + copiedInvitation.host + ":"
+      + copiedInvitation.port + "/v1/enroll";
+    const copiedTokenResponse = await fetch(copiedTokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        invitationCode: copiedToken,
+        displayName: "Kai",
+      }),
+      tls: { rejectUnauthorized: false },
+    });
+    expect(copiedTokenResponse.status).toBe(400);
+    const copiedTokenError = await copiedTokenResponse.json() as { error: string };
+    expect(copiedTokenError.error).toContain("signature");
+
     const pendingKai = await waitFor(stephen, line => line.source === "device-approvals"
       && line.devices?.some((device: any) => device.deviceId === kaiDevice.id));
     const safeKai = pendingKai.devices.find((device: any) => device.deviceId === kaiDevice.id);
@@ -304,6 +370,23 @@ describe("three-process CoCodex private alpha", () => {
       CODEX_RUNTIME_MARKER: JSON.stringify({ allowFullComputer: true }),
     });
     await waitFor(kai, line => line.source === "session" && line.state === "connected");
+    const impostorRoot = join(temp, "kai-impostor");
+    mkdirSync(impostorRoot, { recursive: true });
+    copyFileSync(join(kaiRoot, "connection.json"), join(impostorRoot, "connection.json"));
+    const impostor = startResident(
+      clientExe,
+      ["connect", "--json-lines", "--state-root", impostorRoot],
+    );
+    const impostorDeadline = Date.now() + 10_000;
+    while (impostor.errors.length === 0 && Date.now() < impostorDeadline) {
+      await Bun.sleep(25);
+    }
+    expect(impostor.errors.join(" | ")).toContain("Invalid device proof");
+    if (impostor.process.exitCode === null) impostor.process.kill("SIGKILL");
+    await impostor.process.exited;
+    residents.splice(residents.indexOf(impostor), 1);
+    traceCheckpoint("invitation replay and three outsider paths rejected");
+
     const [stephenContacts, kaiContacts] = await Promise.all([
       waitFor(stephen, line => line.source === "private-contacts"
         && line.contacts?.some((contact: any) => contact.deviceId === kaiDevice.id)),
@@ -561,6 +644,49 @@ describe("three-process CoCodex private alpha", () => {
       waitFor(stephen, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === subS),
       waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === subK),
     ]);
+
+    const stephenPresenceRequest = randomUUID();
+    const kaiPresenceRequest = randomUUID();
+    const presenceCheckpointS = stephen.lines.length;
+    const presenceCheckpointK = kai.lines.length;
+    stephen.send({
+      id: stephenPresenceRequest,
+      type: "presence.update",
+      projectId: project.id,
+      chatId: project.id,
+      cursor: { x: 0.2, y: 0.4 },
+      caret: { anchor: 3, head: 3 },
+      typing: true,
+    });
+    kai.send({
+      id: kaiPresenceRequest,
+      type: "presence.update",
+      projectId: project.id,
+      chatId: project.id,
+      cursor: { x: 0.7, y: 0.6 },
+      caret: { anchor: 8, head: 8 },
+      typing: true,
+    });
+    const [stephenPresenceAccepted, kaiPresenceAccepted, kaiCursorAtStephen, stephenCursorAtKai] = await Promise.all([
+      waitForAfter(stephen, presenceCheckpointS, line => line.frame?.type === "presence.accepted"
+        && line.frame.requestId === stephenPresenceRequest),
+      waitForAfter(kai, presenceCheckpointK, line => line.frame?.type === "presence.accepted"
+        && line.frame.requestId === kaiPresenceRequest),
+      waitForAfter(stephen, presenceCheckpointS, line => line.frame?.type === "presence.update"
+        && line.frame.deviceId === kaiDevice.id),
+      waitForAfter(kai, presenceCheckpointK, line => line.frame?.type === "presence.update"
+        && line.frame.deviceId === stephenDevice.id),
+    ]);
+    expect(stephenPresenceAccepted.frame.requestId).toBe(stephenPresenceRequest);
+    expect(kaiPresenceAccepted.frame.requestId).toBe(kaiPresenceRequest);
+    expect(kaiCursorAtStephen.frame).toMatchObject({
+      deviceId: kaiDevice.id, cursor: { x: 0.7, y: 0.6 },
+    });
+    expect(stephenCursorAtKai.frame).toMatchObject({
+      deviceId: stephenDevice.id, cursor: { x: 0.2, y: 0.4 },
+    });
+    expect(new Set([kaiCursorAtStephen.frame.deviceId, stephenCursorAtKai.frame.deviceId]).size).toBe(2);
+    traceCheckpoint("exactly two human cursors visible in shared chat");
 
     const promptSubS = randomUUID();
     const promptSubK = randomUUID();
@@ -1227,12 +1353,14 @@ describe("three-process CoCodex private alpha", () => {
     const recoveredChatSubK = randomUUID();
     stephen.send({ id: recoveredChatSubS, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
     kai.send({ id: recoveredChatSubK, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
-    await Promise.all([
+    const [historyBeforeTransferS, historyBeforeTransferK] = await Promise.all([
       waitFor(stephen, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === recoveredChatSubS
         && line.frame.events?.some((item: any) => item.content === "Kai offline queued")),
       waitFor(kai, line => line.frame?.type === "chat.snapshot" && line.frame.requestId === recoveredChatSubK
         && line.frame.events?.some((item: any) => item.content === "Stephen offline queued")),
     ]);
+    expect(historyBeforeTransferS.frame.events.map((event: any) => event.sequence))
+      .toEqual(historyBeforeTransferK.frame.events.map((event: any) => event.sequence));
     await Promise.all([
       waitForAfter(stephen, recoveryCheckpointS, line => line.frame?.type === "agent.result"
         && line.frame.taskId === encryptedKaiControl.taskId && line.frame.final === true
@@ -1263,6 +1391,146 @@ describe("three-process CoCodex private alpha", () => {
       expect.objectContaining({ deviceId: stephenDevice.id, report: expect.objectContaining({ requests: 6 }) }),
       expect.objectContaining({ deviceId: kaiDevice.id, report: expect.objectContaining({ requests: 4 }) }),
     ]));
+
+    traceCheckpoint("beginning signed Server transfer to Kai");
+    const retiredServerRoot = serverRoot;
+    const kaiServerRoot = join(temp, "kai-server");
+    const destinationPort = reservePort();
+    const targetRequestPath = join(temp, "target-request.json");
+    const transferPath = join(temp, "authority-transfer.json");
+    const transferCodePath = join(temp, "authority-code.txt");
+    const transferPassphrasePath = join(temp, "transfer-passphrase.txt");
+    writeFileSync(transferPassphrasePath, "private-alpha-transfer-passphrase\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    const preparedTransfer = JSON.parse(await run(serverExe, [
+      "transfer-prepare",
+      "--public-host", "127.0.0.1",
+      "--port", String(destinationPort),
+      "--output", targetRequestPath,
+      "--state-root", kaiServerRoot,
+    ])) as { prepared: boolean; targetRequest: string };
+    expect(preparedTransfer).toMatchObject({
+      prepared: true,
+      targetRequest: targetRequestPath,
+    });
+
+    stephen.send({ id: "transfer-stop-stephen", type: "shutdown" });
+    kai.send({ id: "transfer-stop-kai", type: "shutdown" });
+    await Promise.all([stephen.process.exited, kai.process.exited]);
+    residents.splice(residents.indexOf(stephen), 1);
+    residents.splice(residents.indexOf(kai), 1);
+    await run(serverExe, ["stop", "--state-root", retiredServerRoot]);
+    await server.process.exited;
+    residents.splice(residents.indexOf(server), 1);
+
+    const exportedTransfer = JSON.parse(await run(serverExe, [
+      "transfer-export",
+      "--target-request", targetRequestPath,
+      "--output", transferPath,
+      "--passphrase-file", transferPassphrasePath,
+      "--state-root", retiredServerRoot,
+    ])) as {
+      authorityCode: string;
+      sourceServerEpoch: number;
+      targetServerEpoch: number;
+    };
+    expect(exportedTransfer.sourceServerEpoch).toBe(1);
+    expect(exportedTransfer.targetServerEpoch).toBe(2);
+    expect(exportedTransfer.authorityCode).toStartWith("ccx-transfer1.");
+    writeFileSync(transferCodePath, exportedTransfer.authorityCode + "\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+
+    const retiredStatus = JSON.parse(await run(serverExe, [
+      "status", "--state-root", retiredServerRoot,
+    ])) as { authority: string; running: boolean };
+    expect(retiredStatus).toMatchObject({ authority: "retired", running: false });
+    const staleSourceStart = await runResult(serverExe, [
+      "start", "--state-root", retiredServerRoot,
+    ]);
+    expect(staleSourceStart.exitCode).not.toBe(0);
+    expect(staleSourceStart.stderr).toContain("authority is retired");
+    expect(existsSync(join(retiredServerRoot, "server.pid"))).toBeFalse();
+
+    const importedTransfer = JSON.parse(await run(serverExe, [
+      "transfer-import",
+      "--input", transferPath,
+      "--passphrase-file", transferPassphrasePath,
+      "--state-root", kaiServerRoot,
+    ])) as { authorityHandoff: boolean; serverEpoch: number };
+    expect(importedTransfer).toMatchObject({
+      authorityHandoff: true,
+      serverEpoch: 2,
+    });
+
+    serverRoot = kaiServerRoot;
+    server = startServer();
+    await waitFor(server, line => line.ready === true);
+    const destinationStatus = JSON.parse(await run(serverExe, [
+      "status", "--state-root", serverRoot,
+    ])) as { authority: string; running: boolean; port: number };
+    expect(destinationStatus).toMatchObject({
+      authority: "active",
+      running: true,
+      port: destinationPort,
+    });
+
+    const stephenAcceptedTransfer = JSON.parse(await run(clientExe, [
+      "accept-transfer",
+      "--code-file", transferCodePath,
+      "--state-root", stephenRoot,
+    ])) as { accepted: boolean; port: number; serverEpoch: number };
+    const kaiAcceptedTransfer = JSON.parse(await run(clientExe, [
+      "accept-transfer",
+      "--code-file", transferCodePath,
+      "--state-root", kaiRoot,
+    ])) as { accepted: boolean; port: number; serverEpoch: number };
+    expect(stephenAcceptedTransfer).toMatchObject({
+      accepted: true,
+      port: destinationPort,
+      serverEpoch: 2,
+    });
+    expect(kaiAcceptedTransfer).toMatchObject({
+      accepted: true,
+      port: destinationPort,
+      serverEpoch: 2,
+    });
+
+    stephen = startResident(clientExe, ["connect", "--json-lines", "--state-root", stephenRoot], {
+      CODEX_CLI_PATH: fixtureExe,
+      COCODEX_ACCOUNT_FIXTURE: "stephen-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    kai = startResident(clientExe, ["connect", "--json-lines", "--state-root", kaiRoot], {
+      CODEX_CLI_PATH: fixtureExe,
+      COCODEX_ACCOUNT_FIXTURE: "kai-account",
+      CODEX_RUNTIME_MARKER: JSON.stringify({ barrierDirectory: executionBarrier }),
+    });
+    await Promise.all([
+      waitFor(stephen, line => line.source === "session" && line.state === "connected"),
+      waitFor(kai, line => line.source === "session" && line.state === "connected"),
+    ]);
+
+    const transferredHistoryS = randomUUID();
+    const transferredHistoryK = randomUUID();
+    stephen.send({ id: transferredHistoryS, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
+    kai.send({ id: transferredHistoryK, type: "chat.subscribe", projectId: project.id, afterSequence: 0 });
+    const [historyAtStephen, historyAtKai] = await Promise.all([
+      waitFor(stephen, line => line.frame?.type === "chat.snapshot"
+        && line.frame.requestId === transferredHistoryS
+        && line.frame.events?.some((event: any) => event.content === "Kai offline queued")),
+      waitFor(kai, line => line.frame?.type === "chat.snapshot"
+        && line.frame.requestId === transferredHistoryK
+        && line.frame.events?.some((event: any) => event.content === "Stephen offline queued")),
+    ]);
+    expect(historyAtStephen.frame.events.map((event: any) => event.sequence))
+      .toEqual(historyAtKai.frame.events.map((event: any) => event.sequence));
+    expect(historyAtStephen.frame.events.map((event: any) => event.sequence))
+      .toEqual(historyBeforeTransferS.frame.events.map((event: any) => event.sequence));
+    traceCheckpoint("signed transfer advanced epoch and preserved authoritative history");
 
     traceCheckpoint("restarting Stephen client for private history");
     stephen.send({ id: "restart-stephen", type: "shutdown" });
@@ -1495,5 +1763,52 @@ describe("three-process CoCodex private alpha", () => {
       ]) expect(result.envelopeJson).not.toContain(secret);
       expect(result.envelopeJson).toContain("ciphertext");
     }
-  }, 120_000);
+
+    const inheritedPort = reservePort();
+    expect(inheritedPort).not.toBe(10100);
+    const inheritedOpenCodexHome = join(temp, "inherited-opencodex");
+    const inheritedCodexHome = join(temp, "inherited-codex");
+    mkdirSync(inheritedOpenCodexHome, { recursive: true });
+    mkdirSync(inheritedCodexHome, { recursive: true });
+    const inheritedRuntime = startResident(
+      bun,
+      ["run", "./src/cli/index.ts", "start", "--port", String(inheritedPort)],
+      {
+        OPENCODEX_HOME: inheritedOpenCodexHome,
+        CODEX_HOME: inheritedCodexHome,
+      },
+    );
+    const inheritedHealthDeadline = Date.now() + 30_000;
+    let inheritedHealth: Record<string, any> | undefined;
+    while (Date.now() < inheritedHealthDeadline) {
+      if (inheritedRuntime.process.exitCode !== null) break;
+      try {
+        const response = await fetch("http://127.0.0.1:" + inheritedPort + "/healthz");
+        if (response.ok) {
+          inheritedHealth = await response.json() as Record<string, any>;
+          break;
+        }
+      } catch {
+        // The isolated inherited runtime is still starting.
+      }
+      await Bun.sleep(50);
+    }
+    if (!inheritedHealth) {
+      throw new Error("Inherited OpenCodex runtime did not become healthy: exit="
+        + inheritedRuntime.process.exitCode + " stderr=" + inheritedRuntime.errors.join(" | ")
+        + " lines=" + JSON.stringify(inheritedRuntime.lines.slice(-12)));
+    }
+    expect(inheritedHealth).toMatchObject({
+      status: "ok",
+      service: "opencodex",
+      port: inheritedPort,
+    });
+    const inheritedGui = await fetch("http://127.0.0.1:" + inheritedPort + "/");
+    expect(inheritedGui.status).toBe(200);
+    expect((await inheritedGui.text()).length).toBeGreaterThan(100);
+    if (inheritedRuntime.process.exitCode === null) inheritedRuntime.process.kill("SIGTERM");
+    await inheritedRuntime.process.exited;
+    residents.splice(residents.indexOf(inheritedRuntime), 1);
+    traceCheckpoint("inherited OpenCodex proxy and GUI still pass on isolated port");
+  }, 300_000);
 });

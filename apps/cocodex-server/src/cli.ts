@@ -17,6 +17,8 @@ import { bootstrapApproveDevice, devicePublicKeys, listDevices, revokeDevice } f
 import { createServerIdentity, loadServerIdentity, randomToken } from "./identity";
 import { createInvitation } from "./invitations";
 import { classifyDirectHosting, tryAutomaticPortMapping } from "./port-mapping";
+import { assertSunshinePortsUntouched } from "./protected-host-services";
+import { assertDirectServerOwnership } from "./process-ownership";
 import { registerAgent } from "./agent-routing";
 import { addProjectMember, createProject } from "./shared-state";
 import { serverPaths } from "./paths";
@@ -48,6 +50,7 @@ function requiredOption(name: string): string {
 
 function configureWindowsFirewall(port: number): "created" | "manual-required" | "not-windows" {
   if (process.platform !== "win32") return "not-windows";
+  assertSunshinePortsUntouched(port, "create a Windows Firewall rule for");
   const result = Bun.spawnSync([
     "netsh", "advfirewall", "firewall", "add", "rule",
     `name=CoCodex Server TCP ${port}`, "dir=in", "action=allow", "protocol=TCP",
@@ -117,7 +120,7 @@ async function waitForHealthyRestart(
         tls: { rejectUnauthorized: false },
       });
       const body = await response.json() as Record<string, unknown>;
-      if (response.ok && body.ok === true && body.service === "cocodex-server" && body.protocol === 1) {
+      if (response.ok && body.ok === true && body.service === "cocodex-server" && body.protocol === 1 && body.processId === child.pid) {
         return;
       }
       lastError = new Error(`Replacement health endpoint returned HTTP ${response.status}`);
@@ -322,6 +325,7 @@ async function run(): Promise<void> {
         console.log(JSON.stringify({ stopped: false, running: false }));
         return;
       }
+      await assertDirectServerOwnership(paths, pid);
       process.kill(pid, "SIGTERM");
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline && runningPid(paths) !== undefined) await Bun.sleep(100);
@@ -333,6 +337,7 @@ async function run(): Promise<void> {
     case "restart": {
       const pid = runningPid(paths);
       if (pid) {
+        await assertDirectServerOwnership(paths, pid);
         process.kill(pid, "SIGTERM");
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline && runningPid(paths) !== undefined) await Bun.sleep(100);

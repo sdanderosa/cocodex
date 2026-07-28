@@ -45,7 +45,7 @@ Status meanings:
 | Server admin/service/update | Partial | Headless CLI plus user background mode; optional same-user Windows service; strict installed-package update-check plus clean isolated Update/state-canary/package lifecycle acceptance | Live packaged SCM/UAC/reboot acceptance and operator-grade update download/version policy |
 | Distribution/update/signing | Partial / external gate | Verified archive installer plus fresh NSIS/MSI and hashes | Authenticode/Sigstore or transparency, signing identity, automatic update, standard ICE pass |
 | Documentation | Partial | Extensive Client/Server/ADR/evidence docs | End-user coverage for every remaining browser/helper/messaging/service/update flow |
-| Single 70-step acceptance run | Missing | Many steps proven across separate suites | One uninterrupted three-process test must exercise all 70 in order |
+| Single 70-step acceptance run | Proven at process level | One uninterrupted compiled Server + Stephen Client + Kai Client scenario passes all 70 behavioral steps with 321 assertions | Physical two-PC packaged/UAC/reboot acceptance remains a separate release gate |
 
 ## Required 70-step scenario audit
 
@@ -53,26 +53,26 @@ Status meanings:
 | --- | --- | --- |
 | 1-4 install/init/background Server and two Clients | Partial | Separate compiled processes are exercised from temporary builds, not two physical normal-PC installations in one run |
 | 5-11 team/invite/enroll/verify/trust/one-time token | Proven | Three-process enrollment and approval path plus replay rejection |
-| 12-14 outsider/name/token-copy rejection | Proven in focused security tests | Must be included explicitly in the final single scenario |
-| 15-20 same project/chat, two cursors, collaborative prompt/revision/submit | Partial | Project/chat/prompt submission proven; presence transport proven separately, not exactly two visible cursors in the three-process run |
+| 12-14 outsider/name/token-copy rejection | Proven in unified scenario | Replay, unenrolled connection, missing-signature token copy, and copied Kai connection without Kai private key all fail closed |
+| 15-20 same project/chat, two cursors, collaborative prompt/revision/submit | Proven in unified scenario | Two accepted local cursor writes and two remote broadcasts identify exactly two humans; convergent Yjs prompt and authoritative revision/final goal follow |
 | 21-26 Sue/Lucas/Angela definitions, models, co-agent config, final goal | Proven | Three-process fixtures verify host/model/effort/concurrency definitions and final goal |
 | 27-31 direct Lucas/Sue execution and idle Angela | Proven | Host-local markers and no-start-before-instruction checks |
 | 32-35 Angela consumes Lucas, chronological activity, independent concurrent contexts | Proven | Barrier-based concurrent agents, artifact input and persistent isolated CLI sessions; chat-first timeline tests |
-| 36-39 Lucas/Angela/Sue artifact chain and integration | Partial | Encrypted artifact chain, explicit Git preview/merge/revision workflow, encrypted integration artifacts, and GUI controls are proven separately | Exercise the complete chain in the one uninterrupted scenario |
+| 36-39 Lucas/Angela/Sue artifact chain and integration | Proven in unified scenario | Lucas finding, Angela test result, Sue consumption/integration, encrypted artifact persistence, and chronological results occur in the same run |
 | 40-41 same authoritative history and separate usage | Proven | Server history and signed per-device usage reports |
 | 42-48 private exchange, ciphertext, local decrypt, isolation and explicit Sue share | Proven for text/single-device sealed boxes | Does not satisfy mature ratchet/multi-device/attachment requirements |
 | 49-52 Sue Full Computer and Server-only routing | Proven | Explicit host-user full-computer fixture; not elevated-helper mode |
 | 53-61 Server offline, local Codex, queued shared/private, ordered reconnect | Proven | Same resident Client PIDs and Server restart in three-process harness |
-| 62-69 transfer to Kai, epoch, stale source, preserved history | Proven only in separate transfer test | Not part of the same mandatory three-process scenario |
-| 70 inherited OpenCodex functionality | Proven at checkpoint | 4,240 passed, 4 skipped, 0 failed; rerun required after remaining implementation |
+| 62-69 transfer to Kai, epoch, stale source, preserved history | Proven in unified scenario | Signed export/import retires Stephen source, advances epoch 1 to 2, starts Kai Server, reconnects both Clients, rejects stale source, and preserves exact sequences |
+| 70 inherited OpenCodex functionality | Proven in unified smoke and complete repository gate | Isolated non-10100 inherited proxy health and GUI 200 pass inside the scenario; complete gate: 4,265 pass, 4 skip, 0 fail, 21,744 assertions across 359 files |
 
 ## Release decision
 
 The current private-alpha foundation is substantial and tested, but the
 authoritative product is not complete. The missing mature ratchet, private
 attachments/multi-device fan-out, elevated helper, browser-control surface,
-live packaged SCM/UAC/reboot acceptance, signed distribution, and
-single uninterrupted 70-step acceptance run are release blockers.
+live packaged SCM/UAC/reboot acceptance and signed distribution remain release
+blockers.
 
 Fresh NSIS/MSI/runtime hashes and ownership smokes for commit `d77dec10` are
 recorded in `docs/evidence/tauri-managed-client-runtime.md`. These remain

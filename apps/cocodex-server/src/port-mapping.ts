@@ -1,6 +1,7 @@
 import dgram from "node:dgram";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
+import { assertSunshinePortsUntouched } from "./protected-host-services";
 
 export interface PortMappingResult {
   status: "mapped" | "unavailable" | "failed";
@@ -275,6 +276,7 @@ async function tryPcpMapping(port: number, internalHost: string): Promise<PortMa
 }
 
 export async function tryAutomaticPortMapping(port: number): Promise<PortMappingResult> {
+  assertSunshinePortsUntouched(port, "map or forward");
   if (process.env.COCODEX_DISABLE_PORT_MAPPING === "1") {
     return { status: "unavailable", method: "none", message: "Automatic port mapping disabled by configuration." };
   }

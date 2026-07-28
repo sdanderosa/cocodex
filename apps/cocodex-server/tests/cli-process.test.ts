@@ -98,7 +98,7 @@ test("the separate server process initializes, serves TLS, and verifies a health
 
   const first = start();
   const firstHealth = await waitForHealth(port);
-  expect(await firstHealth.json()).toEqual({ ok: true, service: "cocodex-server", protocol: 1 });
+  expect(await firstHealth.json()).toEqual({ ok: true, service: "cocodex-server", protocol: 1, processId: first.pid });
   try {
     const restarted = await runCli(cli, ["restart", "--state-root", root]);
     expect(restarted.exitCode).toBe(0);

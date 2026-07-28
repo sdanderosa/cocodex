@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hardenSecretDir, hardenSecretPath } from "../../../src/lib/windows-secret-acl";
+import { assertSunshinePortsUntouched } from "./protected-host-services";
 import type { ServerPaths } from "./paths";
 
 export interface ServerConfig {
@@ -15,6 +16,7 @@ export interface ServerConfig {
 
 export function createDefaultConfig(paths: ServerPaths, publicHost: string, port: number, adminToken = randomBytes(32).toString("base64url")): ServerConfig {
   if (!publicHost.trim()) throw new Error("Public host is required");
+  assertSunshinePortsUntouched(port, "bind CoCodex Server to");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535");
   return {
     version: 1,
@@ -60,5 +62,6 @@ export function loadConfig(paths: ServerPaths): ServerConfig {
   ) {
     throw new Error("Invalid CoCodex Server configuration");
   }
+  assertSunshinePortsUntouched(value.port, "load CoCodex Server on");
   return value as ServerConfig;
 }
