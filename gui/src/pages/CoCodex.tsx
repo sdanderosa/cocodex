@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as Y from "yjs";
+import { CollaborativePromptEditor } from "../components/CollaborativePromptEditor";
 import {
   independentlyConfirmedFingerprintMatches,
   privateTimelineForContact,
@@ -2574,7 +2575,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             </form>
             <label className="cocodex-shared-prompt">
               <span><strong>{t("cocodex.prompt.title")}</strong><small>{t("cocodex.prompt.crdt")}</small></span>
-              <textarea className="input" value={sharedPrompt}
+              <CollaborativePromptEditor className="input" value={sharedPrompt}
+                remotePresence={remotePromptPresence}
                 onChange={event => {
                   editSharedPrompt(event.target.value);
                   const caret = {

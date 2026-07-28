@@ -41,7 +41,7 @@ afterEach(async () => {
       }
     }
   }
-}, 45_000);
+}, 60_000);
 
 class JsonSessionHarness {
   readonly input = new PassThrough();
@@ -86,7 +86,10 @@ class JsonSessionHarness {
 
   waitFor(
     predicate: (event: Record<string, unknown>) => boolean,
-    timeoutMs = 15_000,
+    // The complete repository gate schedules many process/TLS suites together.
+    // Keep the semantic assertion exact while allowing bounded scheduler delay;
+    // the isolated path normally completes in about five seconds.
+    timeoutMs = 45_000,
   ): Promise<Record<string, unknown>> {
     const existing = this.events.find(predicate);
     if (existing) return Promise.resolve(existing);
@@ -467,5 +470,5 @@ describe("CoCodex device-revocation incident recovery", () => {
 
     kai.close();
     await kaiRun;
-  }, 45_000);
+  }, 120_000);
 });

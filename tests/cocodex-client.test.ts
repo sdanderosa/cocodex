@@ -169,10 +169,15 @@ describe("CoCodex Client direct enrollment", () => {
     sockets.push(socket);
     expect(socket.readyState).toBe(WebSocket.OPEN);
 
+    const wrongFingerprint = fingerprint.replace(
+      /^....-/,
+      fingerprint.startsWith("FFFF-") ? "0000-" : "FFFF-",
+    );
+    expect(wrongFingerprint).not.toBe(fingerprint);
     const wrongCode = createInvitation(database, {
       host: "127.0.0.1",
       port: server.port,
-      serverFingerprint: fingerprint.replace(/^....-/, "FFFF-"),
+      serverFingerprint: wrongFingerprint,
     });
     const wrongInvite = decodeInvitation(wrongCode);
     await expect(enrollClient(wrongCode, "Mallory", clientPaths(wrongPinRoot))).rejects.toThrow(
