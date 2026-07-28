@@ -632,3 +632,51 @@ path-verified before stop and the exact extraction root was removed. A
 pre-existing msiexec.exe PID was observed and not stopped.
 
 These artifacts remain unsigned private-alpha outputs.
+
+## Sunshine-protected 70-step rebuild - 2026-07-28
+
+Clean commit `8c195f6f55112731b25f1fef084d770a77e47f77` rebuilt the
+private-alpha archive, bundled runtime, desktop, NSIS, and MSI from a detached
+clean release worktree. The preserved copies are under
+`dist/release-evidence/8c195f6f/`.
+
+    Private-alpha archive
+      10,215,958 bytes
+      SHA-256 c0697cf1d9d0fab43c9ec5357a223fdfef23bce30d9c3835d38428fe168ac3db
+
+    NSIS installer
+      30,518,287 bytes
+      SHA-256 2272b3d51f1cc20f1278ed81f80169961a0cd46937c11eb5491e9ff14d8562ff
+
+    MSI installer
+      43,876,352 bytes
+      SHA-256 3423a9004ca985cb43efe3fbb25ee8aa8d54dd16ca1b967acb1568b849e72569
+
+    Bundled runtime
+      104,867,328 bytes
+      SHA-256 9020b0eb464160d9385aaa10a8e7c6711777af9c90d09d1f654292033d0d9a23
+
+    Release desktop executable
+      11,851,264 bytes
+      SHA-256 24a6904685ec040e86bf9c7d4d287468d81e341c2d8da54cd4821db24362e088
+
+Fresh NSIS silent installation exited 0. The installed desktop hash was
+`2e7d8f49a7270d2294221e07a5ebe08e8c07e72950aa19e6b6ba18c3d9de9181`.
+Its only direct child was Edge WebView2; it started zero bundled runtimes,
+logged the foreign PID 3704 rejection, and left port 10100 owned by PID 3704.
+The exact desktop PID 47160 was path-verified before stop. Silent uninstall
+exited 0. The exact isolated state/cache root was then removed.
+
+Fresh MSI administrative extraction exited 0. Its desktop payload hash was
+`34745bf1b9e0a58238713f43f73ec93679aa8e0c9baa0b606bdd71c4cb358778`.
+The extracted runtime exactly matched the bundled runtime. Its only direct
+child was Edge WebView2; it started zero bundled runtimes, logged the foreign
+PID 3704 rejection, and left port 10100 unchanged. The exact desktop PID 44020
+was path-verified before stop and the exact extraction/state root was removed.
+Pre-existing `msiexec.exe` PID 56164 remained present and was never stopped.
+
+Final home checks: OpenCodex scheduled task Running; `/healthz` status ok with
+PID 3704; `codexAccountMode` direct; Repair Codex shortcut present; Sunshine
+service Running/Automatic at PID 5044; `sunshine.exe` PID 11100 with TCP ports
+47984, 47989, 47990, and 48010 unchanged. These remain unsigned private-alpha
+artifacts and do not establish live UAC/SCM/reboot or signing acceptance.
