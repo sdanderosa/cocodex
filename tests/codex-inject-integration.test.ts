@@ -13,7 +13,13 @@ const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.ur
 function runInject(codexHome: string, ocxHome: string, configJson = "{}"): { stdout: string; status: number } {
   const script = `
     const { injectCodexConfig } = require("./src/codex/inject");
-    injectCodexConfig(10100, JSON.parse(process.env.TEST_OCX_CONFIG)).then(r => {
+    const safetyDeps = {
+      proxyIdentityAt: async () => ({ pid: 1234 }),
+      verifyPidIdentity: pid => pid,
+      diagnoseService: () => ({ supported: true, installed: true, enabled: true, running: true, viable: true, startable: true, stale: false, conflict: false, backend: "scheduler", summary: "test service" }),
+      diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
+    };
+    injectCodexConfig(10100, JSON.parse(process.env.TEST_OCX_CONFIG), { safetyDeps }).then(r => {
       console.log(JSON.stringify(r));
     });
   `;

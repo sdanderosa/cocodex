@@ -62,7 +62,11 @@ import { discardQueuedProjectEvents, enqueueDurableEvent, flushDurableOutbox, qu
 import type { ClientPaths } from "./paths";
 import { prepareTaskWorkspace, samePhysicalPath } from "./task-worktree";
 import { inspectLocalFileReference } from "./file-reference";
-import { openSignedPrivateMessage, sealSignedPrivateMessage } from "./private-messaging";
+import {
+  openSignedPrivateMessage,
+  sealSignedPrivateMessage,
+  type PrivateMessagePlaintext,
+} from "./private-messaging";
 import {
   loadPrivateContactSnapshot,
   safePrivateContacts,
@@ -93,7 +97,7 @@ import {
   type PrivateHistoryState,
 } from "./private-history";
 import { loadTrustedDevices, trustDevice } from "./trusted-devices";
-import { loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
+import { addAgentUsage, loadUsageReport, saveUsageReport, signUsageReport } from "./usage";
 import { compareProjectLockState } from "./project-lock-state";
 import {
   createProjectKey,
@@ -354,6 +358,11 @@ export async function runJsonLineSession(
   // never written to the mailbox or sent anywhere until the host explicitly
   // issues `private.share` for one message and one project agent.
   const decryptedPrivateMessages = new Map<string, {
+    kind: PrivateMessagePlaintext["kind"];
+    targetMessageId?: string;
+    replyToMessageId?: string;
+    emoji?: string;
+    reactionOperation?: "add" | "remove";
     text: string;
     senderDeviceId: string;
     recipientDeviceId: string;
@@ -1121,7 +1130,7 @@ export async function runJsonLineSession(
         const rejected = privateHistory.entries.find(entry => entry.messageId === frame.messageId);
         const decrypted = decryptedPrivateMessages.get(frame.messageId);
         if (rejected && decrypted) {
-          rememberDecryptedPrivateMessage(rejected, decrypted.text, false);
+          rememberDecryptedPrivateMessage(rejected, decrypted, false);
         }
       },
     }));
@@ -1182,15 +1191,40 @@ export async function runJsonLineSession(
     savePrivateMailbox(paths.privateMailbox, privateMailbox);
   };
 
+  const validatePrivateActionAuthorization = (message: Pick<PrivateMessagePlaintext,
+    "messageId" | "senderDeviceId" | "recipientDeviceId" | "kind" | "targetMessageId"
+    | "replyToMessageId">): void => {
+    const targetId = message.kind === "message" ? message.replyToMessageId : message.targetMessageId;
+    if (!targetId) return;
+    if (targetId === message.messageId) throw new Error("A private action cannot target itself");
+    const target = decryptedPrivateMessages.get(targetId);
+    if (!target || target.kind !== "message") throw new Error("Private message action target is not available");
+    const participants = new Set([message.senderDeviceId, message.recipientDeviceId]);
+    if (!participants.has(target.senderDeviceId) || !participants.has(target.recipientDeviceId)) {
+      throw new Error("Private message action target belongs to another conversation");
+    }
+    if ((message.kind === "edit" || message.kind === "delete")
+      && target.senderDeviceId !== message.senderDeviceId) {
+      throw new Error("Only the original sender can edit or delete a private message");
+    }
+  };
+
   const rememberDecryptedPrivateMessage = (
     entry: Pick<PrivateHistoryEntry,
       "messageId" | "senderDeviceId" | "recipientDeviceId" | "clientCreatedAt" | "acceptedAt"
       | "serverSequence" | "deliveryState" | "rejectionReason">,
-    text: string,
+    opened: Pick<PrivateMessagePlaintext,
+      "kind" | "targetMessageId" | "replyToMessageId" | "emoji" | "reactionOperation" | "text">,
     restored: boolean,
   ): void => {
+    validatePrivateActionAuthorization({ ...entry, ...opened });
     decryptedPrivateMessages.set(entry.messageId, {
-      text,
+      kind: opened.kind,
+      ...(opened.targetMessageId ? { targetMessageId: opened.targetMessageId } : {}),
+      ...(opened.replyToMessageId ? { replyToMessageId: opened.replyToMessageId } : {}),
+      ...(opened.emoji ? { emoji: opened.emoji } : {}),
+      ...(opened.reactionOperation ? { reactionOperation: opened.reactionOperation } : {}),
+      text: opened.text,
       senderDeviceId: entry.senderDeviceId,
       recipientDeviceId: entry.recipientDeviceId,
       clientCreatedAt: entry.clientCreatedAt,
@@ -1211,7 +1245,12 @@ export async function runJsonLineSession(
         clientCreatedAt: entry.clientCreatedAt,
         ...(entry.acceptedAt ? { acceptedAt: entry.acceptedAt } : {}),
         ...(entry.serverSequence ? { serverSequence: entry.serverSequence } : {}),
-        text,
+        kind: opened.kind,
+        ...(opened.targetMessageId ? { targetMessageId: opened.targetMessageId } : {}),
+        ...(opened.replyToMessageId ? { replyToMessageId: opened.replyToMessageId } : {}),
+        ...(opened.emoji ? { emoji: opened.emoji } : {}),
+        ...(opened.reactionOperation ? { reactionOperation: opened.reactionOperation } : {}),
+        text: opened.text,
         direction: entry.senderDeviceId === connection.deviceId ? "sent" : "received",
         restored,
         deliveryState: entry.deliveryState,
@@ -1240,7 +1279,7 @@ export async function runJsonLineSession(
         entry,
         expectedSenderFingerprint,
       );
-      rememberDecryptedPrivateMessage(entry, opened.text, restored);
+      rememberDecryptedPrivateMessage(entry, opened, restored);
     } catch (error) {
       emitError({
         source: "private-history",
@@ -1321,6 +1360,7 @@ export async function runJsonLineSession(
         message,
         trusted,
       );
+      validatePrivateActionAuthorization(opened);
       const historyEntry: PrivateHistoryEntry = {
         messageId: message.messageId,
         senderDeviceId: message.senderDeviceId,
@@ -1342,7 +1382,7 @@ export async function runJsonLineSession(
       });
       privateCursor = privateMailbox.cursor;
       savePrivateMailbox(paths.privateMailbox, privateMailbox);
-      rememberDecryptedPrivateMessage(historyEntry, opened.text, false);
+      rememberDecryptedPrivateMessage(historyEntry, opened, false);
     } catch (error) {
       deferPrivateEnvelope(message);
       emitError({
@@ -2093,6 +2133,7 @@ export async function runJsonLineSession(
           cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
           outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
           reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
+          agents: addAgentUsage(usageReport, policy.agentId, usage),
         });
       };
       const bridge = attachLocalAgentBridge(workerSocket, new CodexAgentAdapter({
@@ -2107,6 +2148,11 @@ export async function runJsonLineSession(
         sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
         accessProfile: policy.accessProfile,
         fullComputerOptIn: policy.fullComputerOptIn,
+        sessionStorePath: runtime.codexSessions,
+        sessionIsolationKey: JSON.stringify({
+          approvalMode: policy.approvalMode,
+          trustedRequesterFingerprints: policy.trustedRequesterFingerprints,
+        }),
         onUsage,
         prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
           worktreeRoot: runtime.worktreeRoot,
@@ -3196,6 +3242,7 @@ export async function runJsonLineSession(
                 cachedInputTokens: usageReport.cachedInputTokens + (usage.cachedInputTokens ?? 0),
                 outputTokens: usageReport.outputTokens + (usage.outputTokens ?? 0),
                 reasoningOutputTokens: usageReport.reasoningOutputTokens + (usage.reasoningOutputTokens ?? 0),
+                agents: addAgentUsage(usageReport, "local-codex", usage),
               });
             },
           }).then(result => {
@@ -4397,6 +4444,7 @@ export async function runJsonLineSession(
           const messageId = String(command.messageId);
           const shared = decryptedPrivateMessages.get(messageId);
           if (!shared) throw new Error("Private message is not available in this resident session");
+          if (shared.kind !== "message") throw new Error("Only private messages can be marked read");
           if (queuedPrivateReadReceipts.has(messageId)) {
             emit({ source: "control", id: command.id, ok: true, messageId, receipt: "read", queued: false });
             continue;
@@ -4410,6 +4458,26 @@ export async function runJsonLineSession(
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
           const recipientDeviceId = String(command.recipientDeviceId);
           const contact = privateContacts.get(recipientDeviceId);
+          const requestedKind = command.kind === undefined ? "message" : String(command.kind);
+          if (requestedKind !== "message" && requestedKind !== "reaction"
+            && requestedKind !== "edit" && requestedKind !== "delete") {
+            throw new Error("Unsupported private message action");
+          }
+          const kind = requestedKind as PrivateMessagePlaintext["kind"];
+          const text = kind === "reaction" || kind === "delete" ? "" : String(command.text ?? "");
+          const actionFields = {
+            kind,
+            ...(command.targetMessageId !== undefined
+              ? { targetMessageId: String(command.targetMessageId) }
+              : {}),
+            ...(command.replyToMessageId !== undefined
+              ? { replyToMessageId: String(command.replyToMessageId) }
+              : {}),
+            ...(command.emoji !== undefined ? { emoji: String(command.emoji) } : {}),
+            ...(command.reactionOperation !== undefined
+              ? { reactionOperation: String(command.reactionOperation) as "add" | "remove" }
+              : {}),
+          };
           if (!contact) throw new Error("Recipient is not an approved private contact");
           const trustedFingerprint = loadTrustedDevices(paths.trustedDevices)[recipientDeviceId];
           if (!trustedFingerprint || trustedFingerprint !== contact.fingerprint) {
@@ -4419,9 +4487,11 @@ export async function runJsonLineSession(
             messageId,
             senderDeviceId: connection.deviceId,
             recipientDeviceId,
-            text: String(command.text),
+            text,
             clientCreatedAt,
+            ...actionFields,
           };
+          validatePrivateActionAuthorization(plaintext);
           const [ciphertext, localCiphertext] = await Promise.all([
             sealSignedPrivateMessage(
               plaintext,
@@ -4459,7 +4529,7 @@ export async function runJsonLineSession(
           });
           privateHistory = markPrivateHistoryEntryQueued(privateHistory, messageId);
           savePrivateHistory(paths.privateHistory, privateHistory);
-          rememberDecryptedPrivateMessage(historyEntry, plaintext.text, false);
+          rememberDecryptedPrivateMessage(historyEntry, plaintext, false);
           const delivered = await flush();
           emit({ source: "control", id: command.id, ok: true, queued: delivered === 0, messageId });
         } else {

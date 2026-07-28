@@ -494,6 +494,11 @@ async function run(): Promise<void> {
           sandbox: policy.accessProfile === "full-computer" ? "danger-full-access" : policy.sandbox,
           accessProfile: policy.accessProfile,
           fullComputerOptIn: policy.fullComputerOptIn,
+          sessionStorePath: runtime.codexSessions,
+          sessionIsolationKey: JSON.stringify({
+            approvalMode: policy.approvalMode,
+            trustedRequesterFingerprints: policy.trustedRequesterFingerprints,
+          }),
           prepareWorkspace: task => prepareTaskWorkspace(policy, task, {
             worktreeRoot: runtime.worktreeRoot,
             registryPath: runtime.worktreeRegistry,

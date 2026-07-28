@@ -278,4 +278,94 @@ describe("official Codex local agent adapter", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });});
+  });
+
+  test("persists an isolated session and resumes it for the same agent chat", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "cocodex-agent-session-"));
+    const sessionStorePath = join(workspace, "sessions.json");
+    const invocations: string[][] = [];
+    let turn = 0;
+    try {
+      const adapter = new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: workspace,
+        sessionStorePath,
+        sessionIsolationKey: "trusted-policy-v1",
+        authorizeTask: () => true,
+        resolveRuntime: () => ({
+          runtime: { command: "codex", version: "1.2.3", source: "path" },
+          failures: [],
+        }),
+        spawnProcess: (_file, args) => {
+          invocations.push(args);
+          turn += 1;
+          return fakeProcess(() => {}, turn === 1 ? [
+            '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":1}}\n',
+          ] : [
+            '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":1}}\n',
+          ]);
+        },
+      });
+      for await (const _ of adapter.execute(task)) { /* consume */ }
+      for await (const _ of adapter.execute({ ...task, id: "22222222-2222-4222-8222-222222222222" })) { /* consume */ }
+      expect(invocations[0]).not.toContain("--ephemeral");
+      expect(invocations[0]).not.toContain("resume");
+      expect(invocations[1]).toEqual(expect.arrayContaining([
+        "resume",
+        "11111111-1111-4111-8111-111111111111",
+        "-",
+      ]));
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("rotates sessions at the configured context boundary and isolates chats and policies", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "cocodex-agent-rotation-"));
+    const sessionStorePath = join(workspace, "sessions.json");
+    const invocations: string[][] = [];
+    let thread = 0;
+    try {
+      const makeAdapter = (sessionIsolationKey: string) => new CodexAgentAdapter({
+        projectId: task.projectId,
+        agentId: task.agentId,
+        workspaceRoot: workspace,
+        sessionStorePath,
+        sessionIsolationKey,
+        maxSessionTurns: 1,
+        authorizeTask: () => true,
+        resolveRuntime: () => ({
+          runtime: { command: "codex", version: "1.2.3", source: "path" },
+          failures: [],
+        }),
+        spawnProcess: (_file, args) => {
+          invocations.push(args);
+          thread += 1;
+          const id = `00000000-0000-4000-8000-${String(thread).padStart(12, "0")}`;
+          return fakeProcess(() => {}, [
+            `{"type":"thread.started","thread_id":"${id}"}\n`,
+            '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":1}}\n',
+          ]);
+        },
+      });
+      const adapter = makeAdapter("policy-a");
+      for await (const _ of adapter.execute(task)) { /* consume */ }
+      for await (const _ of adapter.execute({ ...task, id: "33333333-3333-4333-8333-333333333333" })) { /* consume */ }
+      const changedPolicy = makeAdapter("policy-b");
+      for await (const _ of changedPolicy.execute({ ...task, id: "44444444-4444-4444-8444-444444444444" })) { /* consume */ }
+      const changedChat = makeAdapter("policy-b");
+      for await (const _ of changedChat.execute({
+        ...task,
+        id: "55555555-5555-4555-8555-555555555555",
+        chatId: "66666666-6666-4666-8666-666666666666",
+      })) { /* consume */ }
+      expect(invocations).toHaveLength(4);
+      for (const invocation of invocations) expect(invocation).not.toContain("resume");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});

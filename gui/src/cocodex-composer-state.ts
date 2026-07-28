@@ -18,6 +18,7 @@ export function buildCoCodexComposerSubmission(options: {
   agentId: string;
   chatDraft: string;
   sharedPrompt: string;
+  finalGoal?: string;
   inputArtifactIds: string[];
 }): CoCodexComposerSubmission | null {
   if (!options.projectId || !options.chatId) return null;
@@ -34,7 +35,9 @@ export function buildCoCodexComposerSubmission(options: {
           projectId: options.projectId,
           chatId: options.chatId,
           agentId,
-          prompt: content,
+          prompt: options.finalGoal?.trim()
+            ? `<cocodex_final_goal>${JSON.stringify(options.finalGoal.trim())}</cocodex_final_goal>\n\n${content}`
+            : content,
           inputArtifactIds: [...options.inputArtifactIds],
         },
       }

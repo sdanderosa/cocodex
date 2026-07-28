@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
-import { installApiAuthFetch } from "../src/api";
+import { beforeEach, expect, test } from "bun:test";
+import { installApiAuthFetch, isManagedProxyRequest, resetApiAuthFetchForTests } from "../src/api";
+
+beforeEach(() => resetApiAuthFetchForTests());
 
 test("API authentication never crosses the GUI origin", async () => {
   const storage = new Map<string, string>([["opencodex-api-token", "local-secret"]]);
@@ -40,4 +42,32 @@ test("API authentication never crosses the GUI origin", async () => {
     { url: "https://evil.example/api/collect", token: null },
   ]);
   expect(promptCount).toBe(0);
+  expect(isManagedProxyRequest("http://127.0.0.1:10100/healthz")).toBe(true);
+  expect(isManagedProxyRequest("http://127.0.0.1:10101/healthz")).toBe(false);
+});
+
+test("Tauri rejects loopback proxy fetches until Rust proves child ownership", async () => {
+  const calls: string[] = [];
+  const fakeWindow = {
+    location: new URL("tauri://localhost/"),
+    __TAURI_INTERNALS__: {
+      invoke: async () => ({ state: "foreign-listener", owned: false, pid: 23976 }),
+    },
+    prompt: () => null,
+    fetch: async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(null, { status: 200 });
+    },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: fakeWindow });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  });
+
+  installApiAuthFetch();
+  const response = await fakeWindow.fetch("http://127.0.0.1:10100/healthz");
+
+  expect(response.status).toBe(503);
+  expect(calls).toEqual([]);
 });

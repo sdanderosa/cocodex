@@ -198,9 +198,11 @@ export {
   type ProjectRecordType,
 } from "./project-encryption";
 export {
+  agentUsageSchema,
   usageReportSchema,
   usageReportSigningTranscript,
   usageWindowSchema,
+  type AgentUsage,
   type UsageReport,
   type UsageReportView,
 } from "./usage";

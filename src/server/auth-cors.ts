@@ -55,6 +55,13 @@ export function isSameOriginAsRequest(req: Request, origin: string): boolean {
   }
 }
 
+/** Exact embedded origins used by Tauri 2; never accepts arbitrary localhost ports. */
+export function isTrustedTauriOrigin(origin: string): boolean {
+  return origin === "http://tauri.localhost"
+    || origin === "https://tauri.localhost"
+    || origin === "tauri://localhost";
+}
+
 export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean {
   function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
     if (!cfg.corsAllowOrigins?.length) return false;
@@ -69,9 +76,16 @@ export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean
   const origin = req.headers.get("Origin");
   if (!isApiAuthRequired(config)) {
     if (!isLoopbackRequestHost(req.headers.get("Host"))) return false;
-    return !origin || isLoopbackOriginValue(origin) || isExtraAllowedOrigin(origin, config);
+    return !origin
+      || isLoopbackOriginValue(origin)
+      || isTrustedTauriOrigin(origin)
+      || isExtraAllowedOrigin(origin, config);
   }
-  return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
+  return !origin
+    || isLoopbackOriginValue(origin)
+    || isTrustedTauriOrigin(origin)
+    || isSameOriginAsRequest(req, origin)
+    || isExtraAllowedOrigin(origin, config);
 }
 
 export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
@@ -83,7 +97,7 @@ export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, s
     // ChatGPT-Account-Id is required for browser/Electron ChatGPT & Codex App voice preflights
     // (direct forward auth matches the bearer to this account id). The OpenAI-Alpha .. X-OAI-Attestation
     // block covers GPT-Live voice protocol headers relayed by the /v1/live call-create path.
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key, X-Api-Key, Anthropic-Version, Anthropic-Beta, ChatGPT-Account-Id, OpenAI-Alpha, X-Session-Id, Session-Id, Thread-Id, Originator, X-OAI-Attestation",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-OpenCodex-API-Key, X-CoCodex-Capability, X-Api-Key, Anthropic-Version, Anthropic-Beta, ChatGPT-Account-Id, OpenAI-Alpha, X-Session-Id, Session-Id, Thread-Id, Originator, X-OAI-Attestation",
     "Vary": "Origin",
   };
 }

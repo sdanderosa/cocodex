@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -129,6 +129,11 @@ function branchComponent(value: string): string {
   return result;
 }
 
+function worktreePathComponent(prefix: "p" | "a" | "t", value: string): string {
+  const digest = createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
+  return `${prefix}-${digest}`;
+}
+
 function loadOwnership(path: string): WorktreeOwnership {
   if (!existsSync(path)) return { version: 1, tasks: {} };
   hardenSecretPath(path, { required: true });
@@ -146,8 +151,8 @@ function saveOwnership(path: string, value: WorktreeOwnership): void {
   hardenSecretPath(path, { required: true });
 }
 
-function registeredWorktreePaths(git: string, repositoryRoot: string): Set<string> {
-  const output = requireGit(git, ["-C", repositoryRoot, "worktree", "list", "--porcelain", "-z"],
+function registeredWorktreePaths(git: string, repositoryCommandRoot: string): Set<string> {
+  const output = requireGit(git, ["-C", repositoryCommandRoot, "worktree", "list", "--porcelain", "-z"],
     "Unable to inspect Git worktrees");
   const paths = new Set<string>();
   for (const field of output.split("\0")) {
@@ -159,19 +164,24 @@ function registeredWorktreePaths(git: string, repositoryRoot: string): Set<strin
   return paths;
 }
 
-function verifyOwnedWorktree(git: string, entry: WorktreeOwnership["tasks"][string]): TaskWorkspace {
+function verifyOwnedWorktree(
+  git: string,
+  entry: WorktreeOwnership["tasks"][string],
+  repositoryCommandRoot = entry.repositoryRoot,
+  worktreeCommandPath = entry.worktreePath,
+): TaskWorkspace {
   if (!existsSync(entry.worktreePath) || !statSync(entry.worktreePath).isDirectory()) {
     throw new Error("Owned task worktree is missing; repair it explicitly before retrying");
   }
   const repositoryRoot = physicalPath(entry.repositoryRoot);
   const worktreePath = physicalPath(entry.worktreePath);
-  if (!registeredWorktreePaths(git, repositoryRoot).has(physicalPathKey(worktreePath))) {
+  if (!registeredWorktreePaths(git, repositoryCommandRoot).has(physicalPathKey(worktreePath))) {
     throw new Error("Owned task path is not registered as a Git worktree");
   }
-  const branch = requireGit(git, ["-C", worktreePath, "symbolic-ref", "--quiet", "--short", "HEAD"],
+  const branch = requireGit(git, ["-C", worktreeCommandPath, "symbolic-ref", "--quiet", "--short", "HEAD"],
     "Owned task worktree has no named branch");
   if (branch !== entry.branch) throw new Error("Owned task worktree branch changed");
-  const ancestry = runGit(git, ["-C", worktreePath, "merge-base", "--is-ancestor", entry.baseCommit, "HEAD"]);
+  const ancestry = runGit(git, ["-C", worktreeCommandPath, "merge-base", "--is-ancestor", entry.baseCommit, "HEAD"]);
   if (ancestry.status !== 0) throw new Error("Owned task worktree no longer descends from its recorded base");
   return {
     mode: "git-worktree",
@@ -210,37 +220,48 @@ export function prepareTaskWorkspace(
   const repositoryRoot = physicalPath(configuredRoot);
   const git = options.gitCommand ?? "git";
   const ownership = loadOwnership(options.registryPath);
+  const agentComponent = branchComponent(task.agentId);
+  const commandWorktreeRoot = resolve(options.worktreeRoot);
+  const commandWorktreePath = containedPath(
+    commandWorktreeRoot,
+    worktreePathComponent("p", task.projectId),
+    worktreePathComponent("a", task.agentId),
+    worktreePathComponent("t", task.id),
+  );
   const existing = ownership.tasks[task.id];
   if (existing) {
     if (existing.projectId !== task.projectId || existing.agentId !== task.agentId
       || !samePhysicalPath(existing.repositoryRoot, repositoryRoot)) {
       throw new Error("Task worktree ownership does not match this assignment");
     }
-    return verifyOwnedWorktree(git, existing);
+    const replayCommandPath = existsSync(commandWorktreePath)
+      && samePhysicalPath(commandWorktreePath, existing.worktreePath)
+      ? commandWorktreePath
+      : existing.worktreePath;
+    return verifyOwnedWorktree(git, existing, configuredRoot, replayCommandPath);
   }
 
-  const discoveredRoot = requireGit(git, ["-C", repositoryRoot, "rev-parse", "--show-toplevel"],
+  const discoveredRoot = requireGit(git, ["-C", configuredRoot, "rev-parse", "--show-toplevel"],
     "Configured workspace is not a Git repository");
   if (!samePhysicalPath(discoveredRoot, repositoryRoot)) {
     throw new Error("Configured Git workspace must be the repository root");
   }
-  const dirty = requireGit(git, ["-C", repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all"],
+  const dirty = requireGit(git, ["-C", configuredRoot, "status", "--porcelain=v1", "--untracked-files=all"],
     "Unable to inspect Git dirty state");
   if (dirty) throw new Error("Configured Git workspace has uncommitted changes");
-  const baseCommit = requireGit(git, ["-C", repositoryRoot, "rev-parse", "--verify", "HEAD^{commit}"],
+  const baseCommit = requireGit(git, ["-C", configuredRoot, "rev-parse", "--verify", "HEAD^{commit}"],
     "Git repository has no valid base commit").toLowerCase();
   if (!commitPattern.test(baseCommit)) throw new Error("Git returned an invalid base commit");
-  const mergeTarget = requireGit(git, ["-C", repositoryRoot, "symbolic-ref", "--quiet", "--short", "HEAD"],
+  const mergeTarget = requireGit(git, ["-C", configuredRoot, "symbolic-ref", "--quiet", "--short", "HEAD"],
     "Git repository must be on a named merge-target branch");
 
-  const agentComponent = branchComponent(task.agentId);
   const branch = `cocodex/${task.projectId.slice(0, 8)}/${agentComponent}/${task.id}`;
-  const branchExists = runGit(git, ["-C", repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const branchExists = runGit(git, ["-C", configuredRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
   if (branchExists.status === 0) throw new Error("Task Git branch already exists without CoCodex ownership");
   if (branchExists.status !== 1) throw new Error("Unable to inspect task Git branch");
 
   const physicalWorktreeRoot = physicalPathAllowMissing(options.worktreeRoot);
-  const requestedWorktreePath = containedPath(physicalWorktreeRoot, task.projectId, agentComponent, task.id);
+  const requestedWorktreePath = commandWorktreePath;
   if (existsSync(requestedWorktreePath)) throw new Error("Task worktree path already exists without CoCodex ownership");
   mkdirSync(dirname(requestedWorktreePath), { recursive: true });
   const physicalWorktreeParent = physicalPath(dirname(requestedWorktreePath));
@@ -250,7 +271,8 @@ export function prepareTaskWorkspace(
   }
   const reason = `CoCodex task ${task.id}`;
   requireGit(git, [
-    "-C", repositoryRoot, "worktree", "add", "--lock", "--reason", reason,
+    "-c", "core.longpaths=true",
+    "-C", configuredRoot, "worktree", "add", "--lock", "--reason", reason,
     "-b", branch, requestedWorktreePath, baseCommit,
   ], "Git could not create the task worktree");
   const worktreePath = physicalPath(requestedWorktreePath);
@@ -276,5 +298,5 @@ export function prepareTaskWorkspace(
     version: 1,
     tasks: { ...ownership.tasks, [task.id]: entry },
   });
-  return verifyOwnedWorktree(git, entry);
+  return verifyOwnedWorktree(git, entry, configuredRoot, requestedWorktreePath);
 }

@@ -8,6 +8,8 @@ import {
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
+import { executableLocalAgentIds, stopEveryLocalAgent } from "../cocodex-agent-safety-state";
+import { buildTaskDependencyGraph, type TaskGraphState } from "../cocodex-task-graph";
 import {
   applyPromptTextEdit,
   encodePromptRelativeCaret,
@@ -30,6 +32,7 @@ import { IconBot, IconKey, IconLock, IconRefresh, IconServer } from "../icons";
 import "../styles-cocodex.css";
 
 type ConnectionState = "not-configured" | "stopped" | "connecting" | "connected" | "retrying";
+type RightRailTab = "usage" | "agents" | "artifacts" | "messages";
 
 interface Status {
   configured: boolean;
@@ -62,7 +65,7 @@ interface Status {
   latestEventSequence: number;
 }
 
-interface ChatEvent {
+export interface ChatEvent {
   sequence: number;
   projectId: string;
   chatId?: string;
@@ -172,7 +175,7 @@ interface AgentView {
 
 type AgentTaskStatus = "queued" | "running" | "completed" | "failed";
 
-interface AgentTaskView {
+export interface AgentTaskView {
   id: string;
   projectId: string;
   chatId?: string;
@@ -258,6 +261,14 @@ interface UsageReport {
   monthlyPercent?: number;
   monthlyResetAt?: number;
   customWindows?: { label: string; percent: number; resetAt?: number }[];
+  agents?: {
+    agentId: string;
+    requests: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    reasoningOutputTokens: number;
+  }[];
 }
 
 interface UsageReportView {
@@ -415,6 +426,190 @@ function stateLabel(t: TFn, state: ConnectionState): string { return t(STATE_TKE
 function agentStatusLabel(t: TFn, status: AgentStatus): string { return t(AGENT_STATUS_TKEY[status]); }
 function taskStatusLabel(t: TFn, status: AgentTaskStatus): string { return t(TASK_STATUS_TKEY[status]); }
 
+const RIGHT_RAIL_TABS: ReadonlyArray<readonly [RightRailTab, TKey]> = [
+  ["usage", "cocodex.usage.title"],
+  ["agents", "cocodex.agents.title"],
+  ["artifacts", "cocodex.artifacts.title"],
+  ["messages", "cocodex.private.title"],
+];
+
+export function WorkspaceRailTabs({
+  active,
+  onChange,
+}: {
+  active: RightRailTab;
+  onChange: (tab: RightRailTab) => void;
+}) {
+  const t = useT();
+  return <nav className="cocodex-rail-tabs" role="tablist" aria-label={t("cocodex.rail.title")}>
+    {RIGHT_RAIL_TABS.map(([tab, label]) => (
+      <button key={tab} type="button" role="tab" aria-selected={active === tab}
+        className={active === tab ? "active" : ""}
+        onClick={() => onChange(tab)}>{t(label)}</button>
+    ))}
+  </nav>;
+}
+
+const TASK_GRAPH_STATE_TKEY: Record<TaskGraphState, TKey> = {
+  ready: "cocodex.tasks.graph.ready",
+  running: "cocodex.tasks.working",
+  completed: "cocodex.tasks.completed",
+  failed: "cocodex.tasks.failed",
+  "blocked-waiting": "cocodex.tasks.graph.blockedWaiting",
+  "blocked-failed": "cocodex.tasks.graph.blockedFailed",
+  "blocked-missing": "cocodex.tasks.graph.blockedMissing",
+  "blocked-cycle": "cocodex.tasks.graph.blockedCycle",
+};
+
+function taskGraphStateLabel(t: TFn, state: TaskGraphState): string {
+  return t(TASK_GRAPH_STATE_TKEY[state]);
+}
+
+function taskGraphVisualStatus(state: TaskGraphState): "available" | "working" | "completed" | "failed" | "queued" {
+  if (state === "ready") return "available";
+  if (state === "running") return "working";
+  if (state === "completed") return "completed";
+  if (state === "failed" || state === "blocked-failed" || state === "blocked-missing" || state === "blocked-cycle") return "failed";
+  return "queued";
+}
+
+export function TaskDependencyGraph({
+  tasks,
+  artifacts,
+}: {
+  tasks: AgentTaskView[];
+  artifacts: Artifact[];
+}) {
+  const t = useT();
+  const nodes = buildTaskDependencyGraph(tasks, artifacts);
+  if (!nodes.length) return <p className="muted">{t("cocodex.tasks.empty")}</p>;
+  return <div className="cocodex-task-graph" role="list" aria-label={t("cocodex.tasks.title")}>
+    {nodes.map(node => {
+      const visualStatus = taskGraphVisualStatus(node.state);
+      return <article className={`cocodex-agent-card cocodex-task-card cocodex-task-graph-node state-${node.state}`}
+        style={{ marginInlineStart: Math.min(node.layer, 4) * 10 }}
+        data-layer={node.layer} data-state={node.state} role="listitem" key={node.task.id}>
+        <div className="cocodex-agent-card-head">
+          <span className={`cocodex-agent-status status-${visualStatus}`}
+            aria-label={taskGraphStateLabel(t, node.state)} />
+          <strong>{node.task.agentName}</strong>
+          <small>{taskGraphStateLabel(t, node.state)}</small>
+        </div>
+        <code>{node.task.id.slice(0, 8)}</code>
+        {node.dependencies.length > 0 && <div className="cocodex-task-graph-links"
+          aria-label={t("cocodex.tasks.graph.dependsOn")}>
+          {node.dependencies.map(dependency => <span key={dependency.id}
+            className={`state-${dependency.state}`}>
+            <b aria-hidden="true">{"<-"}</b>
+            {dependency.agentName ?? dependency.id.slice(0, 8)}
+            <small>{dependency.state === "missing"
+              ? t("cocodex.tasks.graph.blockedMissing")
+              : taskGraphStateLabel(t, dependency.state)}</small>
+          </span>)}
+        </div>}
+        {node.artifactInputs.length > 0 && <>
+          <small>{t("cocodex.tasks.graph.consumes", { count: node.artifactInputs.length })}</small>
+          <div className="cocodex-task-artifact-inputs">
+            {node.artifactInputs.map(input => <span key={input.id}>
+              <b aria-hidden="true">{"<>"}</b>
+              {input.title ?? input.id.slice(0, 8)}
+              <small>{input.status ?? t("cocodex.tasks.graph.blockedMissing")}</small>
+            </span>)}
+          </div>
+        </>}
+        <small>{t("cocodex.tasks.events", { count: node.task.eventCount })}
+          {node.task.encrypted ? ` - ${t("cocodex.tasks.encrypted")}` : ""}</small>
+        {node.task.workspaceMode === "shared"
+          && <small>{t("cocodex.tasks.workspace.shared")}</small>}
+        {node.task.workspaceMode === "git-worktree" && <small>
+          {t("cocodex.tasks.workspace.worktree", {
+            branch: node.task.branch ?? node.task.workspaceRef ?? "",
+            commit: node.task.baseCommit?.slice(0, 8) ?? "",
+          })}
+        </small>}
+      </article>;
+    })}
+  </div>;
+}
+export function ChatTimeline({
+  messages,
+  tasks,
+  localDeviceId,
+  members,
+}: {
+  messages: ChatEvent[];
+  tasks: AgentTaskView[];
+  localDeviceId?: string;
+  members: ProjectMember[];
+}) {
+  const t = useT();
+  const displayName = (deviceId: string) => deviceId === localDeviceId
+    ? t("cocodex.you")
+    : members.find(member => member.deviceId === deviceId)?.displayName ?? deviceId.slice(0, 8);
+  const entries = [
+    ...messages.map(message => ({
+      kind: "message" as const,
+      acceptedAt: message.acceptedAt,
+      stableOrder: `1:${String(message.sequence).padStart(16, "0")}:${message.eventId}`,
+      message,
+    })),
+    ...tasks.map(task => ({
+      kind: "task" as const,
+      acceptedAt: task.acceptedAt,
+      stableOrder: `0:${task.id}`,
+      task,
+    })),
+  ].sort((left, right) => {
+    const byTime = Date.parse(left.acceptedAt) - Date.parse(right.acceptedAt);
+    return (Number.isFinite(byTime) && byTime !== 0) ? byTime : left.stableOrder.localeCompare(right.stableOrder);
+  });
+
+  if (!entries.length) return <div className="cocodex-empty">{t("cocodex.chat.empty")}</div>;
+
+  return <>
+    {entries.map(entry => {
+      if (entry.kind === "message") {
+        const message = entry.message;
+        return <article key={`message:${message.eventId}`}
+          className={message.senderDeviceId === localDeviceId ? "mine" : ""}>
+          <div>
+            <strong>{displayName(message.senderDeviceId)}</strong>
+            <span>#{message.sequence}</span>
+          </div>
+          <p>{message.content}</p>
+        </article>;
+      }
+
+      const task = entry.task;
+      const visualStatus = task.status === "running" ? "working" : task.status;
+      return <article key={`task:${task.id}`} className={`cocodex-timeline-task status-${visualStatus}`}>
+        <div className="cocodex-timeline-task-head">
+          <span className={`cocodex-agent-status status-${visualStatus}`} aria-hidden="true" />
+          <strong>{task.agentName}</strong>
+          <span>{taskStatusLabel(t, task.status)}</span>
+        </div>
+        <details open={task.status === "running"}>
+          <summary>{t("cocodex.tasks.events", { count: task.eventCount })}</summary>
+          <div className="cocodex-timeline-task-details">
+            <small>{displayName(task.requesterDeviceId)} → {task.targetDeviceId.slice(0, 8)}</small>
+            <code>{task.id.slice(0, 12)}</code>
+            {task.dependencies.length > 0
+              && <small>{t("cocodex.tasks.dependencies", { count: task.dependencies.length })}</small>}
+            {task.inputArtifactIds.length > 0
+              && <small>{t("cocodex.tasks.artifacts", { count: task.inputArtifactIds.length })}</small>}
+            {task.workspaceMode === "shared" && <small>{t("cocodex.tasks.workspace.shared")}</small>}
+            {task.workspaceMode === "git-worktree" && <small>{t("cocodex.tasks.workspace.worktree", {
+              branch: task.branch ?? task.workspaceRef ?? "",
+              commit: task.baseCommit?.slice(0, 8) ?? "",
+            })}</small>}
+            {task.encrypted && <small><IconLock /> {t("cocodex.tasks.encrypted")}</small>}
+          </div>
+        </details>
+      </article>;
+    })}
+  </>;
+}
+
 function updateToBase64(update: Uint8Array): string {
   let binary = "";
   for (const byte of update) binary += String.fromCharCode(byte);
@@ -434,6 +629,11 @@ function usageResetLabel(value: number | undefined): string {
 
 function usageTotalTokens(report: UsageReport): number {
   return report.inputTokens + report.outputTokens;
+}
+
+function cacheHitPercent(inputTokens: number, cachedInputTokens: number): number {
+  if (inputTokens <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((cachedInputTokens / inputTokens) * 100)));
 }
 
 function fileSizeLabel(t: TFn, bytes: number): string {
@@ -573,6 +773,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [privateDraft, setPrivateDraft] = useState("");
   const [privateVerificationFingerprint, setPrivateVerificationFingerprint] = useState("");
   const [notice, setNotice] = useState("");
+  const [rightRailTab, setRightRailTab] = useState<RightRailTab>("agents");
   const [busy, setBusy] = useState(false);
   const cursor = useRef(0);
   const projectListRequested = useRef(false);
@@ -1025,6 +1226,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     queueMicrotask(() => {
       setChats([]);
       setChatId(projectId);
+      setProjectMembers([]);
+      setUsageReports([]);
+      setAgents([]);
     });
     void command({ type: "project.chat.list", projectId });
     void command({ type: "usage.get", projectId });
@@ -1039,11 +1243,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     subscribedProject.current = scope;
     setChat([]);
     setPresence([]);
-    setProjectMembers([]);
     setSharedContext(undefined);
     setFinalGoalDraft("");
-    setUsageReports([]);
-    setAgents([]);
     setTasks([]);
     setArtifacts([]);
     setFileReferences([]);
@@ -1131,6 +1332,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       agentId,
       chatDraft: draft,
       sharedPrompt,
+      finalGoal: sharedContext?.finalGoal,
       inputArtifactIds: selectedArtifactIds,
     });
     if (!submission) return;
@@ -1432,6 +1634,22 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const emergencyStopAllLocalAgents = async () => {
+    const agentIds = executableLocalAgentIds(status?.localAgents ?? []);
+    if (!agentIds.length || !window.confirm(t("cocodex.agent.safety.stopAllConfirm"))) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await stopEveryLocalAgent(agentIds, agentId => command({ type: "agent.emergency.stop", agentId }));
+      setNotice(t("cocodex.agent.safety.stoppedAll"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      await loadStatus();
+      setBusy(false);
+    }
+  };
+
   const removeProjectMember = async (member: ProjectMember) => {
     if (!projectId || projects.find(project => project.id === projectId)?.role !== "owner") return;
     if (!confirmProjectMemberRemoval(t, member, message => window.confirm(message))) return;
@@ -1580,11 +1798,17 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           <h2>{t("cocodex.title")}</h2>
           <p>{t("cocodex.subtitle")}</p>
         </div>
-        {status?.configured && (
+        {status?.configured && <div className="cocodex-head-actions">
+          {status.localAgents.some(agent => agent.executionEnabled) && (
+            <button type="button" className="btn btn-danger cocodex-emergency-stop"
+              disabled={busy || !status.running} onClick={() => void emergencyStopAllLocalAgents()}>
+              {t("cocodex.agent.safety.stopAll")}
+            </button>
+          )}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void toggleSession()}>
             {t(status.running ? "cocodex.disconnect" : "cocodex.connect")}
           </button>
-        )}
+        </div>}
       </header>
 
       {notice && <div className="cocodex-notice" role="status">{notice}</div>}
@@ -2022,16 +2246,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </div>}
             </label>
             <div className="cocodex-message-list" aria-live="polite">
-              {chat.map(message => (
-                <article key={message.eventId} className={message.senderDeviceId === status.deviceId ? "mine" : ""}>
-                  <div>
-                    <strong>{message.senderDeviceId === status.deviceId ? t("cocodex.you") : message.senderDeviceId.slice(0, 8)}</strong>
-                    <span>#{message.sequence}</span>
-                  </div>
-                  <p>{message.content}</p>
-                </article>
-              ))}
-              {!chat.length && <div className="cocodex-empty">{t("cocodex.chat.empty")}</div>}
+              <ChatTimeline messages={chat} tasks={visibleTasks} localDeviceId={status.deviceId}
+                members={projectMembers} />
             </div>
             <form className="cocodex-composer" onSubmit={sendPrompt}>
               <select className="input cocodex-agent-input" value={agentId}
@@ -2112,7 +2328,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 </div>
               </section>
             )}
-            <section className="cocodex-usage">
+            <WorkspaceRailTabs active={rightRailTab} onChange={setRightRailTab} />
+            {rightRailTab === "usage" && <section className="cocodex-usage" role="tabpanel">
               <div className="cocodex-section-head">
                 <div><strong>{t("cocodex.usage.title")}</strong><small>{t("cocodex.usage.subtitle")}</small></div>
                 <IconRefresh />
@@ -2139,7 +2356,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                             <span>{t("cocodex.usage.requests", { count: report.requests.toLocaleString() })}</span>
                             <span>{t("cocodex.usage.tokens", { count: usageTotalTokens(report).toLocaleString() })}</span>
                             <span>{t("cocodex.usage.active", { count: report.activeAgents })}</span>
+                            <span>{t("cocodex.usage.cacheHit", { percent: cacheHitPercent(report.inputTokens, report.cachedInputTokens) })}</span>
                           </div>
+                          {(report.agents ?? []).map(agent => (
+                            <div className="cocodex-usage-window" key={agent.agentId}>
+                              <span>{agent.agentId}</span>
+                              <b>{t("cocodex.usage.cacheHit", { percent: cacheHitPercent(agent.inputTokens, agent.cachedInputTokens) })}</b>
+                              <small>{t("cocodex.usage.requests", { count: agent.requests.toLocaleString() })}</small>
+                            </div>
+                          ))}
                           {windows.map(([label, percent, resetAt]) => (
                             <div className="cocodex-usage-window" key={label}>
                               <span>{label}</span><b>{Math.round(percent)}%</b>
@@ -2153,8 +2378,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 })}
                 {!usageReports.length && <p className="muted">{t("cocodex.usage.noMembers")}</p>}
               </div>
-            </section>
-            <section className="cocodex-agents">
+            </section>}
+            {rightRailTab === "agents" && <>
+            <section className="cocodex-agents" role="tabpanel">
               <div className="cocodex-section-head">
                 <div><strong>{t("cocodex.agents.title")}</strong><small>{t("cocodex.agents.subtitle")}</small></div>
                 <IconBot />
@@ -2180,35 +2406,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <IconRefresh />
               </div>
               <div className="cocodex-agent-list">
-                {visibleTasks.map(task => {
-                  const visualStatus = task.status === "running" ? "working" : task.status;
-                  return (
-                    <article className="cocodex-agent-card cocodex-task-card" key={task.id}>
-                      <div className="cocodex-agent-card-head">
-                        <span className={`cocodex-agent-status status-${visualStatus}`} aria-label={taskStatusLabel(t, task.status)} />
-                        <strong>{task.agentName}</strong>
-                        <small>{taskStatusLabel(t, task.status)}</small>
-                      </div>
-                      <code>{task.id.slice(0, 8)}</code>
-                      <small>{t("cocodex.tasks.events", { count: task.eventCount })}
-                        {task.encrypted ? ` · ${t("cocodex.tasks.encrypted")}` : ""}</small>
-                      {task.dependencies.length > 0 && <small>{t("cocodex.tasks.dependencies", { count: task.dependencies.length })}</small>}
-                      {task.inputArtifactIds.length > 0 && <small>{t("cocodex.tasks.artifacts", { count: task.inputArtifactIds.length })}</small>}
-                      {task.workspaceMode === "shared"
-                        && <small>{t("cocodex.tasks.workspace.shared")}</small>}
-                      {task.workspaceMode === "git-worktree" && <small>
-                        {t("cocodex.tasks.workspace.worktree", {
-                          branch: task.branch ?? task.workspaceRef ?? "",
-                          commit: task.baseCommit?.slice(0, 8) ?? "",
-                        })}
-                      </small>}
-                    </article>
-                  );
-                })}
-                {!visibleTasks.length && <p className="muted">{t("cocodex.tasks.empty")}</p>}
+                <TaskDependencyGraph tasks={visibleTasks} artifacts={visibleArtifacts} />
               </div>
             </section>
-            <section className="cocodex-agents cocodex-artifacts">
+            </>}
+            {rightRailTab === "artifacts" && <section className="cocodex-agents cocodex-artifacts" role="tabpanel">
               <div className="cocodex-section-head">
                 <div><strong>{t("cocodex.artifacts.title")}</strong><small>{t("cocodex.artifacts.subtitle")}</small></div>
                 <IconKey />
@@ -2280,7 +2482,8 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                   {t("cocodex.fileReferences.publish")}
                 </button>
               </form>
-            </section>
+            </section>}
+            {rightRailTab === "messages" && <div className="cocodex-messages-panel" role="tabpanel">
             <div className="cocodex-section-head">
               <div>
                 <strong>{selectedPrivateContact?.displayName ?? t("cocodex.private.title")}</strong>
@@ -2374,6 +2577,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 {t("cocodex.private.send")}
               </button>
             </form>
+            </div>}
           </aside>
         </div>
       )}

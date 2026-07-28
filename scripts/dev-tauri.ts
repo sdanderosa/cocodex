@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { buildTauriSidecar } from "./build-tauri-sidecar";
 
 const root = resolve(import.meta.dir, "..");
 const bun = process.execPath;
@@ -29,6 +30,10 @@ function stopChildren(): void {
 
 process.on("SIGINT", stopChildren);
 process.on("SIGTERM", stopChildren);
+
+// Tauri validates configured external binaries in development too. Build the
+// exact runtime that production bundles before Vite or the source proxy starts.
+await buildTauriSidecar();
 
 if (!(await proxyIsReady())) {
   children.push(Bun.spawn(

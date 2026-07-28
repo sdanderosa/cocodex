@@ -1,5 +1,5 @@
 import { getCoCodexGuiBridge } from "../../cocodex/gui-bridge";
-import { isSameOriginAsRequest, jsonResponse } from "../auth-cors";
+import { isSameOriginAsRequest, isTrustedTauriOrigin, jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
 
 function routeError(ctx: ManagementContext, error: unknown, status = 400): Response {
@@ -16,14 +16,14 @@ export async function handleCoCodexRoutes(ctx: ManagementContext): Promise<Respo
   if (!url.pathname.startsWith("/api/cocodex/")) return null;
   const bridge = getCoCodexGuiBridge();
   const origin = req.headers.get("Origin");
-  const sameOriginBrowser = origin
-    ? isSameOriginAsRequest(req, origin)
+  const trustedUiOrigin = origin
+    ? isSameOriginAsRequest(req, origin) || isTrustedTauriOrigin(origin)
     : req.headers.get("Sec-Fetch-Site") === "same-origin";
   if (url.pathname === "/api/cocodex/capability" && req.method === "GET") {
-    if (!sameOriginBrowser) return routeError(ctx, new Error("Same-origin browser request required"), 403);
+    if (!trustedUiOrigin) return routeError(ctx, new Error("Trusted CoCodex UI origin required"), 403);
     return jsonResponse({ capability: bridge.issueCapability() }, 200, req, config);
   }
-  if ((origin && !isSameOriginAsRequest(req, origin))
+  if ((origin && !isSameOriginAsRequest(req, origin) && !isTrustedTauriOrigin(origin))
     || !bridge.acceptsCapability(req.headers.get("X-CoCodex-Capability"))) {
     return routeError(ctx, new Error("CoCodex GUI capability required"), 403);
   }

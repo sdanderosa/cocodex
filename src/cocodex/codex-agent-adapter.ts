@@ -1,15 +1,25 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AgentTask } from "../../packages/cocodex-protocol/src/index.ts";
 import { codexExecInvocation } from "../codex/exec-invocation";
 import { resolveCodexRuntime } from "../codex/runtime";
 import type { LocalAgentAdapter } from "./agent-bridge";
 import type { TaskWorkspace } from "./task-worktree";
 import { modelMultiAgentVersion } from "./model-multi-agent-version";
+import {
+  deleteCodexSession,
+  loadCodexSession,
+  saveCodexSession,
+  type CodexSessionRecord,
+} from "./codex-session-store";
 
 const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
+const DEFAULT_MAX_SESSION_TURNS = 24;
+const DEFAULT_MAX_SESSION_INPUT_TOKENS = 180_000;
 const SAFE_ENVIRONMENT_KEYS = [
   "APPDATA", "CODEX_CLI_PATH", "CODEX_HOME", "HOME", "HOMEDRIVE", "HOMEPATH",
   "LOCALAPPDATA", "PATH", "PATHEXT", "SystemDrive", "SystemRoot",
@@ -46,6 +56,10 @@ export interface CodexAgentAdapterOptions {
   accessProfile?: "project-only" | "full-computer";
   fullComputerOptIn?: boolean;
   timeoutMs?: number;
+  sessionStorePath?: string;
+  sessionIsolationKey?: string;
+  maxSessionTurns?: number;
+  maxSessionInputTokens?: number;
   onUsage?: (usage: CodexUsage) => void;
   prepareWorkspace?: (task: AgentTask) => TaskWorkspace | Promise<TaskWorkspace>;
   onWorkspacePrepared?: (task: AgentTask, workspace: TaskWorkspace) => void | Promise<void>;
@@ -80,7 +94,23 @@ function runtimePolicyPrompt(taskPrompt: string, options: CodexAgentAdapterOptio
     + `</cocodex_agent_policy>\n\n${taskPrompt}`;
 }
 
+function scopedTaskPrompt(task: AgentTask, options: CodexAgentAdapterOptions): string {
+  const metadata = JSON.stringify({
+    projectId: task.projectId,
+    chatId: task.chatId ?? task.projectId,
+    agentId: task.agentId,
+    dependencyTaskIds: task.dependencies,
+    acceptedInputArtifactIds: task.inputArtifactIds,
+  });
+  return runtimePolicyPrompt(
+    `<cocodex_task_scope>${metadata}</cocodex_task_scope>\n\n${task.prompt}`,
+    options,
+  );
+}
+
 export class CodexAgentAdapter implements LocalAgentAdapter {
+  private executionTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly options: CodexAgentAdapterOptions) {}
 
   async authorize(task: AgentTask, signal?: AbortSignal): Promise<boolean> {
@@ -95,6 +125,18 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
   }
 
   async *execute(task: AgentTask, signal?: AbortSignal): AsyncIterable<string> {
+    let releaseExecution!: () => void;
+    const previousExecution = this.executionTail;
+    this.executionTail = new Promise(resolve => { releaseExecution = resolve; });
+    await previousExecution;
+    try {
+      yield* this.executeSerial(task, signal);
+    } finally {
+      releaseExecution();
+    }
+  }
+
+  private async *executeSerial(task: AgentTask, signal?: AbortSignal): AsyncIterable<string> {
     if (signal?.aborted) throw new Error("Local agent execution was cancelled");
     const sandbox = this.options.sandbox ?? "workspace-write";
     if (sandbox === "danger-full-access"
@@ -152,7 +194,39 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
             "-c", `agents.max_threads=${threadLimit}`,
           ]
         : [];
-    const invocation = codexExecInvocation(runtime.command, [
+    const maxSessionTurns = this.options.maxSessionTurns ?? DEFAULT_MAX_SESSION_TURNS;
+    const maxSessionInputTokens = this.options.maxSessionInputTokens ?? DEFAULT_MAX_SESSION_INPUT_TOKENS;
+    if (!Number.isInteger(maxSessionTurns) || maxSessionTurns < 1 || maxSessionTurns > 1_000) {
+      throw new Error("Local Codex session turn limit is invalid");
+    }
+    if (!Number.isInteger(maxSessionInputTokens) || maxSessionInputTokens < 1_000 || maxSessionInputTokens > 10_000_000) {
+      throw new Error("Local Codex session token limit is invalid");
+    }
+    const scopeFingerprint = createHash("sha256").update(JSON.stringify({
+      version: 1,
+      projectId: this.options.projectId,
+      chatId: task.chatId ?? task.projectId,
+      agentId: this.options.agentId,
+      workspaceRoot: resolve(this.options.workspaceRoot),
+      primaryModel,
+      primaryEffort,
+      coAgentModel: this.options.coAgentModel ?? null,
+      coAgentEffort: this.options.coAgentEffort ?? null,
+      maxConcurrentCoAgents,
+      sandbox,
+      accessProfile: this.options.accessProfile ?? "project-only",
+      fullComputerOptIn: this.options.fullComputerOptIn === true,
+      runtimeVersion: runtime.version ?? "unknown",
+      isolationKey: this.options.sessionIsolationKey ?? "",
+    }), "utf8").digest("hex");
+    let session: CodexSessionRecord | null = this.options.sessionStorePath
+      ? loadCodexSession(this.options.sessionStorePath, scopeFingerprint)
+      : null;
+    if (session && (session.turns >= maxSessionTurns || session.lastInputTokens >= maxSessionInputTokens)) {
+      deleteCodexSession(this.options.sessionStorePath!, scopeFingerprint);
+      session = null;
+    }
+    const commonArgs = [
       "-C",
       workspace.workingDirectory,
       "--model",
@@ -162,11 +236,12 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       ...concurrencyArgs,
       "exec",
       "--json",
-      "--ephemeral",
       "--sandbox",
       sandbox,
-      "-",
-    ]);
+    ];
+    const invocation = codexExecInvocation(runtime.command, session
+      ? [...commonArgs, "resume", session.threadId, "-"]
+      : [...commonArgs, ...(this.options.sessionStorePath ? [] : ["--ephemeral"]), "-"]);
     const child = (this.options.spawnProcess ?? spawn)(
       invocation.file,
       invocation.args,
@@ -193,11 +268,14 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       stderrBytes += chunk.byteLength;
       if (stderrBytes > MAX_STDERR_BYTES) child.kill();
     });
-    child.stdin.end(runtimePolicyPrompt(task.prompt, this.options), "utf8");
+    child.stdin.end(scopedTaskPrompt(task, this.options), "utf8");
 
     let buffer = "";
     let stdoutBytes = 0;
     let sawTerminal = false;
+    let sawActivity = false;
+    let startedThreadId: string | null = null;
+    let completedUsage: CodexUsage | null = null;
     try {
       for await (const raw of child.stdout) {
         const chunk = Buffer.from(raw);
@@ -213,14 +291,20 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
             throw new Error("Codex emitted an oversized JSONL event");
           }
           const event = JSON.parse(line) as Record<string, unknown>;
+          if (event.type === "thread.started") {
+            sawActivity = true;
+            if (typeof event.thread_id === "string") startedThreadId = event.thread_id;
+          }
           if (event.type === "error" || event.type === "turn.failed") {
             throw new Error("Codex reported a failed turn");
           }
           if (event.type === "turn.completed") {
             sawTerminal = true;
-            this.options.onUsage?.(usageFrom(event.usage));
+            sawActivity = true;
+            completedUsage = usageFrom(event.usage);
           }
           if (event.type === "item.completed") {
+            sawActivity = true;
             const item = event.item as Record<string, unknown> | undefined;
             if (item?.type === "agent_message" && typeof item.text === "string" && item.text) {
               yield item.text;
@@ -231,6 +315,28 @@ export class CodexAgentAdapter implements LocalAgentAdapter {
       if (buffer.trim()) throw new Error("Codex ended with a truncated JSONL event");
       const exitCode = await exited;
       if (exitCode !== 0 || !sawTerminal) throw new Error("Codex did not complete successfully");
+      if (this.options.sessionStorePath) {
+        const threadId = session?.threadId ?? startedThreadId;
+        if (!threadId) throw new Error("Codex did not report a persistent session ID");
+        const now = new Date().toISOString();
+        saveCodexSession(this.options.sessionStorePath, {
+          scopeFingerprint,
+          threadId,
+          turns: (session?.turns ?? 0) + 1,
+          lastInputTokens: completedUsage?.inputTokens ?? 0,
+          createdAt: session?.createdAt ?? now,
+          updatedAt: now,
+        });
+      }
+      if (completedUsage) this.options.onUsage?.(completedUsage);
+    } catch (error) {
+      // Never rerun the same task automatically. A stale resume that failed
+      // before producing any activity is discarded so the next signed task
+      // starts cleanly without risking duplicated side effects.
+      if (session && !sawActivity && this.options.sessionStorePath) {
+        deleteCodexSession(this.options.sessionStorePath, scopeFingerprint);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);

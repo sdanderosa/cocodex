@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { handleManagementAPI } from "../src/server/management-api";
 import {
   addRequestLog,
@@ -10,6 +10,7 @@ import type { OcxConfig } from "../src/types";
 
 const config = { providers: [] } as unknown as OcxConfig;
 
+beforeEach(() => clearRequestLogsForTests());
 afterEach(() => clearRequestLogsForTests());
 
 async function readLogs(): Promise<Array<Record<string, any>>> {

@@ -5,7 +5,7 @@
   "identifier": "com.cocodex.desktop",
   "build": {
     "beforeDevCommand": "bun ../scripts/dev-tauri.ts",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun ../scripts/build-tauri-frontend.ts",
     "devUrl": "http://127.0.0.1:4179",
     "frontendDist": "../dist"
   },
@@ -19,7 +19,8 @@
         "minWidth": 1024,
         "minHeight": 700,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
       }
     ],
     "security": {
@@ -29,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "externalBin": ["binaries/cocodex-runtime"],
     "category": "Utility",
     "shortDescription": "A secure collaborative Codex workspace",
     "longDescription": "CoCodex is a private collaborative workspace for shared projects, agents, and Codex sessions.",

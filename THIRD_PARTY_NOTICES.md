@@ -4,14 +4,16 @@ This distribution includes the following components. Their notices are
 reproduced here to satisfy redistribution obligations. The dependency lockfile
 is authoritative for the exact resolved graph.
 
-## Tauri 2.11.4 — MIT or Apache-2.0 where applicable
+## Tauri CLI 2.11.4, Rust runtime 2.11.5, and shell plugin 2.3.5
 
-The desktop shell uses the maintained Tauri CLI and Rust runtime. Tauri code
-is dual-licensed under MIT or Apache-2.0 where applicable; no Tauri source is
+The desktop shell uses Tauri CLI 2.11.4, Rust runtime 2.11.5, and
+`tauri-plugin-shell` 2.3.5 for a Rust-only fixed sidecar call. These components
+are dual-licensed under MIT or Apache-2.0 where applicable; no Tauri source is
 copied into CoCodex. The exact npm CLI version is pinned by `gui/bun.lock`, and
-the exact Rust graph is resolved by `gui/src-tauri/Cargo.lock` when the first
-native build is run. See https://github.com/tauri-apps/tauri for the upstream
-license files and attribution requirements.
+the exact Rust graph is pinned by `gui/src-tauri/Cargo.lock`. See
+https://github.com/tauri-apps/tauri and
+https://github.com/tauri-apps/plugins-workspace for the upstream license files
+and attribution requirements.
 
 ## Yjs 13.6.31 — MIT
 

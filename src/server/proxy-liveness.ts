@@ -70,9 +70,12 @@ export async function proxyIdentityAt(
   io: LivenessIo = {},
 ): Promise<{ pid: number | null } | null> {
   const fetchFn = io.fetchFn ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), io.timeoutMs ?? 750);
+  timeout.unref();
   try {
     const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/healthz`, {
-      signal: AbortSignal.timeout(io.timeoutMs ?? 750),
+      signal: controller.signal,
     });
     if (!res.ok) return null;
     const body = (await res.json().catch(() => null)) as HealthzIdentity | null;
@@ -82,6 +85,9 @@ export async function proxyIdentityAt(
     return { pid };
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
   }
 }
 

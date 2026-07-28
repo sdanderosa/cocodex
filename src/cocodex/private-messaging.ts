@@ -80,8 +80,10 @@ export async function openPrivateMessage(
   }
 }
 
+export type PrivateMessageKind = "message" | "reaction" | "edit" | "delete";
+
 export interface PrivateMessagePlaintext {
-  version: 1;
+  version: 1 | 2;
   messageId: string;
   senderDeviceId: string;
   recipientDeviceId: string;
@@ -89,10 +91,17 @@ export interface PrivateMessagePlaintext {
   clientCreatedAt: string;
   senderPublicKeyPem: string;
   signature: string;
+  kind: PrivateMessageKind;
+  targetMessageId?: string;
+  replyToMessageId?: string;
+  emoji?: string;
+  reactionOperation?: "add" | "remove";
 }
 
-function privateMessageTranscript(input: Omit<PrivateMessagePlaintext, "version" | "senderPublicKeyPem" | "signature">): Buffer {
-  const values = ["1", input.messageId, input.senderDeviceId, input.recipientDeviceId, input.text, input.clientCreatedAt];
+export type PrivateMessageInput = Omit<PrivateMessagePlaintext,
+  "version" | "senderPublicKeyPem" | "signature" | "kind"> & { kind?: PrivateMessageKind };
+
+function transcript(values: string[]): Buffer {
   return Buffer.concat([
     Buffer.from("COCODEX-PRIVATE-MESSAGE\u0000", "utf8"),
     ...values.map(value => {
@@ -104,17 +113,54 @@ function privateMessageTranscript(input: Omit<PrivateMessagePlaintext, "version"
   ]);
 }
 
+function privateMessageTranscript(input: PrivateMessageInput, version: 1 | 2): Buffer {
+  const base = [String(version), input.messageId, input.senderDeviceId, input.recipientDeviceId,
+    input.text, input.clientCreatedAt];
+  return transcript(version === 1 ? base : [...base, input.kind ?? "message",
+    input.targetMessageId ?? "", input.replyToMessageId ?? "", input.emoji ?? "",
+    input.reactionOperation ?? ""]);
+}
+
+function validateAction(input: PrivateMessageInput): void {
+  const kind = input.kind ?? "message";
+  const isUuid = (value: unknown): value is string => typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  if (kind === "message") {
+    if (input.text.length < 1 || input.text.length > 32_768) throw new Error("Private message text is invalid");
+    if (input.replyToMessageId !== undefined && !isUuid(input.replyToMessageId)) throw new Error("Private reply target is invalid");
+    if (input.targetMessageId !== undefined || input.emoji !== undefined || input.reactionOperation !== undefined) {
+      throw new Error("Private message action fields are invalid");
+    }
+    return;
+  }
+  if (!isUuid(input.targetMessageId) || input.replyToMessageId !== undefined) throw new Error("Private message action target is invalid");
+  if (kind === "edit" && (input.text.length < 1 || input.text.length > 32_768)) throw new Error("Private edit text is invalid");
+  if (kind === "delete" && (input.text !== "" || input.emoji !== undefined || input.reactionOperation !== undefined)) {
+    throw new Error("Private delete payload is invalid");
+  }
+  if (kind === "reaction") {
+    if (input.text !== "" || typeof input.emoji !== "string" || input.emoji.length < 1 || input.emoji.length > 32
+      || (input.reactionOperation !== "add" && input.reactionOperation !== "remove")) {
+      throw new Error("Private reaction payload is invalid");
+    }
+  } else if (input.emoji !== undefined || input.reactionOperation !== undefined) {
+    throw new Error("Private message action fields are invalid");
+  }
+}
+
 export async function sealSignedPrivateMessage(
-  input: Omit<PrivateMessagePlaintext, "version" | "senderPublicKeyPem" | "signature">,
+  input: PrivateMessageInput,
   senderPrivateKeyPem: string,
   senderPublicKeyPem: string,
   recipientPublicKeyPem: string,
 ): Promise<string> {
+  validateAction(input);
   const payload: PrivateMessagePlaintext = {
-    version: 1,
+    version: 2,
     ...input,
+    kind: input.kind ?? "message",
     senderPublicKeyPem,
-    signature: sign(null, privateMessageTranscript(input), senderPrivateKeyPem).toString("base64url"),
+    signature: sign(null, privateMessageTranscript(input, 2), senderPrivateKeyPem).toString("base64url"),
   };
   return sealPrivateMessage(JSON.stringify(payload), recipientPublicKeyPem);
 }
@@ -132,18 +178,27 @@ export async function openSignedPrivateMessage(
   } catch {
     throw new Error("Private-message payload is invalid");
   }
-  if (decoded.version !== 1 || decoded.messageId !== envelope.messageId
+  if ((decoded.version !== 1 && decoded.version !== 2) || decoded.messageId !== envelope.messageId
     || decoded.senderDeviceId !== envelope.senderDeviceId
     || decoded.recipientDeviceId !== envelope.recipientDeviceId
     || decoded.clientCreatedAt !== envelope.clientCreatedAt
-    || typeof decoded.text !== "string" || decoded.text.length < 1 || decoded.text.length > 32_768
+    || typeof decoded.text !== "string"
     || typeof decoded.senderPublicKeyPem !== "string" || typeof decoded.signature !== "string") {
     throw new Error("Private-message envelope validation failed");
   }
   if (publicKeyFingerprint(decoded.senderPublicKeyPem) !== expectedSenderFingerprint) {
     throw new Error("Private-message sender identity is not trusted");
   }
-  const valid = verify(null, privateMessageTranscript(decoded), createPublicKey(decoded.senderPublicKeyPem), Buffer.from(decoded.signature, "base64url"));
+  const normalized: PrivateMessagePlaintext = decoded.version === 1
+    ? { ...decoded, kind: "message" }
+    : decoded;
+  try {
+    validateAction(normalized);
+  } catch {
+    throw new Error("Private-message envelope validation failed");
+  }
+  const valid = verify(null, privateMessageTranscript(normalized, decoded.version),
+    createPublicKey(decoded.senderPublicKeyPem), Buffer.from(decoded.signature, "base64url"));
   if (!valid) throw new Error("Private-message signature validation failed");
-  return decoded;
+  return normalized;
 }

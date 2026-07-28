@@ -19,8 +19,12 @@ const runtimeMarker = (() => {
     throw new Error("CODEX_RUNTIME_MARKER must be valid fixture JSON");
   }
 })();
-if (!Bun.argv.includes("exec") || !Bun.argv.includes("--json") || !Bun.argv.includes("--ephemeral")) {
+if (!Bun.argv.includes("exec") || !Bun.argv.includes("--json")) {
   throw new Error("Expected official Codex exec JSONL arguments");
+}
+const resumeIndex = Bun.argv.indexOf("resume");
+if (resumeIndex >= 0 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(Bun.argv[resumeIndex + 1] ?? "")) {
+  throw new Error("Expected a bounded Codex resume session ID");
 }
 const dangerFullAccess = Bun.argv.includes("danger-full-access");
 if ((dangerFullAccess && runtimeMarker.allowFullComputer !== true)
@@ -43,6 +47,12 @@ if (barrierDirectory) {
   const release = join(barrierDirectory, "release");
   while (!existsSync(release)) await Bun.sleep(25);
 }
+console.log(JSON.stringify({
+  type: "thread.started",
+  thread_id: resumeIndex >= 0
+    ? Bun.argv[resumeIndex + 1]
+    : "11111111-1111-4111-8111-111111111111",
+}));
 console.log(JSON.stringify({
   type: "item.completed",
   item: { type: "agent_message", text: `${account}: accepted locally` },

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { getDefaultConfig } from "../src/config";
 import { handleCoCodexRoutes } from "../src/server/management/cocodex-routes";
+import { corsHeaders, isTrustedTauriOrigin } from "../src/server/auth-cors";
 import type { ManagementContext } from "../src/server/management/context";
 
 function context(req: Request): ManagementContext {
@@ -41,5 +42,24 @@ describe("CoCodex GUI route security", () => {
       },
     });
     expect((await handleCoCodexRoutes(context(authorized)))?.status).toBe(200);
+
+    const tauriOrigin = "tauri://localhost";
+    expect(isTrustedTauriOrigin(tauriOrigin)).toBe(true);
+    expect(isTrustedTauriOrigin("http://tauri.localhost")).toBe(true);
+    expect(isTrustedTauriOrigin("http://evil.localhost")).toBe(false);
+    const tauriCapabilityResponse = await handleCoCodexRoutes(context(new Request(
+      "http://127.0.0.1:10100/api/cocodex/capability",
+      { headers: { Origin: tauriOrigin, "Sec-Fetch-Site": "cross-site" } },
+    )));
+    expect(tauriCapabilityResponse?.status).toBe(200);
+    const tauriCapability = String((await tauriCapabilityResponse!.json()).capability);
+    const tauriAuthorized = await handleCoCodexRoutes(context(new Request(
+      "http://127.0.0.1:10100/api/cocodex/status",
+      { headers: { Origin: tauriOrigin, "X-CoCodex-Capability": tauriCapability } },
+    )));
+    expect(tauriAuthorized?.status).toBe(200);
+    expect(corsHeaders(new Request("http://127.0.0.1:10100", {
+      headers: { Origin: tauriOrigin },
+    }), getDefaultConfig())["Access-Control-Allow-Headers"]).toContain("X-CoCodex-Capability");
   });
 });

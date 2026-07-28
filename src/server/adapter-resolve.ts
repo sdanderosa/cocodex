@@ -6,7 +6,19 @@ import { createKiroAdapter } from "../adapters/kiro";
 import { createMimoFreeAdapter } from "../adapters/mimo-free";
 import { createOpenAIChatAdapter } from "../adapters/openai-chat";
 import { createResponsesPassthroughAdapter } from "../adapters/openai-responses";
+import type { ProviderAdapter } from "../adapters/base";
 import type { OcxProviderConfig } from "../types";
+
+type AdapterResolverForTests = (
+  providerConfig: OcxProviderConfig,
+  cacheRetention?: "none" | "short" | "long",
+) => ProviderAdapter | undefined;
+
+let adapterResolverForTests: AdapterResolverForTests | null = null;
+
+export function setAdapterResolverForTests(resolver: AdapterResolverForTests | null): void {
+  adapterResolverForTests = resolver;
+}
 
 /** Providers whose listed model ids must be driven over the Anthropic wire even if the provider's
  *  configured adapter is something else (the upstream only speaks Anthropic for these models). */
@@ -25,6 +37,9 @@ export function resolveWireProtocolOverride(providerName: string, modelId: strin
 
 /** Build the provider adapter for a resolved provider config. */
 export function resolveAdapter(providerConfig: OcxProviderConfig, cacheRetention?: "none" | "short" | "long") {
+  const testAdapter = adapterResolverForTests?.(providerConfig, cacheRetention);
+  if (testAdapter) return testAdapter;
+
   switch (providerConfig.adapter) {
     case "openai-chat":
       return createOpenAIChatAdapter(providerConfig);

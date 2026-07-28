@@ -1,21 +1,19 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProviderAdapter } from "../src/adapters/base";
+import { setAdapterResolverForTests } from "../src/server/adapter-resolve";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../src/types";
 
-const actualResolver = await import("../src/server/adapter-resolve");
 let adapterFactory: ((provider: OcxProviderConfig) => ProviderAdapter) | undefined;
-
-mock.module("../src/server/adapter-resolve", () => ({
-  ...actualResolver,
-  resolveAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long") {
-    return adapterFactory?.(provider) ?? actualResolver.resolveAdapter(provider, cacheRetention);
-  },
-}));
 
 const { handleResponses } = await import("../src/server/responses");
 
+beforeEach(() => {
+  setAdapterResolverForTests(provider => adapterFactory?.(provider));
+});
+
 afterEach(() => {
   adapterFactory = undefined;
+  setAdapterResolverForTests(null);
 });
 
 function config(adapter: string): OcxConfig {

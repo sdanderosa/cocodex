@@ -10,6 +10,16 @@ param(
     [switch]$SkipPathUpdate
 )
 
+trap {
+    $message = if ($_.Exception -and $_.Exception.Message) {
+        $_.Exception.Message
+    } else {
+        "The operation failed."
+    }
+    [Console]::Error.WriteLine("CoCodex installer failed: $message")
+    exit 1
+}
+
 $ErrorActionPreference = "Stop"
 $PackageName = "@sdanderosa/cocodex"
 $RequiredCommands = @("cocodex", "ccx", "cocodex-server", "ccx-server", "ocx")

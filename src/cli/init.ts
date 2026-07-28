@@ -1,6 +1,5 @@
 import * as readline from "node:readline";
 import { constants as fsConstants, copyFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { injectCodexConfig } from "../codex/inject";
 import { classifyOpenAiTierBackup, getConfigPath, getDefaultConfig, isValidProviderName, saveConfig } from "../config";
 import { enrichProviderFromCatalog } from "../oauth/key-providers";
 import { deriveInitProviders } from "../providers/derive";
@@ -174,12 +173,8 @@ export async function runInit(): Promise<void> {
   console.log(`\n✅ Config saved to ~/.opencodex/config.json`);
   if (oauthHint) console.log(`🔐 Authenticate this provider with:  ocx login ${providerName}`);
 
-  const injectAnswer = await prompt.ask("Inject into Codex config.toml? [Y/n]: ");
-  if (injectAnswer.trim().toLowerCase() !== "n") {
-    console.log("Fetching available models from provider...");
-    const result = await injectCodexConfig(port, config);
-    console.log(result.success ? `✅ ${result.message}` : `⚠️  ${result.message}`);
-  }
+  const injectAnswer = await prompt.ask("Inject into Codex config.toml after startup safety checks? [Y/n]: ");
+  const injectRequested = injectAnswer.trim().toLowerCase() !== "n";
 
   const shimAnswer = await prompt.ask("Install Codex autostart shim? [Y/n]: ");
   if (shimAnswer.trim().toLowerCase() !== "n") {
@@ -192,6 +187,25 @@ export async function runInit(): Promise<void> {
     }
   }
 
-  console.log(`\n🚀 Setup complete! Run 'ocx start' to start the proxy.`);
+  let setupComplete = true;
+  if (injectRequested) {
+    console.log("Starting the proxy and verifying /healthz plus autostart protection...");
+    const ensure = Bun.spawn([process.execPath, process.argv[1], "ensure"], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: process.env,
+    });
+    setupComplete = await ensure.exited === 0;
+  }
+
+  if (setupComplete) {
+    console.log(injectRequested
+      ? "\n🚀 Setup complete! Proxy health and persistent Codex routing verified."
+      : "\n🚀 Setup complete without persistent Codex routing.");
+  } else {
+    console.error("\n❌ Setup incomplete. Native Codex was restored; repair autostart and rerun 'ocx ensure'.");
+    process.exitCode = 1;
+  }
   prompt.close();
 }

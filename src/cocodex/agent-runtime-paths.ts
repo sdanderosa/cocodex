@@ -7,6 +7,7 @@ import type { ClientPaths } from "./paths";
 export interface AgentRuntimePaths {
   safety: string;
   journal: string;
+  codexSessions: string;
   worktreeRegistry: string;
   worktreeRoot: string;
 }
@@ -20,6 +21,7 @@ export function agentRuntimePaths(
     return {
       safety: paths.agentSafety,
       journal: paths.agentJournal,
+      codexSessions: resolve(paths.root, "codex-sessions.json"),
       worktreeRegistry: paths.taskWorktreeRegistry,
       worktreeRoot: paths.taskWorktrees,
     };
@@ -30,6 +32,7 @@ export function agentRuntimePaths(
   return {
     safety: resolve(root, "safety.json"),
     journal: resolve(root, "execution-journal.json"),
+    codexSessions: resolve(root, "codex-sessions.json"),
     worktreeRegistry: resolve(root, "task-worktrees.json"),
     worktreeRoot: paths.taskWorktrees,
   };

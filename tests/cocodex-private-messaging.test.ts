@@ -85,4 +85,55 @@ describe("CoCodex private-message encryption", () => {
       envelope, publicKeyFingerprint(identity().signing.publicKey),
     )).rejects.toThrow("sender identity is not trusted");
   });
+  test("authenticates reply and mutation metadata inside version-two ciphertext", async () => {
+    const sender = identity();
+    const recipient = identity();
+    const envelope = {
+      messageId: randomUUID(),
+      senderDeviceId: randomUUID(),
+      recipientDeviceId: randomUUID(),
+      clientCreatedAt: new Date().toISOString(),
+    };
+    const targetMessageId = randomUUID();
+    const ciphertext = await sealSignedPrivateMessage({
+      ...envelope,
+      kind: "reaction",
+      text: "",
+      targetMessageId,
+      emoji: "thumbs-up",
+      reactionOperation: "add",
+    }, sender.signing.privateKey, sender.signing.publicKey, recipient.messaging.publicKey);
+    const opened = await openSignedPrivateMessage(
+      ciphertext,
+      recipient.messaging.privateKey,
+      recipient.messaging.publicKey,
+      envelope,
+      publicKeyFingerprint(sender.signing.publicKey),
+    );
+    expect(opened).toMatchObject({
+      version: 2,
+      kind: "reaction",
+      targetMessageId,
+      emoji: "thumbs-up",
+      reactionOperation: "add",
+    });
+
+    await expect(sealSignedPrivateMessage({
+      ...envelope,
+      messageId: randomUUID(),
+      kind: "delete",
+      targetMessageId,
+      text: "plaintext must be empty",
+    }, sender.signing.privateKey, sender.signing.publicKey, recipient.messaging.publicKey))
+      .rejects.toThrow("delete payload is invalid");
+    await expect(sealSignedPrivateMessage({
+      ...envelope,
+      messageId: randomUUID(),
+      kind: "message",
+      replyToMessageId: "not-a-uuid",
+      text: "reply",
+    }, sender.signing.privateKey, sender.signing.publicKey, recipient.messaging.publicKey))
+      .rejects.toThrow("reply target is invalid");
+  });
+
 });

@@ -361,6 +361,56 @@ describe("Codex autostart shim", () => {
     }
   });
 
+  test("fresh shim installation rolls back every launcher when a later install step fails", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-install-rollback-bin-"));
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-install-rollback-home-"));
+    const oldPath = process.env.PATH;
+    const oldHome = process.env.OPENCODEX_HOME;
+    const wrappers = process.platform === "win32"
+      ? [join(binDir, "codex.cmd"), join(binDir, "codex.ps1"), join(binDir, "codex")]
+      : [join(binDir, "codex")];
+    const originals = wrappers.map((wrapper, index) => process.platform === "win32"
+      ? `@echo off\r\necho original ${index}\r\n`
+      : `#!/bin/sh\necho original ${index}\n`);
+
+    try {
+      process.env.PATH = binDir;
+      process.env.OPENCODEX_HOME = home;
+      wrappers.forEach((wrapper, index) => {
+        writeFileSync(wrapper, originals[index], "utf8");
+        if (process.platform !== "win32") chmodSync(wrapper, 0o755);
+      });
+      const failIndex = process.platform === "win32" ? 1 : 0;
+      const result = installCodexShim({
+        beforeFreshInstall: (_wrapperPath, index) => {
+          if (index === failIndex) throw new Error("simulated later launcher failure");
+        },
+      });
+
+      expect(result.installed).toBe(false);
+      expect(result.message).toContain("Rollback completed");
+      wrappers.forEach((wrapper, index) => {
+        expect(readFileSync(wrapper, "utf8")).toBe(originals[index]);
+        const backup = process.platform === "win32"
+          ? wrapper.endsWith(".cmd")
+            ? join(binDir, "codex.opencodex-real.cmd")
+            : wrapper.endsWith(".ps1")
+              ? join(binDir, "codex.opencodex-real.ps1")
+              : join(binDir, "codex.opencodex-real")
+          : join(binDir, "codex.opencodex-real");
+        expect(existsSync(backup)).toBe(false);
+      });
+      expect(existsSync(join(home, "codex-shim.json"))).toBe(false);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("shim intact -> zero-overhead path is read-only and never loads config", () => {
     withInstalledShim(({ wrappers, backups, statePath }) => {
       const paths = [...wrappers, ...backups, statePath];

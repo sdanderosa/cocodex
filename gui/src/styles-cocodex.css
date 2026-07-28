@@ -1,5 +1,7 @@
 .cocodex-page { min-height: calc(100vh - 48px); }
 .cocodex-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+.cocodex-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.cocodex-emergency-stop { box-shadow: 0 0 0 1px color-mix(in srgb, var(--red) 28%, transparent); }
 .cocodex-head h2 { margin: 5px 0 6px; font-size: var(--text-display); }
 .cocodex-head p, .cocodex-enroll p { margin: 0; color: var(--muted); line-height: var(--leading-body); }
 .cocodex-kicker { display: inline-flex; align-items: center; gap: 6px; color: #8b5cf6; font-size: var(--text-label); font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: var(--tracking-wide); }
@@ -18,6 +20,11 @@
 .cocodex-presence-cursor { position: absolute; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; background: #7c3aed; color: #fff; font-size: var(--text-caption); box-shadow: 0 2px 8px #0006; transform: translate(5px, 5px); }
 .cocodex-presence-cursor i { width: 7px; height: 7px; background: #fff; clip-path: polygon(0 0, 100% 50%, 0 100%); }
 .cocodex-projects, .cocodex-chat, .cocodex-private { display: flex; flex-direction: column; overflow: hidden; }
+.cocodex-rail-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 42%, var(--raised)); }
+.cocodex-rail-tabs button { min-width: 0; padding: 10px 4px 9px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: var(--weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cocodex-rail-tabs button:hover { color: var(--text); background: var(--raised); }
+.cocodex-rail-tabs button.active { border-bottom-color: #8b5cf6; color: var(--text); background: color-mix(in srgb, #8b5cf6 8%, var(--raised)); }
+.cocodex-messages-panel { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .cocodex-section-head { min-height: 58px; padding: 13px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .cocodex-section-head > div { display: grid; gap: 3px; }
 .cocodex-section-head > svg { width: 18px; height: 18px; flex: 0 0 auto; }
@@ -110,6 +117,18 @@
 .cocodex-agent-card-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cocodex-agent-card-head small { flex: none; }
 .cocodex-task-card code { color: var(--faint); font-size: var(--text-caption); }
+.cocodex-task-graph { display: grid; gap: 7px; }
+.cocodex-task-graph-node { position: relative; transition: margin 120ms ease; }
+.cocodex-task-graph-node::before { content: ""; position: absolute; left: -7px; top: -8px; bottom: 50%; width: 5px; border-left: 1px solid color-mix(in srgb, #8b5cf6 40%, var(--border)); border-bottom: 1px solid color-mix(in srgb, #8b5cf6 40%, var(--border)); border-radius: 0 0 0 4px; }
+.cocodex-task-graph-node[data-layer="0"]::before { display: none; }
+.cocodex-task-graph-node.state-ready { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.cocodex-task-graph-node.state-blocked-failed,
+.cocodex-task-graph-node.state-blocked-missing,
+.cocodex-task-graph-node.state-blocked-cycle { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.cocodex-task-graph-links, .cocodex-task-artifact-inputs { display: flex; flex-wrap: wrap; gap: 4px; }
+.cocodex-task-graph-links > span, .cocodex-task-artifact-inputs > span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 3px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--muted); font-size: var(--text-caption); }
+.cocodex-task-graph-links b, .cocodex-task-artifact-inputs b { color: #8b5cf6; font-family: var(--mono); }
+.cocodex-task-graph-links small, .cocodex-task-artifact-inputs small { padding-left: 4px; border-left: 1px solid var(--border); }
 .cocodex-artifact-card { cursor: pointer; }
 .cocodex-artifact-select { display: flex; align-items: center; gap: 8px; }
 .cocodex-artifact-form { display: grid; gap: 8px; margin: 10px 12px 0; }
@@ -128,6 +147,16 @@
 .cocodex-message-list article.mine { margin-left: auto; border-radius: var(--radius) 4px var(--radius) var(--radius); background: color-mix(in srgb, #7c3aed 18%, var(--raised)); }
 .cocodex-message-list article > div { display: flex; justify-content: space-between; gap: 12px; font-size: var(--text-caption); color: var(--muted); }
 .cocodex-message-list article p, .cocodex-private-list article p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0 0; line-height: var(--leading-body); }
+.cocodex-message-list .cocodex-timeline-task { max-width: 92%; border: 1px solid color-mix(in srgb, #8b5cf6 28%, var(--border)); border-left: 3px solid #8b5cf6; border-radius: var(--radius-sm); background: color-mix(in srgb, #8b5cf6 7%, var(--raised)); }
+.cocodex-message-list .cocodex-timeline-task.status-completed { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 6%, var(--raised)); }
+.cocodex-message-list .cocodex-timeline-task.status-failed { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 6%, var(--raised)); }
+.cocodex-timeline-task-head { display: flex; align-items: center; gap: 7px; }
+.cocodex-timeline-task-head strong { flex: 1; color: var(--text); }
+.cocodex-timeline-task details { margin-top: 7px; }
+.cocodex-timeline-task summary { color: var(--muted); cursor: pointer; font-size: var(--text-caption); }
+.cocodex-timeline-task-details { display: grid; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); }
+.cocodex-timeline-task-details small { display: flex; align-items: center; gap: 5px; }
+.cocodex-timeline-task-details svg { width: 12px; height: 12px; }
 .cocodex-empty { height: 100%; display: grid; place-items: center; color: var(--muted); }
 .cocodex-composer { border-top: 1px solid var(--border); padding: 12px; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .cocodex-composer textarea { grid-column: 1 / -1; resize: vertical; }
@@ -146,6 +175,8 @@
 }
 @media (max-width: 760px) {
   .cocodex-head { flex-direction: column; }
+  .cocodex-head-actions { width: 100%; }
+  .cocodex-head-actions .btn { flex: 1; }
   .cocodex-shell { grid-template-columns: 1fr; }
   .cocodex-private { grid-column: auto; }
   .cocodex-projects { min-height: 260px; }

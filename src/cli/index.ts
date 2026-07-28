@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
-import { writeJournal, reconcileJournal } from "../codex/journal";
+import { hasPendingJournal, writeJournal, reconcileJournal } from "../codex/journal";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -92,6 +92,35 @@ async function waitForProxy(timeoutMs = 8_000): Promise<LiveProxy | null> {
   return null;
 }
 
+async function syncForSafeSetup(port: number, config = loadConfig()): Promise<boolean> {
+  try {
+    const result = await syncModelsToCodex(port, config);
+    if (result.ok) return true;
+    console.error(`❌ ${result.message}`);
+    return false;
+  } catch (error) {
+    const restored = restoreNativeCodex();
+    console.error(`❌ CoCodex setup incomplete: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(restored.success
+      ? `   Native Codex configuration restored. ${restored.message}`
+      : `   Native Codex restoration FAILED: ${restored.message}`);
+    return false;
+  }
+}
+
+/**
+ * Recover a stale injection before startup continues. Exact snapshots are restored directly by
+ * reconcileJournal(); when a user edited the injected file afterward, the journal remains pending
+ * and restoreNativeCodex strips only the owned routing while preserving those edits.
+ */
+function recoverStaleJournal(): boolean {
+  if (currentExternalCodexModelProvider() || !reconcileJournal() || !hasPendingJournal()) return true;
+  const restored = restoreNativeCodex();
+  if (restored.success) return true;
+  console.error(`❌ CoCodex stale-injection recovery FAILED: ${restored.message}`);
+  return false;
+}
+
 /** Argv for detached `start`, optionally hard-pinning the listen port. */
 function startArgv(port?: number): string[] {
   const args = [process.argv[1], "start"];
@@ -138,11 +167,15 @@ async function handleStart(options: { block?: boolean } = {}) {
   const serviceToken = loadServiceTokenFromFile(process.env);
   if (serviceToken) process.env.OPENCODEX_API_AUTH_TOKEN = serviceToken;
   const requestedPort = parsePortOption();
-  if (!currentExternalCodexModelProvider()) reconcileJournal();
+  if (!recoverStaleJournal()) {
+    process.exitCode = 1;
+    return;
+  }
   const existingPid = readPid();
   if (existingPid) {
     const live = await findLiveProxy();
     if (live) {
+      await syncForSafeSetup(live.port);
       console.error(`⚠️  Proxy already running (PID ${live.pid ?? existingPid}, port ${live.port}). Use 'ocx stop' first.`);
       process.exit(1);
     }
@@ -252,7 +285,10 @@ async function handleStart(options: { block?: boolean } = {}) {
   installShellHook();
 
   await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
-  await syncModelsToCodex(port).catch(() => {});
+  const injectionReady = await syncForSafeSetup(port, config);
+  if (!injectionReady) {
+    console.error("⚠️  Proxy is running, but persistent Codex routing was not enabled.");
+  }
   if (!currentExternalCodexModelProvider() && !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false) {
     historyGuardian = startHistoryMigrationGuardian();
   }
@@ -273,24 +309,40 @@ async function handleStart(options: { block?: boolean } = {}) {
 }
 
 async function handleEnsure() {
-  if (!currentExternalCodexModelProvider()) reconcileJournal();
+  if (!recoverStaleJournal()) {
+    process.exitCode = 1;
+    return;
+  }
   const config = loadConfig();
   if (!codexAutoStartEnabled(config)) {
-    console.log("Codex autostart is disabled.");
+    const restored = restoreNativeCodex();
+    console.error("❌ CoCodex setup incomplete: Codex autostart is disabled.");
+    console.error(restored.success
+      ? `   Native Codex configuration restored. ${restored.message}`
+      : `   Native Codex restoration FAILED: ${restored.message}`);
+    process.exitCode = 1;
     return;
   }
   const live = await findLiveProxy();
     if (live) {
-      await syncModelsToCodex(live.port).catch(e => {
-        console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-      });
+      const ready = await syncForSafeSetup(live.port, config);
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       await injectSystemEnv(live.port, config).catch(() => {});
-      console.log(`✅ Proxy running on port ${live.port}`);
+      if (ready) console.log(`✅ Proxy running on port ${live.port}; health and autostart verified.`);
+      else process.exitCode = 1;
       return;
     }
 
   const pinPort = config.port ?? 10100;
+  try {
+    // Save the exact native state before starting a process. The injector reuses
+    // this journal, so a failed startup can restore the pre-attempt bytes.
+    if (!currentExternalCodexModelProvider()) writeJournal();
+  } catch (error) {
+    console.error(`CoCodex setup incomplete: could not save the exact native Codex backup: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
   const child = spawn(process.execPath, startArgv(pinPort > 0 ? pinPort : undefined), {
     detached: true,
     stdio: "ignore",
@@ -301,15 +353,24 @@ async function handleEnsure() {
 
   const port = (await waitForProxy())?.port;
   if (!port) {
-    console.error("❌ Proxy did not become healthy after starting.");
-    process.exit(1);
+    if (child.pid) await stopProxy(child.pid).catch(() => {});
+    const restored = restoreNativeCodex();
+    console.error("CoCodex setup incomplete: proxy did not become healthy after starting.");
+    console.error(restored.success
+      ? `Native Codex configuration restored. ${restored.message}`
+      : `Native Codex restoration FAILED: ${restored.message}`);
+    process.exitCode = 1;
+    return;
   }
   // Always sync the LIVE port: after a fallback-port start, config.port still names the
   // busy preferred port — syncing that would point Codex at a dead listener.
-  await syncModelsToCodex(port).catch(e => {
-    console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-  });
-  console.log(`✅ Proxy running on port ${port}`);
+  const ready = await syncForSafeSetup(port, config);
+  if (!ready) {
+    if (child.pid) await stopProxy(child.pid).catch(() => {});
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`✅ Proxy running on port ${port}; health and autostart verified.`);
 }
 
 /** Fixed tray action: start the proxy without depending on codexAutoStart. */
@@ -574,7 +635,12 @@ switch (command) {
         console.error("No running proxy found. Run 'ocx start' — it injects opencodex automatically.");
         process.exit(1);
       }
-      await syncModelsToCodex(live.port);
+      const result = await syncModelsToCodex(live.port);
+      if (!result.ok) {
+        console.error(result.message);
+        process.exitCode = 1;
+        break;
+      }
       console.log("Plain `codex` now routes through opencodex again (undo with: ocx restore).");
       break;
     }
@@ -619,7 +685,7 @@ switch (command) {
     break;
   }
   case "sync": {
-    await syncModelsToCodex((await findLiveProxy())?.port);
+    await handleEnsure();
     break;
   }
   case "v2": {
@@ -676,6 +742,7 @@ switch (command) {
       case "install": {
         const r = installCodexShim();
         console.log(r.installed ? `✅ ${r.message}` : `⚠️  ${r.message}`);
+        await handleEnsure();
         break;
       }
       case "status":

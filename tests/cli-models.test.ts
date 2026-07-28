@@ -9,11 +9,19 @@ const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.ur
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
 
 function runCli(args: string[], env: Record<string, string> = {}) {
-  return spawnSync(process.execPath, [cliPath, ...args], {
+  const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repoRoot,
     env: { ...process.env, ...env },
     encoding: "utf8",
+    timeout: 15_000,
+    killSignal: "SIGKILL",
   });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    throw new Error(
+      `Timed out waiting for test CLI: ${args.join(" ")}; stderr=${String(result.stderr).slice(-2_000)}`,
+    );
+  }
+  return result;
 }
 
 function freshConfig(extra?: Record<string, unknown>) {

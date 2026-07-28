@@ -6,6 +6,7 @@ import {
   type UsageReport,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import type { ClientIdentity } from "./identity";
+import type { CodexUsage } from "./codex-agent-adapter";
 import { hardenSecretPath } from "../lib/windows-secret-acl";
 
 export function emptyUsageReport(deviceId: string): UsageReport {
@@ -43,4 +44,21 @@ export function saveUsageReport(path: string, report: UsageReport): void {
 
 export function signUsageReport(report: UsageReport, identity: ClientIdentity): string {
   return sign(null, usageReportSigningTranscript(report), identity.privateKeyPem).toString("base64url");
+}
+
+export function addAgentUsage(
+  report: UsageReport,
+  agentId: string,
+  usage: CodexUsage,
+): NonNullable<UsageReport["agents"]> {
+  const existing = report.agents?.find(agent => agent.agentId === agentId);
+  const next = {
+    agentId,
+    requests: (existing?.requests ?? 0) + 1,
+    inputTokens: (existing?.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+    cachedInputTokens: (existing?.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
+    outputTokens: (existing?.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+    reasoningOutputTokens: (existing?.reasoningOutputTokens ?? 0) + (usage.reasoningOutputTokens ?? 0),
+  };
+  return [next, ...(report.agents ?? []).filter(agent => agent.agentId !== agentId)].slice(0, 8);
 }

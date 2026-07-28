@@ -9,6 +9,7 @@ describe("CoCodex shared composer submission", () => {
       agentId: "  stephen-agent  ",
       chatDraft: "private chat draft that must not be dispatched",
       sharedPrompt: "  jointly edited agent instruction  ",
+      finalGoal: "Ship the private alpha safely.",
       inputArtifactIds: ["artifact-1"],
     });
 
@@ -20,7 +21,7 @@ describe("CoCodex shared composer submission", () => {
         projectId: "project-1",
         chatId: "chat-1",
         agentId: "stephen-agent",
-        prompt: "jointly edited agent instruction",
+        prompt: '<cocodex_final_goal>"Ship the private alpha safely."</cocodex_final_goal>\n\njointly edited agent instruction',
         inputArtifactIds: ["artifact-1"],
       },
     });

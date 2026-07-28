@@ -3,6 +3,15 @@ const TOKEN_KEY = "opencodex-api-token";
 let installed = false;
 let promptInFlight: Promise<string | null> | null = null;
 
+type TauriInternals = {
+  invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+};
+
+function tauriInternals(): TauriInternals | null {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return null;
+  return (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__ ?? null;
+}
+
 function apiUrl(input: RequestInfo | URL): URL | null {
   try {
     const raw = input instanceof Request ? input.url : String(input);
@@ -17,6 +26,24 @@ function needsApiAuth(input: RequestInfo | URL): boolean {
   if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return false;
   if (url.origin !== window.location.origin) return false;
   return url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/");
+}
+
+export function isManagedProxyRequest(input: RequestInfo | URL): boolean {
+  const url = apiUrl(input);
+  return url?.protocol === "http:"
+    && url.hostname === "127.0.0.1"
+    && url.port === "10100";
+}
+
+async function managedRuntimeOwnsProxy(): Promise<boolean> {
+  const invoke = tauriInternals()?.invoke;
+  if (!invoke) return true;
+  try {
+    const status = await invoke("managed_runtime_status");
+    return Boolean(status && typeof status === "object" && (status as { owned?: unknown }).owned === true);
+  } catch {
+    return false;
+  }
 }
 
 function readToken(): string | null {
@@ -56,6 +83,12 @@ export function installApiAuthFetch(): void {
   installed = true;
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (isManagedProxyRequest(input) && !(await managedRuntimeOwnsProxy())) {
+      return Response.json(
+        { error: "CoCodex managed runtime is unavailable or port 10100 is owned by another process." },
+        { status: 503 },
+      );
+    }
     if (!needsApiAuth(input)) return originalFetch(input, init);
 
     const token = readToken();
@@ -73,4 +106,9 @@ export function installApiAuthFetch(): void {
     if (retry.status === 401) clearToken();
     return retry;
   };
+}
+
+export function resetApiAuthFetchForTests(): void {
+  installed = false;
+  promptInFlight = null;
 }
