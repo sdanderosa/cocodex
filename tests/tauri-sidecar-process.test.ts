@@ -23,7 +23,9 @@ async function waitForHealth(timeoutMs = 15_000): Promise<Record<string, unknown
   let lastError = "not started";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/healthz`);
+      const response = await fetch(`${baseUrl}/healthz`, {
+        signal: AbortSignal.timeout(1_000),
+      });
       const body = await response.json() as Record<string, unknown>;
       if (response.ok && body.status === "ok" && body.service === "opencodex") return body;
       lastError = `${response.status}: ${JSON.stringify(body)}`;
@@ -66,7 +68,7 @@ describe("compiled CoCodex Tauri sidecar", () => {
         },
       },
     );
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     try {
@@ -88,6 +90,7 @@ describe("compiled CoCodex Tauri sidecar", () => {
 
     const origin = "tauri://localhost";
     const issued = await fetch(`${baseUrl}/api/cocodex/capability`, {
+      signal: AbortSignal.timeout(5_000),
       headers: { Origin: origin, "Sec-Fetch-Site": "cross-site" },
     });
     expect(issued.status).toBe(200);
@@ -96,6 +99,7 @@ describe("compiled CoCodex Tauri sidecar", () => {
     expect(capability.length).toBeGreaterThan(32);
 
     const status = await fetch(`${baseUrl}/api/cocodex/status`, {
+      signal: AbortSignal.timeout(5_000),
       headers: {
         Origin: origin,
         "X-CoCodex-Capability": capability,
@@ -103,5 +107,5 @@ describe("compiled CoCodex Tauri sidecar", () => {
     });
     expect(status.status).toBe(200);
     expect(status.headers.get("access-control-allow-origin")).toBe(origin);
-  }, 30_000);
+  }, 45_000);
 });

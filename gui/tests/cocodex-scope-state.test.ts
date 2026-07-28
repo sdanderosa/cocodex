@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 test("project-scoped rosters survive chat changes and reset only with the project", () => {
-  const source = readFileSync(resolve(import.meta.dir, "../src/pages/CoCodex.tsx"), "utf8");
+  const source = readFileSync(resolve(import.meta.dir, "../src/pages/CoCodex.tsx"), "utf8").replace(/\r\n/g, "\n");
   const projectEffectStart = source.indexOf(
     'useEffect(() => {\n    if (status?.state !== "connected" || !projectId) return;',
   );

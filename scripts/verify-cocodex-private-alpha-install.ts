@@ -153,8 +153,8 @@ async function waitForHealth(url: string, tls = false): Promise<Record<string, u
   throw new Error(`Installed process did not become healthy at ${url}: ${last}`);
 }
 
-function startDetached(entrypoint: string, args: string[], env: Record<string, string | undefined>): number {
-  const child = Bun.spawn([node, entrypoint, ...args], {
+function startDetached(entrypoint: string, args: string[], env: Record<string, string | undefined>): Bun.Subprocess {
+  return Bun.spawn([node, entrypoint, ...args], {
     env,
     stdin: "ignore",
     stdout: "ignore",
@@ -162,8 +162,16 @@ function startDetached(entrypoint: string, args: string[], env: Record<string, s
     detached: true,
     windowsHide: true,
   });
-  child.unref();
-  return child.pid;
+}
+
+async function stopOwnedProcess(child: Bun.Subprocess | undefined): Promise<void> {
+  if (!child || child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await Promise.race([child.exited, Bun.sleep(5_000)]);
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await child.exited;
+  }
 }
 
 const root = mkdtempSync(join(tmpdir(), "cocodex-installed-release-"));
@@ -184,6 +192,7 @@ const env = {
 };
 
 let localPort = 0;
+let localRuntime: Bun.Subprocess | undefined;
 let serverPort = 0;
 let serverStarted = false;
 try {
@@ -192,12 +201,13 @@ try {
   await run(ocx, ["--version"], env);
 
   localPort = await freePort();
-  startDetached(ocx, ["start", "--port", String(localPort)], env);
+  localRuntime = startDetached(ocx, ["start", "--port", String(localPort)], env);
   const localHealth = await waitForHealth(`http://127.0.0.1:${localPort}/healthz`);
   if (localHealth.service !== "opencodex") throw new Error("Installed local runtime returned the wrong service identity");
   const gui = await fetch(`http://127.0.0.1:${localPort}/`);
   if (!gui.ok || (await gui.text()).length < 100) throw new Error("Installed GUI entrypoint is unavailable");
-  await run(ocx, ["stop"], env);
+  await stopOwnedProcess(localRuntime);
+  localRuntime = undefined;
 
   serverPort = await freePort();
   await run(server, ["init", "--public-host", "127.0.0.1", "--port", String(serverPort), "--state-root", serverHome], env);
@@ -231,7 +241,7 @@ try {
   }, null, 2));
 } finally {
   try {
-    if (localPort) await run(ocx, ["stop"], env);
+    await stopOwnedProcess(localRuntime);
   } catch {}
   try {
     if (serverStarted) await run(server, ["stop", "--state-root", serverHome], env);

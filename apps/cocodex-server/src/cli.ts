@@ -23,6 +23,14 @@ import { serverPaths } from "./paths";
 import { startCoCodexServer } from "./server";
 import { databaseAdminSummary } from "./admin-status";
 import { createTlsIdentity, tlsCertificateFingerprint } from "./tls";
+import {
+  installWindowsServerService,
+  serverServiceEntry,
+  startWindowsServerService,
+  stopWindowsServerService,
+  uninstallWindowsServerService,
+  windowsServerServiceStatus,
+} from "./windows-service";
 import { initializeServerAuthority, prepareServerAuthority, requireActiveServerAuthority, serverAuthorityStatus } from "./server-state";
 import { encodeServerAuthorityCertificate, serverTransferTargetSchema, type ServerTransferTarget } from "../../../packages/cocodex-protocol/src/index.ts";
 
@@ -135,6 +143,7 @@ Usage:
   cocodex-server stop [--state-root PATH]
   cocodex-server restart [--state-root PATH]
   cocodex-server status [--state-root PATH]
+  cocodex-server service install|start|stop|status|uninstall [--state-root PATH]
   cocodex-server network-diagnose [--port PORT] [--state-root PATH]
   cocodex-server backup --output FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server restore --input FILE [--passphrase-file FILE] [--state-root PATH]
@@ -195,6 +204,34 @@ async function run(): Promise<void> {
         },
       }));
       return;
+    }
+    case "service": {
+      const action = Bun.argv[3] ?? "status";
+      if (["help", "--help", "-h"].includes(action)) {
+        console.log("Usage: cocodex-server service install|start|stop|status|uninstall [--state-root PATH]");
+        return;
+      }
+      if (action === "install") {
+        console.log(JSON.stringify(await installWindowsServerService(paths, serverServiceEntry())));
+        return;
+      }
+      if (action === "start") {
+        console.log(JSON.stringify(await startWindowsServerService(paths)));
+        return;
+      }
+      if (action === "stop") {
+        console.log(JSON.stringify(await stopWindowsServerService(paths)));
+        return;
+      }
+      if (action === "status") {
+        console.log(JSON.stringify(await windowsServerServiceStatus(paths)));
+        return;
+      }
+      if (action === "uninstall") {
+        console.log(JSON.stringify(await uninstallWindowsServerService(paths)));
+        return;
+      }
+      throw new Error("Usage: cocodex-server service install|start|stop|status|uninstall [--state-root PATH]");
     }
     case "transfer-prepare": {
       if (existsSync(paths.config)) throw new Error("Destination server state already exists; choose a new state root");

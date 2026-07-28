@@ -38,9 +38,11 @@ headless process. Copying those live files to another machine or Windows
 account will not migrate the Server; use the protected recovery command below,
 which rewraps restored keys for the restoring user. See ADR 0047.
 The private alpha therefore requires the same Windows account for `init`,
-`start`, and `restart`. Running that root later as LocalSystem or another
-service account is unsupported; a future service installer must create or
-restore state under its final service identity.
+direct process lifecycle, and optional service mode. LocalSystem or another
+service account remains unsupported. The service installer verifies the current
+account can unwrap both private identities before registration and then verifies
+the SCM account; use protected recovery under the intended account to rebind a
+Server deliberately. See ADR 0052.
 
 ### Install the Windows private alpha
 
@@ -99,6 +101,47 @@ cocodex-server stop
 cocodex-server restart
 cocodex-server status
 ```
+
+### Optional Windows service
+
+Ordinary user-level background mode remains the default. To start the Server at
+Windows boot under the same account that owns its DPAPI-protected state, opt in
+to the separate native service:
+
+```powershell
+cocodex-server stop
+cocodex-server service install
+cocodex-server service status
+```
+
+Fresh installation verifies and downloads the pinned WinSW 2.12.0 binary when
+needed, prompts for the current Windows account credentials through WinSW, and
+may show UAC. No password is written to XML. Setup succeeds only after SCM
+reports that same account with automatic startup and the configured TLS health
+endpoint becomes ready. It never installs as LocalSystem and never controls the
+OpenCodex proxy or port 10100.
+
+Use the service lifecycle explicitly:
+
+```powershell
+cocodex-server service stop
+cocodex-server service start
+cocodex-server service uninstall
+```
+
+`start` refuses a direct Server PID; a bind/readiness failure never kills an
+unknown port owner. Fresh-install failure stops and unregisters the attempted
+service. Repair failure restores the prior service XML and prior running state;
+rollback failure is surfaced for manual inspection. Uninstall removes only the
+SCM registration and preserves configuration, database, identities, recovery
+material, WinSW asset, and logs below the selected state root. A service cannot
+be silently rebound to a different `--state-root`.
+
+After Windows restart or application update, verify `service status` reports
+`state: "started"`, `sameUser: true`, `automaticStart: true`,
+`binaryPathMatches: true`, and `ready: true`. Run `service install` against the
+same state root to repair retained assets or registration; do not initialize a
+new authority as a repair step.
 
 ## Enrollment and projects
 
@@ -392,6 +435,6 @@ revocation boundaries.
 The private alpha supports the connected single-device delivered/read receipt
 path, but deliberately defers conversations, attachments, replies, reactions,
 edit/delete events, multi-device fan-out, relay/libp2p traversal, automatic
-failover, full multi-device ratchets, and cross-platform service installers.
+failover, full multi-device ratchets, and non-Windows service installers.
 Those are later requirements and must not be presented as available by the
 current setup instructions.

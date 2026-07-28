@@ -2,7 +2,7 @@
 
 - Audit date: 2026-07-28
 - Source: supplied 2,316-line product brief, supplied visual reference,
-  repository ADRs through ADR 0050, current filesystem/tests/runtime evidence
+  repository ADRs through ADR 0052, current filesystem/tests/runtime evidence
 - Branch: `feat/cocodex-foundation`
 - Completion status: not complete; do not publish
 
@@ -42,7 +42,7 @@ Status meanings:
 | Private attachments/multi-device | Missing | No conforming private attachment session/fan-out | Local random attachment keys, progress, images/files, per-device sessions and lost-device recovery |
 | Chat-first visual interface | Partial | Native Tauri route, chronological chat/activity, tabs, usage, messages, graph, emergency stop | Full reference-level visual QA and remaining left-nav/browser/messaging surfaces |
 | Local API/security/privacy | Proven at checkpoint | Per-launch Tauri capability, exact-origin CORS, DPAPI keys, redaction/privacy tests | Reaudit with helper/browser/attachments |
-| Server admin/service/update | Partial | Headless CLI, init/start/stop/restart/status/migrate/backup/restore, user background mode | Optional CoCodex Server Windows service and separate verified update UX |
+| Server admin/service/update | Partial | Headless CLI plus user background mode; optional same-user Windows service with pinned WinSW, automatic-start/account/readiness checks, transaction rollback and focused lifecycle regressions | Live packaged SCM/UAC acceptance and separate verified update UX |
 | Distribution/update/signing | Partial / external gate | Verified archive installer plus fresh NSIS/MSI and hashes | Authenticode/Sigstore or transparency, signing identity, automatic update, standard ICE pass |
 | Documentation | Partial | Extensive Client/Server/ADR/evidence docs | End-user coverage for every remaining browser/helper/messaging/service/update flow |
 | Single 70-step acceptance run | Missing | Many steps proven across separate suites | One uninterrupted three-process test must exercise all 70 in order |

@@ -10,6 +10,10 @@ export interface ServerPaths {
   tlsPrivateKey: string;
   tlsCertificate: string;
   pid: string;
+  serviceDirectory: string;
+  serviceExecutable: string;
+  serviceConfig: string;
+  serviceLogs: string;
 }
 
 export function defaultStateRoot(): string {
@@ -19,6 +23,7 @@ export function defaultStateRoot(): string {
 
 export function serverPaths(root = defaultStateRoot()): ServerPaths {
   const absoluteRoot = resolve(root);
+  const serviceDirectory = resolve(absoluteRoot, "windows-service");
   return {
     root: absoluteRoot,
     config: resolve(absoluteRoot, "config.json"),
@@ -28,5 +33,9 @@ export function serverPaths(root = defaultStateRoot()): ServerPaths {
     tlsPrivateKey: resolve(absoluteRoot, "tls-private-key.pem"),
     tlsCertificate: resolve(absoluteRoot, "tls-certificate.pem"),
     pid: resolve(absoluteRoot, "server.pid"),
+    serviceDirectory,
+    serviceExecutable: resolve(serviceDirectory, "cocodex-server.exe"),
+    serviceConfig: resolve(serviceDirectory, "cocodex-server.xml"),
+    serviceLogs: resolve(serviceDirectory, "logs"),
   };
 }
