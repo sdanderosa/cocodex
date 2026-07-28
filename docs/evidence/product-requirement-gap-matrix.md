@@ -42,7 +42,7 @@ Status meanings:
 | Private attachments/multi-device | Missing | No conforming private attachment session/fan-out | Local random attachment keys, progress, images/files, per-device sessions and lost-device recovery |
 | Chat-first visual interface | Partial | Native Tauri route, chronological chat/activity, tabs, usage, messages, graph, emergency stop | Full reference-level visual QA and remaining left-nav/browser/messaging surfaces |
 | Local API/security/privacy | Proven at checkpoint | Per-launch Tauri capability, exact-origin CORS, DPAPI keys, redaction/privacy tests | Reaudit with helper/browser/attachments |
-| Server admin/service/update | Partial | Headless CLI plus user background mode; optional same-user Windows service; strict installed-package update-check with bundle/installer verification, process/SCM blockers, preserved-state disclosure and external Update argv | Live packaged SCM/UAC/reboot acceptance and clean prior-to-new bundle Update/state-canary acceptance |
+| Server admin/service/update | Partial | Headless CLI plus user background mode; optional same-user Windows service; strict installed-package update-check plus clean isolated Update/state-canary/package lifecycle acceptance | Live packaged SCM/UAC/reboot acceptance and operator-grade update download/version policy |
 | Distribution/update/signing | Partial / external gate | Verified archive installer plus fresh NSIS/MSI and hashes | Authenticode/Sigstore or transparency, signing identity, automatic update, standard ICE pass |
 | Documentation | Partial | Extensive Client/Server/ADR/evidence docs | End-user coverage for every remaining browser/helper/messaging/service/update flow |
 | Single 70-step acceptance run | Missing | Many steps proven across separate suites | One uninterrupted three-process test must exercise all 70 in order |
@@ -71,12 +71,12 @@ Status meanings:
 The current private-alpha foundation is substantial and tested, but the
 authoritative product is not complete. The missing mature ratchet, private
 attachments/multi-device fan-out, elevated helper, browser-control surface,
-Server service/update path, signed distribution, and
+live packaged SCM/UAC/reboot acceptance, signed distribution, and
 single uninterrupted 70-step acceptance run are release blockers.
 
-The NSIS/MSI hashes recorded before the task-graph slice are now stale relative
-to the current GUI source. They remain historical evidence only and must be
-rebuilt after the next release-candidate freeze.
+Fresh NSIS/MSI/runtime hashes and ownership smokes for commit `d77dec10` are
+recorded in `docs/evidence/tauri-managed-client-runtime.md`. These remain
+unsigned private-alpha artifacts, not public-release evidence.
 
 ## Current Git/UI slice correction - 2026-07-28
 

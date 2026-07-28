@@ -590,6 +590,45 @@ WebView2 as a direct child; foreign PID 3704 rejection logged; port owner
 remained 3704; extraction root removed. No foreign listener or pre-existing
 msiexec.exe was stopped.
 
+
 Final home check: opencodex-proxy scheduled task Running, /healthz status ok,
 codexAccountMode direct, Repair Codex.lnk present and targeting the protected
 repair script. Temporary smoke roots remaining: 0.
+
+## Verified Server update slice rebuild - 2026-07-28
+
+Clean commit d77dec10c9b6b54f836b34efd470a113cf88ae6b rebuilt the
+sidecar, desktop, NSIS, and MSI in one successful build:tauri pass.
+
+    NSIS installer
+      30,516,853 bytes
+      SHA-256 615afc8eb4454ffb17a80f471f8abb391d50737ba1a90695d4fe0782daca047d
+
+    MSI installer
+      43,876,352 bytes
+      SHA-256 3ed7427463435a52b8aaea3ea27f3288e792a98988ce4149942ad56a4ddb22a7
+
+    Bundled runtime
+      104,867,328 bytes
+      SHA-256 9020b0eb464160d9385aaa10a8e7c6711777af9c90d09d1f654292033d0d9a23
+
+    Release desktop executable after bundling
+      11,851,264 bytes
+      SHA-256 2536cd4cb1135019f8ab2d0058b4405d694fb9ddf40d9268b6187b2aba63f809
+
+Fresh NSIS silent installation produced installed desktop hash
+fb053eeb3114ac2e9e99181a4fcd3367a34213ec4aaaba6e0dd2c8eaa419d6c7.
+The isolated desktop launched with only Edge WebView2 as a direct child,
+started zero bundled runtimes, logged the foreign PID 3704 rejection, and left
+port 10100 owned by PID 3704. The exact desktop PID was path-verified before
+stop. Silent uninstall exited 0 and removed the isolated install root.
+
+Fresh MSI administrative extraction exited 0. Its desktop payload hash was
+f8dbc933ccd2ead392f9c26fba97b22d588f6031f96c14f74822f30173f0e76b.
+The extracted runtime hash exactly matched the bundled sidecar. The isolated
+desktop again launched only WebView2, started zero bundled runtimes, rejected
+foreign PID 3704, and left port ownership unchanged. The exact desktop PID was
+path-verified before stop and the exact extraction root was removed. A
+pre-existing msiexec.exe PID was observed and not stopped.
+
+These artifacts remain unsigned private-alpha outputs.

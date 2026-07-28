@@ -42,9 +42,9 @@ Server/root TypeScript: passed
 
 Covered behavior includes all three release-input digest checks, four tamper classes, wrong identity, traversal and duplicate rows, exact prefix derivation, source-checkout rejection, direct PID and SCM blockers, unknown-state fail-closure, preserved-state disclosure, shell-free argv, inconsistent installer rejection, non-Windows rejection, and side-effect-free CLI help.
 
-## Remaining clean-package acceptance
+## Clean-package update acceptance
 
-Before marking the update UX fully proven, build a newer clean-commit bundle, install the prior bundle into an isolated prefix, run `update-check`, apply the reported `Update` command with all test processes stopped, and verify:
+Clean commit `d77dec10c9b6b54f836b34efd470a113cf88ae6b` produced a new private-alpha bundle. The authoritative installer installed it into an isolated prefix, and the acceptance pass verified:
 
 - the target package version/source manifest and locked dependency tree;
 - installed Client, Server, and compatibility commands;
@@ -52,6 +52,30 @@ Before marking the update UX fully proven, build a newer clean-commit bundle, in
 - optional service assets remain repairable without credential replacement;
 - Client, Server, OpenCodex, and Codex state canaries survive; and
 - the foreign home listener on port 10100 is unchanged.
+
+The installed `cocodex-server update-check` independently verified the bundle,
+derived the exact isolated application prefix, reported no direct/SCM/process
+blocker, and returned `readiness.ready: true`. Its exact reported System32
+Windows PowerShell argv was executed externally with `-Action Update`. The update
+completed successfully, all four canaries survived both update and uninstall,
+and the installed package was removed without removing those state roots.
+
+The immediate post-update verifier proved all 126 locked dependencies, the
+installed launchers, local OpenCodex health and GUI, and Server
+init/start/restart/stop. One initial post-install verifier attempt saw a
+replacement Server exit during restart; three consecutive fresh verifier runs
+and the immediate post-update verifier then passed. No owned process remained
+after the failed attempt. This transient is recorded rather than omitted.
+
+Fresh bundle files:
+
+    archive  10,214,980 bytes  0150496bf85873b152a0bbb201f90226592d6968a1f2f00c7104076401d3e31f
+    installer    23,386 bytes  aec4cd68de1f293fc887337be9f12e936a195788a5753d4d4a5e30ede4363c8b
+    release         873 bytes  e9e1d3ac480f923c3d221d37d3643417f99200dc7c5ba3b03bdde2faa88b5882
+    checksums       268 bytes  4fc11db9e64a4e837bc7d10e273ccff31fc1b1c70922bf4ee32ba5a39f08900f
+
+Foreign PID 3704 remained the user-installed OpenCodex Bun executable and
+continued owning 127.0.0.1:10100 throughout.
 
 ## Runtime and Server-suite evidence
 
