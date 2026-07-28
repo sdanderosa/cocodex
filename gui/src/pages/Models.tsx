@@ -194,6 +194,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
       setModels(data);
       setProviders(providerData);
       setDisabled(collectDisabledNamespaced(data));
+      // A transient startup miss must not leave the page in a permanent error
+      // state after the next poll has loaded the authoritative model data.
+      setOk(false);
+      setStatus("");
       const value = typeof capsData.value === "number" && Number.isFinite(capsData.value) && capsData.value > 0
         ? capsData.value
         : (typeof capsData.cap === "number" && Number.isFinite(capsData.cap) && capsData.cap > 0 ? capsData.cap : undefined);

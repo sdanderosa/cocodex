@@ -40,7 +40,13 @@ const PAGE_TKEY: Record<Page, TKey> = {
   claude: "nav.claude",
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE || "";
+// Tauri injects `__TAURI_INTERNALS__` into its WebView. Resolve the local
+// proxy at runtime as well as build time so a dev shell cannot silently fall
+// back to Vite's SPA response for `/api/*` when an environment marker is lost.
+const API_BASE = import.meta.env.VITE_API_BASE
+  || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+    ? "http://127.0.0.1:10100"
+    : "");
 const THEME_KEY = "ocx-theme";
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [
