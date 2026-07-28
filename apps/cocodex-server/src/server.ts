@@ -33,6 +33,7 @@ import {
   privateContactSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateTypingFrameSchema,
   privateReceiptAcceptedFrameSchema,
   privateReceiptFrameSchema,
   privateSnapshotFrameSchema,
@@ -126,6 +127,7 @@ const AUTHORIZATION_SWEEP_INTERVAL_MS = 1_000;
 const MAX_PRESENCE_UPDATES_PER_SECOND = 40;
 const MAX_PRESENCE_PROJECT_UPDATES_PER_SECOND = 500;
 const MAX_PRIVATE_RECEIPTS_PER_SECOND = 120;
+const MAX_PRIVATE_TYPING_PER_SECOND = 20;
 const MAX_PRIVATE_CONTACT_LISTS_PER_SECOND = 10;
 const MAX_DEVICE_APPROVAL_LISTS_PER_SECOND = 10;
 const MAX_DEVICE_APPROVAL_UPDATES_PER_MINUTE = 12;
@@ -257,6 +259,7 @@ export function startCoCodexServer(
   const presenceUpdateTimes = new Map<string, number[]>();
   const presenceProjectUpdateTimes = new Map<string, number[]>();
   const privateReceiptTimes = new Map<string, number[]>();
+  const privateTypingTimes = new Map<string, number[]>();
   const privateContactListTimes = new Map<string, number[]>();
   const deviceApprovalListTimes = new Map<string, number[]>();
   const deviceApprovalUpdateTimes = new Map<string, number[]>();
@@ -424,6 +427,18 @@ export function startCoCodexServer(
     }
     recent.push(now);
     privateReceiptTimes.set(deviceId, recent);
+    return true;
+  }
+
+  function allowPrivateTyping(deviceId: string): boolean {
+    const now = Date.now();
+    const recent = (privateTypingTimes.get(deviceId) ?? []).filter(timestamp => now - timestamp < 1_000);
+    if (recent.length >= MAX_PRIVATE_TYPING_PER_SECOND) {
+      privateTypingTimes.set(deviceId, recent);
+      return false;
+    }
+    recent.push(now);
+    privateTypingTimes.set(deviceId, recent);
     return true;
   }
 
@@ -1777,6 +1792,22 @@ export function startCoCodexServer(
               throw new Error("Private contact-list rate limit exceeded");
             }
             sendPrivateContactSnapshot(socket, deviceId, requestId);
+            return;
+          }
+          if (message.type === "private.typing.send") {
+            if (!allowPrivateTyping(deviceId)) throw new Error("Private typing rate limit exceeded");
+            if (message.recipientDeviceId === deviceId) throw new Error("Private typing cannot target the sender");
+            const recipient = deviceForAuthentication(db, message.recipientDeviceId);
+            if (!recipient || recipient.status !== "approved") {
+              throw new Error("Private typing recipient is not an approved device");
+            }
+            sendToDevice(message.recipientDeviceId, privateTypingFrameSchema.parse({
+              version: 1,
+              type: "private.typing",
+              senderDeviceId: deviceId,
+              recipientDeviceId: message.recipientDeviceId,
+              typing: message.typing,
+            }));
             return;
           }
           if (message.type === "private.send") {

@@ -34,7 +34,11 @@ describe("CoCodex Tauri dashboard configuration", () => {
       expect(existsSync(resolve(repoRoot, "gui/src-tauri", icon))).toBe(true);
     }
     expect(capabilities.windows).toEqual(["main"]);
-    expect(capabilities.permissions).toEqual(["core:default"]);
+    expect(capabilities.permissions).toEqual(["core:default", "notification:default"]);
+    expect(capabilities.permissions).not.toContain("shell:default");
+    expect(capabilities.permissions).not.toContain("shell:allow-execute");
+    expect(cargoManifest).toContain('tauri-plugin-notification = "2"');
+    expect(nativeMain).toContain("tauri_plugin_notification::init()");
     expect(cargoManifest).toContain('tauri-plugin-shell = "2"');
     expect(nativeMain).toContain('.sidecar("cocodex-runtime")');
     expect(nativeMain).toContain("stop_owned_runtime");

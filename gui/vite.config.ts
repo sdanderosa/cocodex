@@ -27,6 +27,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: proxyTarget, changeOrigin: true },
       '/healthz': { target: proxyTarget, changeOrigin: true },
+      '/readyz': { target: proxyTarget, changeOrigin: true },
     },
   } : undefined,
 })

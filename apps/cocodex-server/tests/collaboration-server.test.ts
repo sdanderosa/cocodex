@@ -824,6 +824,32 @@ describe("authenticated WSS collaboration", () => {
     expect(JSON.parse(storedUsage.report_json)).toEqual(stephenUsage);
     expect(storedUsage.report_signature).toBeString();
 
+    const privateRowsBeforeTyping = db.query("SELECT COUNT(*) AS count FROM private_messages").get();
+    const typingAtStephen = nextFrame(stephenSocket, "private.typing");
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.typing.send",
+      requestId: randomUUID(),
+      recipientDeviceId: stephen.id,
+      typing: true,
+    }));
+    expect(await typingAtStephen).toMatchObject({
+      senderDeviceId: kai.id,
+      recipientDeviceId: stephen.id,
+      typing: true,
+    });
+    expect(db.query("SELECT COUNT(*) AS count FROM private_messages").get()).toEqual(privateRowsBeforeTyping);
+
+    const stoppedTypingAtStephen = nextFrame(stephenSocket, "private.typing");
+    kaiSocket.send(JSON.stringify({
+      version: 1,
+      type: "private.typing.send",
+      requestId: randomUUID(),
+      recipientDeviceId: stephen.id,
+      typing: false,
+    }));
+    expect(await stoppedTypingAtStephen).toMatchObject({ senderDeviceId: kai.id, typing: false });
+
     const privatePlaintext = "Stephen-only recovery phrase";
     const privateMessageId = randomUUID();
     const privateCreatedAt = new Date().toISOString();

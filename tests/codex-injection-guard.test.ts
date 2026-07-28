@@ -34,6 +34,7 @@ const viableService: ServiceDiagnostic = {
 function dependencies(overrides: Partial<InjectionSafetyDeps> = {}): InjectionSafetyDeps {
   return {
     proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
     verifyPidIdentity: pid => pid,
     diagnoseService: () => viableService,
     diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
@@ -161,6 +162,7 @@ describe("fail-safe Codex injection readiness", () => {
         catalogPath: null,
         safetyDeps: {
           proxyIdentityAt: async () => ++checks === 1 ? { pid: 1234 } : null,
+          proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
           verifyPidIdentity: pid => pid,
           diagnoseService: () => service,
           diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
@@ -210,6 +212,7 @@ describe("fail-safe Codex injection readiness", () => {
         atomicWrite: () => { throw new Error("simulated disk failure"); },
         safetyDeps: {
           proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
           verifyPidIdentity: pid => pid,
           diagnoseService: () => service,
           diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
@@ -232,4 +235,43 @@ describe("fail-safe Codex injection readiness", () => {
     expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
     expect(existsSync(join(codexHome, "opencodex-journal.json"))).toBe(false);
   }, 30_000);
-});
+
+  test("fails closed when /readyz is unavailable even though /healthz works", async () => {
+    const readiness = await verifyInjectionReadiness(10100, config, dependencies({
+      proxyReadinessAt: async () => null,
+    }));
+    expect(readiness.ok).toBe(false);
+    expect(readiness.message).toContain("/readyz");
+  });
+
+  test("offers Direct or cancellation when Pool has no usable account", async () => {
+    const readiness = await verifyInjectionReadiness(10100, config, dependencies({
+      proxyReadinessAt: async () => ({
+        ok: false,
+        pid: 1234,
+        provider: "openai",
+        accountMode: "pool",
+        code: "pool_no_usable_account",
+        message: "OpenAI Pool has no usable account; switch to Direct mode or cancel proxy injection",
+        canUseDirect: true,
+      }),
+    }));
+    expect(readiness.ok).toBe(false);
+    expect(readiness.message).toContain("switch to Direct mode or cancel");
+  });
+
+  test("rejects disagreement between /healthz and /readyz process identity", async () => {
+    const readiness = await verifyInjectionReadiness(10100, config, dependencies({
+      proxyReadinessAt: async () => ({
+        ok: true,
+        pid: 4321,
+        provider: "openai",
+        accountMode: "direct",
+        code: "ready",
+        message: "ready",
+        canUseDirect: true,
+      }),
+    }));
+    expect(readiness.ok).toBe(false);
+    expect(readiness.message).toContain("identities do not match");
+  });});

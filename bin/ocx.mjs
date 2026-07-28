@@ -10,7 +10,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,24 @@ function expandUserPath(raw) {
 function configDir() {
   const raw = process.env.OPENCODEX_HOME?.trim();
   return resolve(raw ? expandUserPath(raw) : join(homedir(), ".opencodex"));
+}
+
+function backupConfigBeforeUpdate() {
+  const source = join(configDir(), "config.json");
+  if (!existsSync(source)) return null;
+  const now = Date.now();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const backup = `${source}.pre-update.${now}${suffix}.bak`;
+    try {
+      copyFileSync(source, backup, fsConstants.COPYFILE_EXCL);
+      return backup;
+    } catch (error) {
+      if (error?.code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error("Could not allocate a unique pre-update config backup path");
 }
 
 function shouldRepairCodexShim() {
@@ -149,6 +167,9 @@ function runNpmSelfUpdate() {
     console.log(`Already on the latest ${tag} version (v${latest}).`);
     process.exit(0);
   }
+
+  const configBackup = backupConfigBeforeUpdate();
+  if (configBackup) console.log(`Backed up OpenCodex configuration to ${configBackup}`);
 
   // Remember whether a background service manages the proxy BEFORE stopping — `ocx stop`
   // unloads it permanently, so a successful update must reinstall it afterwards.

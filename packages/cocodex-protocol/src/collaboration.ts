@@ -405,6 +405,13 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    type: z.literal("private.typing.send"),
+    requestId,
+    recipientDeviceId: deviceId,
+    typing: z.boolean(),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     type: z.literal("private.receipt.send"),
     requestId,
     messageId: privateMessageId,
@@ -935,6 +942,14 @@ export const privateMessageFrameSchema = z.object({
   message: privateMessageEnvelopeSchema,
 }).strict();
 
+export const privateTypingFrameSchema = z.object({
+  version: z.literal(1),
+  type: z.literal("private.typing"),
+  senderDeviceId: deviceId,
+  recipientDeviceId: deviceId,
+  typing: z.boolean(),
+}).strict();
+
 export const privateReceiptAcceptedFrameSchema = z.object({
   version: z.literal(1),
   type: z.literal("private.receipt.accepted"),
@@ -953,6 +968,7 @@ export const privateServerFrameSchema = z.discriminatedUnion("type", [
   privateSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateTypingFrameSchema,
   privateReceiptAcceptedFrameSchema,
   privateReceiptFrameSchema,
 ]);

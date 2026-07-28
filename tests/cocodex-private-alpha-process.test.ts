@@ -750,6 +750,37 @@ describe("three-process CoCodex private alpha", () => {
     ]));
     expect(initialSueRuntime.sandbox).toBe("danger-full-access");
 
+    const privateTypingStartRequest = randomUUID();
+    const privateTypingAtStephen = waitFor(stephen, line => line.source === "private-typing"
+      && line.senderDeviceId === kaiDevice.id
+      && line.recipientDeviceId === stephenDevice.id
+      && line.typing === true);
+    kai.send({
+      id: privateTypingStartRequest,
+      type: "private.typing",
+      recipientDeviceId: stephenDevice.id,
+      typing: true,
+    });
+    await Promise.all([
+      waitFor(kai, line => line.source === "control"
+        && line.id === privateTypingStartRequest && line.ok === true),
+      privateTypingAtStephen,
+    ]);
+    const privateTypingStopRequest = randomUUID();
+    const privateTypingStoppedAtStephen = waitFor(stephen, line => line.source === "private-typing"
+      && line.senderDeviceId === kaiDevice.id && line.typing === false);
+    kai.send({
+      id: privateTypingStopRequest,
+      type: "private.typing",
+      recipientDeviceId: stephenDevice.id,
+      typing: false,
+    });
+    await Promise.all([
+      waitFor(kai, line => line.source === "control"
+        && line.id === privateTypingStopRequest && line.ok === true),
+      privateTypingStoppedAtStephen,
+    ]);
+
     const privateCanary = "PRIVATE-CANARY-7cLw9";
     kai.send({
       id: randomUUID(),

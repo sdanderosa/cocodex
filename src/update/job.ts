@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { atomicWriteFile, backupConfigBeforeUpdate, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
 import { killProxy } from "../lib/process-control";
 import { waitForPortAvailable } from "../server/ports";
 import { proxyIdentityAt } from "../server/proxy-liveness";
@@ -526,6 +526,11 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
       installer: check.installer,
       command: cmd.display,
     }, integrityLine);
+
+    const configBackup = backupConfigBeforeUpdate();
+    job = updateJob(job, {}, configBackup
+      ? `Backed up OpenCodex configuration to ${configBackup}`
+      : "No persisted OpenCodex configuration required backup.");
 
     if (process.platform === "win32") {
       try {

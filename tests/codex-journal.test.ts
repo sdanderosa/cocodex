@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const safeInjectionDeps = `{
   proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
   verifyPidIdentity: pid => pid,
   diagnoseService: () => ({ supported: true, installed: true, enabled: true, running: true, viable: true, startable: true, stale: false, conflict: false, backend: "scheduler", summary: "test service" }),
   diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
@@ -301,6 +302,7 @@ describe("codex-journal", () => {
       const config = ${JSON.stringify(cliConfig)};
       const safetyDeps = {
         proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
         verifyPidIdentity: pid => pid,
         diagnoseService: () => ({ supported: true, installed: true, enabled: true, running: true, viable: true, startable: true, stale: false, conflict: false, backend: "scheduler", summary: "test service" }),
         diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),

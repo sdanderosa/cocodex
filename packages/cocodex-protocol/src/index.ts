@@ -67,6 +67,7 @@ export {
   privateSnapshotFrameSchema,
   privateAcceptedFrameSchema,
   privateMessageFrameSchema,
+  privateTypingFrameSchema,
   privateReceiptAcceptedFrameSchema,
   privateReceiptFrameSchema,
   privateServerFrameSchema,

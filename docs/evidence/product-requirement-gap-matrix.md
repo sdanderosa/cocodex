@@ -37,7 +37,7 @@ Status meanings:
 | Elevated helper | Missing | ADR 0021 explicitly excludes it | Separate privileged app, install/enable lifecycle, signed local-only requests, confirmation policy |
 | Official browser capability | Missing/partial preservation | Tasks run through official Codex CLI and user config is preserved | Detect support, status/events, disabled/watch/shared-control UX, privacy-safe summaries |
 | Usage sidebar | Proven | Signed host reports, account windows, active agents and per-agent cache share | Multi-account detail/stale/offline presentation audit |
-| Private text messaging | Partial | Independent device keys, ciphertext-only Server, offline delivery, local history/search, receipts, explicit share | Replies, reactions, edit/delete, typing, notifications, conversations |
+| Private text messaging | Partial | Independent device keys, ciphertext-only Server, offline delivery, local history/search, receipts, explicit share, replies, reactions, edit/delete, ephemeral typing indicators, opt-in plaintext-free native desktop notifications (manual OS-toast acceptance pending) | Richer conversation management |
 | Mature private-message crypto | Missing | Sealed-box signed envelopes are honestly documented | Maintained X3DH/PQXDH + Double Ratchet implementation, prekeys, forward secrecy and recovery |
 | Private attachments/multi-device | Missing | No conforming private attachment session/fan-out | Local random attachment keys, progress, images/files, per-device sessions and lost-device recovery |
 | Chat-first visual interface | Partial | Native Tauri route, chronological chat/activity, tabs, usage, messages, graph, emergency stop | Full reference-level visual QA and remaining left-nav/browser/messaging surfaces |

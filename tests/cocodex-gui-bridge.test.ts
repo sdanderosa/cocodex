@@ -59,6 +59,13 @@ describe("CoCodex GUI bridge", () => {
         }],
       })}\n`);
       output.write(`${JSON.stringify({
+        source: "private-typing",
+        senderDeviceId: "contact-device",
+        recipientDeviceId: "device",
+        typing: true,
+        ciphertext: "PRIVATE_TYPING_CIPHERTEXT_CANARY",
+      })}\n`);
+      output.write(`${JSON.stringify({
         source: "device-approvals",
         devices: [{
           deviceId: "6e83f26d-3159-48dc-b9b0-e2b7646ac961",
@@ -402,6 +409,11 @@ describe("CoCodex GUI bridge", () => {
       recipientDeviceId: "contact-device",
       text: "safe message",
     }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "private.typing",
+      recipientDeviceId: "contact-device",
+      typing: true,
+    }).accepted).toBe(true);
     expect(() => bridge.command({
       type: "private.send",
       recipientDeviceId: "contact-device",
@@ -412,6 +424,8 @@ describe("CoCodex GUI bridge", () => {
     await Bun.sleep(5);
 
     expect(received.some((value: any) => value.type === "project.list")).toBe(true);
+    expect(received.some((value: any) => value.type === "private.typing"
+      && value.recipientDeviceId === "contact-device" && value.typing === true)).toBe(true);
     expect(received.some((value: any) => value.type === "device.approval.list")).toBe(true);
     expect(received.some((value: any) => value.type === "device.approval.update"
       && value.targetDeviceId === "6e83f26d-3159-48dc-b9b0-e2b7646ac961"
@@ -497,6 +511,15 @@ describe("CoCodex GUI bridge", () => {
         },
       },
     });
+    const privateTypingEvent = bridge.eventsAfter(0).events
+      .find((event: any) => event.value?.source === "private-typing");
+    expect(privateTypingEvent?.value).toEqual({
+      source: "private-typing",
+      senderDeviceId: "contact-device",
+      recipientDeviceId: "device",
+      typing: true,
+    });
+    expect(JSON.stringify(privateTypingEvent)).not.toContain("PRIVATE_TYPING_CIPHERTEXT_CANARY");
     const privateContactsEvent = bridge.eventsAfter(0).events
       .find((event: any) => event.value?.source === "private-contacts");
     expect(privateContactsEvent?.value).toEqual({

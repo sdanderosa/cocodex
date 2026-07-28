@@ -13,12 +13,16 @@
 | Do not inject while the proxy is stopped | `src/codex/injection-guard.ts` fails readiness unless a verified live proxy and supported startup path both exist | `codex-injection-guard.test.ts`: stopped service without an operational shim is rejected |
 | Reject a foreign owner of the configured port | Guard identity verification requires the expected PID; the Tauri supervisor also requires health PID equality with its actual `CommandChild` | `codex-injection-guard.test.ts`: foreign owner and occupied configured port; `gui/tests/api-auth-fetch.test.ts`: renderer refuses loopback requests without Rust-owned status; packaged smoke rejected foreign PID 23976 without stopping it |
 | Require valid `/healthz`, including timeout handling | Guard uses bounded health/identity verification | `codex-injection-guard.test.ts`: health timeout fails closed; focused Rust tests reject wrong service, wrong port, non-JSON, multiline, and oversized diagnostics |
+| Require valid `/readyz` from the same PID | Guard requires provider/config/credential readiness after liveness and rejects endpoint absence or PID disagreement | `provider-readiness.test.ts`, `proxy-readiness-process.test.ts`, and `codex-injection-guard.test.ts`: Direct, Pool, unavailable endpoint, and PID race coverage |
+| Reject missing, expired, or unusable selected-provider credentials | Direct validates the native Codex credential; Pool refresh-validates eligible credentials and returns Direct-or-cancel guidance | Real child-process missing/expired tests; Pool no-account and managed-refresh unit tests |
 | Require reboot-persistent startup | Guard accepts only an operational supported service or shim and validates its recorded executable target | `codex-injection-guard.test.ts`: healthy reboot-persistent service accepted; stale service assets and missing shim executable rejected; healthy enabled shim accepted |
 | Roll back a partially installed shim | Shim installation is one transaction across all launcher siblings | `codex-shim.test.ts`: fresh install rolls back every launcher after a later-step failure; mixed siblings and fingerprint races defer without piecemeal mutation |
 | Roll back a partially installed service | Service installation journals first and cleans only state/processes created by that attempt | Focused service suite passed; service tests cover fail-closed backend state, stale baked paths, graceful owned-process cleanup, and cleanup continuation after kill errors |
 | Detect a proxy crash during configuration update | Injection re-verifies readiness after the atomic write and restores on failure | `codex-injection-guard.test.ts`: proxy crash during injection restores native Codex and removes the attempt journal |
 | Recover from configuration-write failure | Atomic write failure enters exact restoration and reports setup incomplete | `codex-injection-guard.test.ts`: write failure restores every existing setting atomically |
 | Recover stale localhost injection at startup | Startup reconciliation removes only CoCodex-owned localhost routing from the journaled state | `codex-journal.test.ts`: dead-PID reconcile; full crash recovery; stale-injection recovery preserving later user edits |
+| Preserve Direct/Pool mode during initialization and upgrades | Init carries forward the explicit OpenAI mode; tier migration already resolves and retains explicit mode | `init-backup-cleanup.test.ts` mode-preservation tests plus existing OpenAI migration suite |
+| Back up home configuration before package replacement | CLI, GUI worker, and npm launcher create no-overwrite exact pre-update copies before stop/replacement | `config-update-backup.test.ts`; npm launcher syntax and ordering checks |
 | Preserve unrelated Codex settings and user edits | Restoration compares the injected state and merges/restores only owned fields; external providers are not rewritten | `codex-inject-integration.test.ts`: external provider remains byte-for-byte unchanged; user base URL retained; CRLF/LF preserved; `codex-journal.test.ts`: post-injection edits are not clobbered |
 | Never delete unrelated repository or user data | All implementation work is scoped to owned config, journal, shim/service, and runtime assets | Full default and isolated regression suites passed; worktree was kept intentionally dirty and no foreign process or unrelated change was removed |
 
@@ -48,7 +52,8 @@ No `cocodex-runtime` child was created. Closing only the desktop left PID
 
 ## Test results
 
-- Focused injection/service/shim transaction suite: 103 passed, 0 failed.
+- Current readiness/service/update lifecycle group: 111 passed, 0 failed, 422 expectations across 11 files.
+- Focused readiness/injection/journal/init/backup group: 52 passed, 0 failed, 176 expectations across 6 files.
 - Final guard/journal/shim subset: 55 passed, 0 failed.
 - Full default-parallel repository suite: 4,237 passed, 4 skipped, 0 failed,
   21,607 assertions across 352 files.
@@ -59,3 +64,5 @@ No `cocodex-runtime` child was created. Closing only the desktop left PID
 
 The matrix records implementation evidence for ADR 0050. It does not claim
 that unrelated remaining private-alpha product requirements are complete.
+
+Current detailed evidence: [fail-safe provider readiness and home-install protection](fail-safe-readiness-and-home-protection.md).

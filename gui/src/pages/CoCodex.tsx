@@ -11,6 +11,24 @@ import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
 import { executableLocalAgentIds, stopEveryLocalAgent } from "../cocodex-agent-safety-state";
 import { buildTaskDependencyGraph, type TaskGraphState } from "../cocodex-task-graph";
 import {
+  PRIVATE_TYPING_EXPIRY_MS,
+  PRIVATE_TYPING_IDLE_MS,
+  buildPrivateComposerCommand,
+  buildPrivateMutationCommand,
+  buildPrivateTypingCommand,
+  projectPrivateMessageEvents,
+  type PrivateMessageEvent,
+  type ProjectedPrivateMessage,
+} from "../cocodex-private-message-state";
+import {
+  buildPrivateNotification,
+  disablePrivateNotifications,
+  enablePrivateNotifications,
+  readPrivateNotificationsEnabled,
+  shouldNotifyPrivateMessage,
+  showPrivateNotification,
+} from "../cocodex-private-notifications";
+import {
   applyPromptTextEdit,
   encodePromptRelativeCaret,
   resolvePromptRelativeCaret,
@@ -75,19 +93,7 @@ export interface ChatEvent {
   acceptedAt: string;
 }
 
-interface PrivateMessage {
-  messageId: string;
-  senderDeviceId: string;
-  recipientDeviceId: string;
-  text: string;
-  clientCreatedAt?: string;
-  acceptedAt?: string;
-  serverSequence?: number;
-  direction?: "sent" | "received";
-  restored?: boolean;
-  deliveryState?: "staged" | "queued" | "accepted" | "rejected";
-  rejectionReason?: string;
-}
+type PrivateMessage = PrivateMessageEvent;
 
 interface SharedChat {
   id: string;
@@ -322,6 +328,9 @@ interface SessionValue {
   error?: unknown;
   message?: PrivateMessage;
   receipt?: PrivateReceipt;
+  senderDeviceId?: string;
+  recipientDeviceId?: string;
+  typing?: boolean;
   contacts?: PrivateContact[];
   devices?: PendingDeviceApproval[];
   invitations?: ProjectInvitation[];
@@ -432,6 +441,17 @@ const RIGHT_RAIL_TABS: ReadonlyArray<readonly [RightRailTab, TKey]> = [
   ["artifacts", "cocodex.artifacts.title"],
   ["messages", "cocodex.private.title"],
 ];
+
+export function PrivateTypingIndicator({ active, label }: {
+  active: boolean;
+  label: string;
+}) {
+  if (!active) return null;
+  return <div className="cocodex-private-typing" role="status" aria-live="polite">
+    <span aria-hidden="true"><i /><i /><i /></span>
+    {label}
+  </div>;
+}
 
 export function WorkspaceRailTabs({
   active,
@@ -771,6 +791,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [displayName, setDisplayName] = useState("");
   const [recipientDeviceId, setRecipientDeviceId] = useState("");
   const [privateDraft, setPrivateDraft] = useState("");
+  const [privateReplyTo, setPrivateReplyTo] = useState<ProjectedPrivateMessage>();
+  const [privateEditTarget, setPrivateEditTarget] = useState<ProjectedPrivateMessage>();
+  const [privateTypingDeviceIds, setPrivateTypingDeviceIds] = useState<string[]>([]);
+  const [privateNotificationsEnabled, setPrivateNotificationsEnabled] =
+    useState(readPrivateNotificationsEnabled);
   const [privateVerificationFingerprint, setPrivateVerificationFingerprint] = useState("");
   const [notice, setNotice] = useState("");
   const [rightRailTab, setRightRailTab] = useState<RightRailTab>("agents");
@@ -786,6 +811,11 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   });
   const presenceSendTimer = useRef<number | undefined>(undefined);
   const typingIdleTimer = useRef<number | undefined>(undefined);
+  const privateTypingIdleTimer = useRef<number | undefined>(undefined);
+  const privateTypingSentTo = useRef("");
+  const privateTypingActive = useRef(false);
+  const privateTypingExpiryTimers = useRef(new Map<string, number>());
+  const notifiedPrivateMessageIds = useRef(new Set<string>());
   const promptDoc = useRef<Y.Doc | undefined>(undefined);
   const promptProject = useRef("");
   const seenSecurityIncidents = useRef(new Set<string>());
@@ -796,6 +826,44 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }), [apiBase]);
+
+  const sendPrivateTypingSignal = useCallback((targetDeviceId: string, typing: boolean) => {
+    if (!targetDeviceId || status?.state !== "connected") return;
+    void command(buildPrivateTypingCommand(targetDeviceId, typing)).catch(() => {
+      // Typing is ephemeral; message sending remains the authoritative error surface.
+    });
+  }, [command, status?.state]);
+
+  const stopPrivateTyping = useCallback(() => {
+    if (privateTypingIdleTimer.current !== undefined) {
+      window.clearTimeout(privateTypingIdleTimer.current);
+      privateTypingIdleTimer.current = undefined;
+    }
+    const targetDeviceId = privateTypingSentTo.current;
+    if (privateTypingActive.current && targetDeviceId) {
+      sendPrivateTypingSignal(targetDeviceId, false);
+    }
+    privateTypingActive.current = false;
+    privateTypingSentTo.current = "";
+  }, [sendPrivateTypingSignal]);
+
+  const notePrivateTyping = useCallback((value: string) => {
+    const contact = privateContacts.find(item => item.deviceId === recipientDeviceId);
+    if (!value.trim() || !contact?.trusted || status?.state !== "connected") {
+      stopPrivateTyping();
+      return;
+    }
+    if (privateTypingSentTo.current !== contact.deviceId) stopPrivateTyping();
+    if (!privateTypingActive.current) {
+      privateTypingActive.current = true;
+      privateTypingSentTo.current = contact.deviceId;
+      sendPrivateTypingSignal(contact.deviceId, true);
+    }
+    if (privateTypingIdleTimer.current !== undefined) {
+      window.clearTimeout(privateTypingIdleTimer.current);
+    }
+    privateTypingIdleTimer.current = window.setTimeout(stopPrivateTyping, PRIVATE_TYPING_IDLE_MS);
+  }, [privateContacts, recipientDeviceId, sendPrivateTypingSignal, status?.state, stopPrivateTyping]);
 
   const ensurePromptDocument = useCallback((nextProjectId: string, nextChatId = nextProjectId): Y.Doc => {
     const nextScope = `${nextProjectId}:${nextChatId}`;
@@ -1141,14 +1209,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           return [...byId.values()].sort((a, b) => a.sequence - b.sequence);
         });
       }
-      const privateMessage = value?.message;
-      if (value?.source === "private" && privateMessage?.text) {
-        setPrivateReceipts(previous => previous[privateMessage.messageId]
-          ? previous
-          : {
-            ...previous,
-            [privateMessage.messageId]: privateMessage.direction === "sent" ? "sent" : "delivered",
-          });
+      const privateMessage = value?.message as PrivateMessage | undefined;
+      if (value?.source === "private" && privateMessage?.messageId) {
+        if ((privateMessage.kind ?? "message") === "message") {
+          setPrivateReceipts(previous => previous[privateMessage.messageId]
+            ? previous
+            : {
+              ...previous,
+              [privateMessage.messageId]: privateMessage.direction === "sent" ? "sent" : "delivered",
+            });
+        }
         setPrivateMessages(previous => {
           const byId = new Map(previous.map(item => [item.messageId, item]));
           byId.set(privateMessage.messageId, { ...byId.get(privateMessage.messageId), ...privateMessage });
@@ -1158,6 +1228,25 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               String(right.clientCreatedAt ?? right.acceptedAt ?? ""),
             ) || left.messageId.localeCompare(right.messageId));
         });
+      }
+      if (value?.source === "private-typing"
+        && value.recipientDeviceId === status?.deviceId
+        && typeof value.senderDeviceId === "string") {
+        const senderDeviceId = value.senderDeviceId;
+        const existingTimer = privateTypingExpiryTimers.current.get(senderDeviceId);
+        if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+        privateTypingExpiryTimers.current.delete(senderDeviceId);
+        if (value.typing === true) {
+          setPrivateTypingDeviceIds(previous => previous.includes(senderDeviceId)
+            ? previous : [...previous, senderDeviceId]);
+          const expiryTimer = window.setTimeout(() => {
+            privateTypingExpiryTimers.current.delete(senderDeviceId);
+            setPrivateTypingDeviceIds(previous => previous.filter(id => id !== senderDeviceId));
+          }, PRIVATE_TYPING_EXPIRY_MS);
+          privateTypingExpiryTimers.current.set(senderDeviceId, expiryTimer);
+        } else {
+          setPrivateTypingDeviceIds(previous => previous.filter(id => id !== senderDeviceId));
+        }
       }
       if (value?.source === "private-contacts" && Array.isArray(value.contacts)) {
         const contacts = value.contacts as PrivateContact[];
@@ -1275,11 +1364,78 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   }, [status?.state]);
 
   useEffect(() => {
+    if (privateTypingSentTo.current
+      && privateTypingSentTo.current !== recipientDeviceId) {
+      stopPrivateTyping();
+    }
+  }, [recipientDeviceId, stopPrivateTyping]);
+
+  useEffect(() => {
+    if (status?.state === "connected") return;
+    stopPrivateTyping();
+    for (const timer of privateTypingExpiryTimers.current.values()) window.clearTimeout(timer);
+    privateTypingExpiryTimers.current.clear();
+    queueMicrotask(() => setPrivateTypingDeviceIds([]));
+  }, [status?.state, stopPrivateTyping]);
+
+  useEffect(() => {
+    const expiryTimers = privateTypingExpiryTimers.current;
     return () => {
       if (presenceSendTimer.current !== undefined) window.clearTimeout(presenceSendTimer.current);
       if (typingIdleTimer.current !== undefined) window.clearTimeout(typingIdleTimer.current);
+      if (privateTypingIdleTimer.current !== undefined) window.clearTimeout(privateTypingIdleTimer.current);
+      for (const timer of expiryTimers.values()) window.clearTimeout(timer);
+      expiryTimers.clear();
     };
   }, []);
+
+  useEffect(() => {
+    for (const message of privateMessages) {
+      if (notifiedPrivateMessageIds.current.has(message.messageId)) continue;
+      notifiedPrivateMessageIds.current.add(message.messageId);
+      if (!shouldNotifyPrivateMessage(message, {
+        enabled: privateNotificationsEnabled,
+        localDeviceId: status?.deviceId ?? "",
+        selectedContactDeviceId: recipientDeviceId,
+        documentVisible: document.visibilityState === "visible",
+        windowFocused: document.hasFocus(),
+      })) continue;
+      const sender = privateContacts.find(contact => contact.deviceId === message.senderDeviceId);
+      const descriptor = buildPrivateNotification(sender?.displayName ?? "", {
+        title: t("cocodex.private.notificationTitle"),
+        body: t("cocodex.private.notificationBody"),
+        fallbackSender: t("cocodex.private.notificationFallback"),
+      });
+      showPrivateNotification(descriptor);
+    }
+  }, [
+    privateContacts,
+    privateMessages,
+    privateNotificationsEnabled,
+    recipientDeviceId,
+    status?.deviceId,
+    t,
+  ]);
+
+  const togglePrivateNotifications = async () => {
+    if (privateNotificationsEnabled) {
+      disablePrivateNotifications();
+      setPrivateNotificationsEnabled(false);
+      setNotice(t("cocodex.private.notificationsDisabled"));
+      return;
+    }
+    const granted = await enablePrivateNotifications();
+    setPrivateNotificationsEnabled(granted);
+    setNotice(t(granted
+      ? "cocodex.private.notificationsEnabled"
+      : "cocodex.private.notificationsDenied"));
+    if (granted) {
+      showPrivateNotification({
+        title: t("cocodex.title"),
+        body: t("cocodex.private.notificationsEnabled"),
+      });
+    }
+  };
 
   const enroll = async (event: FormEvent) => {
     event.preventDefault();
@@ -1366,13 +1522,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       setNotice(t("cocodex.private.verifyBeforeSending"));
       return;
     }
+    stopPrivateTyping();
     setPrivateDraft("");
     try {
-      await command({
-        type: "private.send",
-        recipientDeviceId: contact.deviceId,
-        text,
-      });
+      await command(buildPrivateComposerCommand(contact.deviceId, text, {
+        ...(privateEditTarget ? { editTargetMessageId: privateEditTarget.messageId } : {}),
+        ...(privateReplyTo ? { replyToMessageId: privateReplyTo.messageId } : {}),
+      }));
+      setPrivateReplyTo(undefined);
+      setPrivateEditTarget(undefined);
     } catch (error) {
       setPrivateDraft(text);
       setNotice(error instanceof Error ? error.message : String(error));
@@ -1625,6 +1783,60 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const beginPrivateReply = (message: ProjectedPrivateMessage) => {
+    setPrivateEditTarget(undefined);
+    setPrivateReplyTo(message);
+    setPrivateDraft("");
+  };
+
+  const beginPrivateEdit = (message: ProjectedPrivateMessage) => {
+    setPrivateReplyTo(undefined);
+    setPrivateEditTarget(message);
+    setPrivateDraft(message.text);
+  };
+
+  const sendPrivateMutation = async (
+    message: ProjectedPrivateMessage,
+    mutation: { kind: "delete" } | {
+      kind: "reaction";
+      emoji: string;
+      reactionOperation: "add" | "remove";
+    },
+  ) => {
+    const contactId = message.senderDeviceId === status?.deviceId
+      ? message.recipientDeviceId
+      : message.senderDeviceId;
+    const contact = privateContacts.find(item => item.deviceId === contactId);
+    if (!contact?.trusted) {
+      setNotice(t("cocodex.private.verifyBeforeSending"));
+      return;
+    }
+    try {
+      await command(buildPrivateMutationCommand(
+        contact.deviceId,
+        message.messageId,
+        mutation,
+      ));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const deletePrivateMessage = async (message: ProjectedPrivateMessage) => {
+    if (!window.confirm(t("cocodex.private.deleteConfirm"))) return;
+    await sendPrivateMutation(message, { kind: "delete" });
+  };
+
+  const togglePrivateReaction = async (message: ProjectedPrivateMessage) => {
+    const reacted = message.reactions.some(reaction =>
+      reaction.emoji === "thumbs-up" && reaction.senderDeviceIds.includes(status?.deviceId ?? ""));
+    await sendPrivateMutation(message, {
+      kind: "reaction",
+      emoji: "thumbs-up",
+      reactionOperation: reacted ? "remove" : "add",
+    });
+  };
+
   const localSafetyCommand = async (type: string, agentId: string, confirm = false) => {
     try {
       await command({ type, agentId, ...(confirm ? { confirm: true } : {}) });
@@ -1779,13 +1991,14 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         : member.caret,
     }));
   const selectedPrivateContact = privateContacts.find(contact => contact.deviceId === recipientDeviceId);
+  const projectedPrivateMessages = projectPrivateMessageEvents(privateMessages);
   const selectedPrivateMessages = privateTimelineForContact(
-    privateMessages,
+    projectedPrivateMessages,
     selectedPrivateContact?.deviceId ?? "",
     "",
   );
   const visiblePrivateMessages = privateTimelineForContact(
-    privateMessages,
+    projectedPrivateMessages,
     selectedPrivateContact?.deviceId ?? "",
     privateSearch,
   );
@@ -2489,7 +2702,16 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <strong>{selectedPrivateContact?.displayName ?? t("cocodex.private.title")}</strong>
                 <small>{t("cocodex.private.encrypted")}</small>
               </div>
-              <IconLock />
+              <div className="cocodex-section-head-actions">
+                <button className="btn btn-ghost" type="button"
+                  aria-pressed={privateNotificationsEnabled}
+                  onClick={() => void togglePrivateNotifications()}>
+                  {t(privateNotificationsEnabled
+                    ? "cocodex.private.disableNotifications"
+                    : "cocodex.private.enableNotifications")}
+                </button>
+                <IconLock />
+              </div>
             </div>
             <select
               className="input"
@@ -2542,39 +2764,98 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               aria-label={t("cocodex.private.search")}
             />
             <div className="cocodex-private-list">
-              {visiblePrivateMessages.map(message => (
-                <article key={message.messageId}>
-                  <strong>{message.senderDeviceId === status.deviceId
-                    ? t("cocodex.you")
-                    : selectedPrivateContact?.displayName ?? message.senderDeviceId.slice(0, 8)}</strong>
-                  <p>{message.text}</p>
-                  {(message.deliveryState === "rejected" || privateReceipts[message.messageId]) && <small>
-                    {message.deliveryState === "rejected"
-                      ? `${t("cocodex.private.rejected")}: ${message.rejectionReason ?? t("cocodex.private.rejectedUnknown")}`
-                      : privateReceipts[message.messageId] === "read"
-                      ? t("cocodex.private.read")
-                      : privateReceipts[message.messageId] === "delivered"
-                        ? t("cocodex.private.delivered")
-                        : t("cocodex.private.sent")}
-                  </small>}
-                  {message.recipientDeviceId === status.deviceId && privateReceipts[message.messageId] !== "read" &&
-                    <button className="btn btn-ghost" type="button" disabled={!status.running}
-                      onClick={() => void markPrivateRead(message)}>{t("cocodex.private.markRead")}</button>}
-                  <button className="btn btn-ghost" type="button" disabled={status.state !== "connected" || !agentId.trim()}
-                    onClick={() => void sharePrivate(message)}>{t("cocodex.private.share")}</button>
-                </article>
-              ))}
+              {visiblePrivateMessages.map(message => {
+                const replyTarget = message.replyToMessageId
+                  ? projectedPrivateMessages.find(item => item.messageId === message.replyToMessageId)
+                  : undefined;
+                const reacted = message.reactions.some(reaction =>
+                  reaction.emoji === "thumbs-up"
+                  && reaction.senderDeviceIds.includes(status.deviceId ?? ""));
+                return (
+                  <article key={message.messageId} className={message.deleted ? "deleted" : undefined}>
+                    {replyTarget && <blockquote className="cocodex-private-reply">
+                      <strong>{t("cocodex.private.replyingTo")}</strong>
+                      <span>{replyTarget.deleted ? t("cocodex.private.deleted") : replyTarget.text}</span>
+                    </blockquote>}
+                    <strong>{message.senderDeviceId === status.deviceId
+                      ? t("cocodex.you")
+                      : selectedPrivateContact?.displayName ?? message.senderDeviceId.slice(0, 8)}</strong>
+                    <p>{message.deleted ? t("cocodex.private.deleted") : message.text}</p>
+                    {message.edited && !message.deleted && <small>{t("cocodex.private.edited")}</small>}
+                    {!!message.reactions.length && <div className="cocodex-private-reactions">
+                      {message.reactions.map(reaction => <span key={reaction.emoji}>
+                        {reaction.emoji === "thumbs-up" ? "\u{1F44D}" : reaction.emoji} {reaction.senderDeviceIds.length}
+                      </span>)}
+                    </div>}
+                    {(message.deliveryState === "rejected" || privateReceipts[message.messageId]) && <small>
+                      {message.deliveryState === "rejected"
+                        ? `${t("cocodex.private.rejected")}: ${message.rejectionReason ?? t("cocodex.private.rejectedUnknown")}`
+                        : privateReceipts[message.messageId] === "read"
+                        ? t("cocodex.private.read")
+                        : privateReceipts[message.messageId] === "delivered"
+                          ? t("cocodex.private.delivered")
+                          : t("cocodex.private.sent")}
+                    </small>}
+                    <div className="cocodex-private-actions">
+                      {!message.deleted && <button className="btn btn-ghost" type="button" disabled={!status.running}
+                        onClick={() => beginPrivateReply(message)}>{t("cocodex.private.reply")}</button>}
+                      {!message.deleted && <button className={reacted ? "btn btn-ghost active" : "btn btn-ghost"}
+                        type="button" disabled={!status.running}
+                        onClick={() => void togglePrivateReaction(message)}
+                        aria-label={t("cocodex.private.react")}>{"\u{1F44D}"}</button>}
+                      {!message.deleted && message.senderDeviceId === status.deviceId && <>
+                        <button className="btn btn-ghost" type="button" disabled={!status.running}
+                          onClick={() => beginPrivateEdit(message)}>{t("cocodex.private.edit")}</button>
+                        <button className="btn btn-ghost danger" type="button" disabled={!status.running}
+                          onClick={() => void deletePrivateMessage(message)}>{t("cocodex.private.delete")}</button>
+                      </>}
+                      {message.recipientDeviceId === status.deviceId && privateReceipts[message.messageId] !== "read" &&
+                        <button className="btn btn-ghost" type="button" disabled={!status.running}
+                          onClick={() => void markPrivateRead(message)}>{t("cocodex.private.markRead")}</button>}
+                      {!message.deleted && <button className="btn btn-ghost" type="button"
+                        disabled={status.state !== "connected" || !agentId.trim()}
+                        onClick={() => void sharePrivate(message)}>{t("cocodex.private.share")}</button>}
+                    </div>
+                  </article>
+                );
+              })}
               {!visiblePrivateMessages.length && <p className="muted">
                 {selectedPrivateMessages.length ? t("cocodex.private.noSearchResults") : t("cocodex.private.empty")}
               </p>}
             </div>
             <form className="cocodex-private-form" onSubmit={sendPrivate}>
-              <textarea className="input" value={privateDraft} onChange={event => setPrivateDraft(event.target.value)}
-                placeholder={t("cocodex.private.message")} required rows={2}
+              {(privateReplyTo || privateEditTarget) && <div className="cocodex-private-compose-mode">
+                <span>
+                  {privateEditTarget ? t("cocodex.private.editing") : t("cocodex.private.replying")}
+                  {" "}
+                  {(privateEditTarget ?? privateReplyTo)?.text.slice(0, 100)}
+                </span>
+                <button className="btn btn-ghost" type="button" onClick={() => {
+                  if (privateEditTarget) setPrivateDraft("");
+                  setPrivateEditTarget(undefined);
+                  setPrivateReplyTo(undefined);
+                }}>{t("cocodex.private.cancel")}</button>
+              </div>}
+              <PrivateTypingIndicator
+                active={!!selectedPrivateContact
+                  && privateTypingDeviceIds.includes(selectedPrivateContact.deviceId)}
+                label={selectedPrivateContact
+                  ? t("cocodex.private.typing", { name: selectedPrivateContact.displayName })
+                  : ""}
+              />
+              <textarea className="input" value={privateDraft} onChange={event => {
+                setPrivateDraft(event.target.value);
+                notePrivateTyping(event.target.value);
+              }}
+                placeholder={privateEditTarget
+                  ? t("cocodex.private.editMessage")
+                  : privateReplyTo
+                    ? t("cocodex.private.replyMessage")
+                    : t("cocodex.private.message")} required rows={2}
                 disabled={!selectedPrivateContact?.trusted} />
               <button className="btn btn-ghost"
                 disabled={!status.running || !selectedPrivateContact?.trusted}>
-                {t("cocodex.private.send")}
+                {privateEditTarget ? t("cocodex.private.saveEdit") : t("cocodex.private.send")}
               </button>
             </form>
             </div>}

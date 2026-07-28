@@ -373,6 +373,7 @@ fn supervise_runtime(app: AppHandle<Wry>) {
 
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .manage(RuntimeState::default())
         .invoke_handler(tauri::generate_handler![managed_runtime_status])

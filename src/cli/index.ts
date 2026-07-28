@@ -328,7 +328,7 @@ async function handleEnsure() {
       const ready = await syncForSafeSetup(live.port, config);
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       await injectSystemEnv(live.port, config).catch(() => {});
-      if (ready) console.log(`✅ Proxy running on port ${live.port}; health and autostart verified.`);
+      if (ready) console.log(`✅ Proxy running on port ${live.port}; liveness, provider authentication, configuration, and autostart verified.`);
       else process.exitCode = 1;
       return;
     }
@@ -370,7 +370,7 @@ async function handleEnsure() {
     process.exitCode = 1;
     return;
   }
-  console.log(`✅ Proxy running on port ${port}; health and autostart verified.`);
+  console.log(`✅ Proxy running on port ${port}; liveness, provider authentication, configuration, and autostart verified.`);
 }
 
 /** Fixed tray action: start the proxy without depending on codexAutoStart. */

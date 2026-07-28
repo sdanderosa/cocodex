@@ -881,6 +881,28 @@ describe("CoCodex protocol", () => {
       clientCreatedAt: acceptedAt,
     };
     expect(clientFrameSchema.parse(send)).toEqual(send);
+    const typingSend = {
+      version: 1 as const,
+      type: "private.typing.send" as const,
+      requestId: crypto.randomUUID(),
+      recipientDeviceId,
+      typing: true,
+    };
+    expect(clientFrameSchema.parse(typingSend)).toEqual(typingSend);
+    expect(privateServerFrameSchema.parse({
+      version: 1,
+      type: "private.typing",
+      senderDeviceId,
+      recipientDeviceId,
+      typing: true,
+    })).toEqual({
+      version: 1,
+      type: "private.typing",
+      senderDeviceId,
+      recipientDeviceId,
+      typing: true,
+    });
+    expect(() => clientFrameSchema.parse({ ...typingSend, persisted: true })).toThrow();
     const snapshot = privateSnapshotFrameSchema.parse({
       version: 1,
       type: "private.snapshot",

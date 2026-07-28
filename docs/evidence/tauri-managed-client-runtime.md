@@ -361,3 +361,82 @@ matched the final bundled runtime. Its desktop recorded the same foreign-owner
 rejection, created only a WebView2 child, launched no bundled runtime, and left
 no CoCodex process after exact-PID cleanup. PID 23976 remained alive and
 listening throughout.
+## Notification and provider-readiness rebuild - 2026-07-28
+
+This rebuild supersedes every installer and executable hash above. It includes
+private message actions/typing/native notifications and fail-closed provider
+readiness. The complete source gate immediately before packaging was:
+
+```text
+repository: 4,260 passed, 4 skipped, 0 failed
+expectations: 21,666 across 357 files and 15 fresh workers
+explicit CoCodex: 178 passed, 0 failed, 2,061 expectations
+GUI: 142 passed, 0 failed, 661 expectations
+TypeScript, privacy, GUI build/lint/localization: passed
+Rust: 2 passed, 0 failed
+Clippy -D warnings: passed
+```
+
+`bun run tauri:build` exited `0`, compiling 629 sidecar modules,
+150 GUI modules, the notification-enabled Rust shell, and both Windows bundle
+formats.
+
+Fresh artifact identities:
+
+```text
+NSIS installer
+  30,541,510 bytes
+  SHA-256 DE881D66B0853F6E670E915E766B285AEB2CD52DD015DB11889F1B168EA5708A
+
+MSI installer
+  43,872,256 bytes
+  SHA-256 8D6FA02A0A3E7CACB683CF48066635A8218CE1ED54B745AD620787C725F9E9B8
+
+Bundled runtime
+  104,830,464 bytes
+  SHA-256 78FDFB51D040A240FCE0DED04E0CE5EA67C6AD62377DC1E4558C941DE7931EB3
+
+Release desktop executable
+  11,850,240 bytes
+  SHA-256 C557E60891548FCF2A1FC18D911BD99E460030E454F560A20F4443F72E90A621
+
+NSIS-installed desktop payload
+  11,850,240 bytes
+  SHA-256 A0996E4EC5288A1F0FF0DBC7A4D1DE0032B1BF9CB77B040AB364668DE271FC4B
+
+MSI-extracted desktop payload
+  11,850,240 bytes
+  SHA-256 768C51803024DF5AF68826043F9B12AD69CEBDD905B4BD1A2494A3B119975D3F
+```
+
+The NSIS installer completed an isolated silent install with exit `0`.
+The installed desktop launched under isolated local-app, roaming-app, Codex,
+and OpenCodex homes while foreign user-installed OpenCodex PID 3704 owned
+`127.0.0.1:10100`. Its log recorded:
+
+```text
+foreign compatible runtime rejected pid=3704; showing disconnected interface
+```
+
+Its only direct child was `msedgewebview2.exe`; bundled-runtime count was
+zero. Exact desktop PID 40964 was stopped, PID 3704 remained the listener,
+silent uninstall exited `0`, and the isolated install root was removed.
+
+MSI administrative extraction exited `0`. The extracted runtime hash exactly
+matched the bundled runtime. Extracted desktop PID 47848 logged the same
+foreign-owner rejection, created only a WebView2 child, started no bundled
+runtime, and left PID 3704 as the sole listener after exact-PID cleanup. The
+verified extraction root was then removed.
+
+The installed home service was never stopped, adopted, initialized, or
+updated during these package smokes. The source runtime's real `/readyz`
+Direct-mode path was separately launched on an isolated random port and
+returned HTTP 200 with proxy, configuration, provider, and credential checks
+all true. Missing and expired credentials returned HTTP 503 in process-level
+regressions.
+
+Native notification permission was not clicked automatically. The official
+plugin, explicit permission gate, package integration, and plaintext-free
+dispatch are verified; a visible operating-system toast remains manual
+user-observed acceptance. All artifacts remain unsigned private-alpha outputs
+and are not approved for publication while broader product gaps remain.

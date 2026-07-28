@@ -2,6 +2,7 @@ import { codexAutoStartEnabled } from "../config";
 import type { ServiceDiagnostic } from "../service";
 import type { OcxConfig } from "../types";
 import type { CodexShimDiagnostic } from "./shim";
+import type { RemoteProxyReadiness } from "../server/readiness";
 
 export type InjectionProtection = "service" | "shim";
 
@@ -18,6 +19,10 @@ export interface InjectionSafetyDeps {
     port: number,
     options: { hostname?: string },
   ) => Promise<{ pid: number | null } | null>;
+  proxyReadinessAt?: (
+    port: number,
+    options: { hostname?: string },
+  ) => Promise<RemoteProxyReadiness | null>;
   diagnoseService?: () => ServiceDiagnostic;
   diagnoseCodexShim?: () => CodexShimDiagnostic;
   verifyPidIdentity?: (candidatePid: number) => number | null;
@@ -106,6 +111,34 @@ export async function verifyInjectionReadiness(
       ok: false,
       protection: null,
       message: `port ${port} is not owned by the expected CoCodex/OpenCodex process`,
+    };
+  }
+
+  const proxyReadinessAt = deps.proxyReadinessAt
+    ?? (await import("../server/readiness")).proxyReadinessAt;
+  const providerReadiness = await proxyReadinessAt(port, { hostname: config.hostname }).catch(() => null);
+  if (!providerReadiness) {
+    return {
+      ...base,
+      ok: false,
+      protection: null,
+      message: `proxy provider/authentication readiness verification failed at /readyz on port ${port}`,
+    };
+  }
+  if (providerReadiness.pid !== identity.pid) {
+    return {
+      ...base,
+      ok: false,
+      protection: null,
+      message: `proxy /healthz and /readyz process identities do not match on port ${port}`,
+    };
+  }
+  if (!providerReadiness.ok) {
+    return {
+      ...base,
+      ok: false,
+      protection: null,
+      message: providerReadiness.message,
     };
   }
 

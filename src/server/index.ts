@@ -13,6 +13,7 @@ import {
   DEFAULT_SUBAGENT_MODELS,
   applyProxyEnv,
   loadConfig,
+  readConfigDiagnostics,
   saveConfig,
   websocketsEnabled,
 } from "../config";
@@ -22,6 +23,7 @@ import { startMemoryWatchdog } from "./memory-watchdog";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
+import { assessOpenAiProviderReadiness } from "./readiness";
 import {
   CodexAccountCooldownError,
 } from "../codex/auth-context";
@@ -327,6 +329,50 @@ export function startServer(port?: number) {
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
         return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+      }
+
+      if (url.pathname === "/readyz" && req.method === "GET") {
+        const diagnostics = readConfigDiagnostics();
+        const configurationOk = diagnostics.error === null
+          && diagnostics.source === "file"
+          && diagnostics.config.port === config.port
+          && listenPort === config.port;
+        if (!configurationOk) {
+          const code = diagnostics.error ? "configuration_invalid" : "configuration_mismatch";
+          return jsonResponse({
+            status: "not_ready",
+            service: "opencodex",
+            version: VERSION,
+            uptime: process.uptime(),
+            pid: process.pid,
+            port: listenPort,
+            provider: "openai",
+            accountMode: null,
+            code,
+            message: diagnostics.error
+              ? "OpenCodex configuration is invalid"
+              : "running proxy port does not match the persisted autostart configuration",
+            canUseDirect: false,
+            checks: { proxy: true, configuration: false, provider: false, credentials: false },
+          }, 503, req, config);
+        }
+
+        const providerReadiness = await assessOpenAiProviderReadiness(config);
+        return jsonResponse({
+          status: providerReadiness.ok ? "ok" : "not_ready",
+          service: "opencodex",
+          version: VERSION,
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: listenPort,
+          ...providerReadiness,
+          checks: {
+            proxy: true,
+            configuration: true,
+            provider: !["provider_missing", "provider_disabled", "provider_invalid"].includes(providerReadiness.code),
+            credentials: providerReadiness.ok,
+          },
+        }, providerReadiness.ok ? 200 : 503, req, config);
       }
 
       if (url.pathname.startsWith("/api/")) {

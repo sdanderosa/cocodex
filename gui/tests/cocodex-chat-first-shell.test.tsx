@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { LanguageProvider } from "../src/i18n/provider";
 import {
   ChatTimeline,
+  PrivateTypingIndicator,
   WorkspaceRailTabs,
 } from "../src/pages/CoCodex";
 import { executableLocalAgentIds, stopEveryLocalAgent } from "../src/cocodex-agent-safety-state";
@@ -32,6 +33,15 @@ test("chat-first right rail exposes one selected workspace detail tab", () => {
   expect(html).toContain('aria-selected="true"');
   expect((html.match(/role="tab"/g) ?? []).length).toBe(4);
   expect((html.match(/aria-selected="true"/g) ?? []).length).toBe(1);
+});
+
+test("private typing indicator is accessible, animated by three dots, and absent when idle", () => {
+  const active = renderToStaticMarkup(<PrivateTypingIndicator active label="Kai is typing…" />);
+  expect(active).toContain('role="status"');
+  expect(active).toContain('aria-live="polite"');
+  expect(active).toContain("Kai is typing");
+  expect((active.match(/<i/g) ?? []).length).toBe(3);
+  expect(renderToStaticMarkup(<PrivateTypingIndicator active={false} label="Kai is typing…" />)).toBe("");
 });
 
 test("global emergency stop targets every and only executing local agent", async () => {

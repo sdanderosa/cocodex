@@ -1,6 +1,6 @@
 import * as readline from "node:readline";
 import { constants as fsConstants, copyFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { classifyOpenAiTierBackup, getConfigPath, getDefaultConfig, isValidProviderName, saveConfig } from "../config";
+import { classifyOpenAiTierBackup, getConfigPath, getDefaultConfig, isValidProviderName, loadConfig, saveConfig } from "../config";
 import { enrichProviderFromCatalog } from "../oauth/key-providers";
 import { deriveInitProviders } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -80,7 +80,33 @@ export function cleanupOpenAiTierBackupAfterInit(configPath = getConfigPath()): 
   } catch { /* cleanup is best-effort; never block init on backup housekeeping */ }
 }
 
+export function buildInitConfig(
+  existingConfig: OcxConfig,
+  port: number,
+  providerName: string,
+  providerConfig: OcxProviderConfig,
+): OcxConfig {
+  const defaults = getDefaultConfig();
+  const existingOpenAi = existingConfig.providers.openai;
+  const preservedMode = existingOpenAi?.codexAccountMode === "direct" || existingOpenAi?.codexAccountMode === "pool"
+    ? existingOpenAi.codexAccountMode
+    : defaults.providers.openai?.codexAccountMode ?? "pool";
+  const selectedProvider = providerName === "openai"
+    ? { ...providerConfig, codexAccountMode: preservedMode }
+    : providerConfig;
+  return {
+    ...defaults,
+    port,
+    providers: {
+      ...(providerName !== "openai" && existingOpenAi ? { openai: existingOpenAi } : {}),
+      [providerName]: selectedProvider,
+    },
+    defaultProvider: providerName,
+  };
+}
+
 export async function runInit(): Promise<void> {
+  const existingConfig = loadConfig();
   const prompt = createPrompt();
   console.log("\n🔧 opencodex (ocx) setup\n");
 
@@ -155,12 +181,7 @@ export async function runInit(): Promise<void> {
   const portStr = await prompt.ask("\nProxy port [10100]: ");
   const port = parseInt(portStr, 10) || 10100;
 
-  const config: OcxConfig = {
-    ...getDefaultConfig(),
-    port,
-    providers: { [providerName]: providerConfig },
-    defaultProvider: providerName,
-  };
+  const config = buildInitConfig(existingConfig, port, providerName, providerConfig);
 
   saveConfig(config);
   // Init writes a fresh config, so a stale pre-migration backup from a previous
@@ -189,7 +210,7 @@ export async function runInit(): Promise<void> {
 
   let setupComplete = true;
   if (injectRequested) {
-    console.log("Starting the proxy and verifying /healthz plus autostart protection...");
+    console.log("Starting the proxy and verifying /healthz, /readyz provider authentication, and autostart protection...");
     const ensure = Bun.spawn([process.execPath, process.argv[1], "ensure"], {
       stdin: "inherit",
       stdout: "inherit",
@@ -201,7 +222,7 @@ export async function runInit(): Promise<void> {
 
   if (setupComplete) {
     console.log(injectRequested
-      ? "\n🚀 Setup complete! Proxy health and persistent Codex routing verified."
+      ? "\n🚀 Setup complete! Proxy liveness, provider authentication, configuration, and persistent Codex routing verified."
       : "\n🚀 Setup complete without persistent Codex routing.");
   } else {
     console.error("\n❌ Setup incomplete. Native Codex was restored; repair autostart and rerun 'ocx ensure'.");

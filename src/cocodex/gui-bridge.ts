@@ -45,6 +45,7 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "agent.result",
   "private.receipt",
   "private.receipt.accepted",
+  "private.typing",
 ]);
 const SENSITIVE_RENDERER_KEYS = new Set([
   "ciphertext",
@@ -131,6 +132,7 @@ const ALLOWED_COMMANDS = new Set([
   "agent.full-computer.enable",
   "agent.full-computer.disable",
   "private.send",
+  "private.typing",
   "private.read",
   "artifact.publish",
   "artifact.list",
@@ -276,6 +278,14 @@ function withoutSensitiveServerPayloads(value: unknown): unknown {
           actionable: invitation.actionable === true,
         };
       }),
+    };
+  }
+  if (record.source === "private-typing") {
+    return {
+      source: "private-typing",
+      ...(typeof record.senderDeviceId === "string" ? { senderDeviceId: record.senderDeviceId } : {}),
+      ...(typeof record.recipientDeviceId === "string" ? { recipientDeviceId: record.recipientDeviceId } : {}),
+      typing: record.typing === true,
     };
   }
   if (record.source === "private" && record.message && typeof record.message === "object") {

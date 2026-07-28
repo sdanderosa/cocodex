@@ -2306,6 +2306,7 @@ export async function runJsonLineSession(
       }
       if (frame.type === "private.contact.snapshot"
         || frame.type === "private.snapshot" || frame.type === "private.accepted" || frame.type === "private.message"
+        || frame.type === "private.typing"
         || frame.type === "private.receipt.accepted" || frame.type === "private.receipt") {
         try { frame = privateServerFrameSchema.parse(frame) as Record<string, any>; }
         catch (error) {
@@ -2791,6 +2792,13 @@ export async function runJsonLineSession(
           message: frame.message as PrivateMailboxMessage,
         });
         if (inbound) queuePrivateEnvelope(inbound);
+      } else if (frame.type === "private.typing") {
+        emit({
+          source: "private-typing",
+          senderDeviceId: String(frame.senderDeviceId),
+          recipientDeviceId: String(frame.recipientDeviceId),
+          typing: frame.typing === true,
+        });
       } else if (frame.type === "private.receipt") {
         rememberPrivateReceipt(frame.receipt);
       } else if (frame.type === "project.key.result") {
@@ -4453,6 +4461,31 @@ export async function runJsonLineSession(
           const queuedReceipt = queuePrivateReceipt(messageId, "read");
           if (!queuedReceipt) queuedPrivateReadReceipts.delete(messageId);
           emit({ source: "control", id: command.id, ok: queuedReceipt, messageId, receipt: "read", queued: !socket || socket.readyState !== WebSocket.OPEN });
+        } else if (command.type === "private.typing") {
+          const recipientDeviceId = String(command.recipientDeviceId);
+          if (recipientDeviceId === connection.deviceId) {
+            throw new Error("Private typing cannot target this device");
+          }
+          const contact = privateContacts.get(recipientDeviceId);
+          if (!contact) throw new Error("Private typing requires an approved private contact");
+          const trustedFingerprint = loadTrustedDevices(paths.trustedDevices)[recipientDeviceId];
+          if (!trustedFingerprint || trustedFingerprint !== contact.fingerprint) {
+            throw new Error("Private typing requires a verified private contact");
+          }
+          send({
+            version: 1,
+            type: "private.typing.send",
+            requestId: controlRequestId(command.id),
+            recipientDeviceId,
+            typing: command.typing === true,
+          });
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            recipientDeviceId,
+            typing: command.typing === true,
+          });
         } else if (command.type === "private.send") {
           const messageId = String(command.messageId ?? randomUUID());
           const clientCreatedAt = String(command.clientCreatedAt ?? new Date().toISOString());
