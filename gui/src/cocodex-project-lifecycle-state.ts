@@ -27,6 +27,11 @@ export function projectLifecycleCommand(
   return { type: "project.lifecycle.update", projectId: project.id, action, expectedRevision } as const;
 }
 
+export function projectLeaveCommand(project: Project) {
+  if (project.role !== "member") throw new Error("Only a non-owner project member can leave");
+  return { type: "project.member.leave", projectId: project.id } as const;
+}
+
 export function reconcileDeletedProject(
   projects: Project[],
   selectedProjectId: string,

@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 export function expirePendingProjectInvitationsForProject(
   db: Database,
   projectId: string,
-  reason: "key-rotation-required" | "project-locked",
+  reason: "key-rotation-required" | "project-locked" | "member-leave-pending",
   now = new Date(),
 ): void {
   const expired = db.query(`

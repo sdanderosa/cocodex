@@ -137,6 +137,39 @@ test("owner roster marks revoked members and exposes only remove-and-rotate reco
   }], member.deviceId)[0]?.status).toBe("revoked");
 });
 
+test("owner roster exposes a pending leave as complete-and-rotate with exact confirmation", () => {
+  const member: ProjectMember = {
+    deviceId: crypto.randomUUID(),
+    displayName: "Kai",
+    fingerprint: "kai-fingerprint-123456789012",
+    role: "member",
+    trusted: true,
+    leaveRequestId: crypto.randomUUID(),
+    leaveRequestedAt: "2030-01-01T00:00:00.000Z",
+  };
+  const html = renderToStaticMarkup(
+    <LanguageProvider>
+      <ProjectMemberRoster
+        members={[member]}
+        owner
+        connected
+        busy={false}
+        onRefresh={() => {}}
+        onTrust={() => {}}
+        onRemove={() => {}}
+      />
+    </LanguageProvider>,
+  );
+  expect(html).toContain("Leave requested");
+  expect(html).toContain("Complete leave &amp; rotate");
+  const calls: string[] = [];
+  const t = ((key: string) => key) as TFn;
+  expect(confirmProjectMemberRemoval(t, member, message => {
+    calls.push(message);
+    return true;
+  })).toBeTrue();
+  expect(calls).toEqual(["cocodex.members.completeLeaveConfirm"]);
+});
 test("owner roster invokes enabled controls and disables every action offline", async () => {
   const { createRoot } = await import("react-dom/client");
   const member: ProjectMember = {

@@ -62,6 +62,10 @@ import {
   projectLifecycleUpdateFrameSchema,
 } from "./project-lifecycle";
 import {
+  projectMemberLeaveFrameSchema,
+  projectMemberLeaveRequestedFrameSchema,
+} from "./project-leave";
+import {
   deviceApprovalChangedFrameSchema,
   deviceApprovalListFrameSchema,
   deviceApprovalSnapshotFrameSchema,
@@ -499,6 +503,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     expectedEpoch: z.number().int().positive().max(PROJECT_KEY_EPOCH_MAX - 1),
     envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(127),
   }).strict(),
+  projectMemberLeaveFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("project.context.get"),
@@ -680,6 +685,8 @@ export const projectMemberViewSchema = z.object({
   role: z.enum(["owner", "member"]),
   status: z.enum(["approved", "revoked"]),
   deviceKeyCertificate: z.string().min(256).max(8_192).nullable(),
+  leaveRequestId: z.uuid().nullable().optional(),
+  leaveRequestedAt: z.iso.datetime().nullable().optional(),
 }).strict();
 
 export const projectMemberListFrameSchema = z.object({
@@ -903,6 +910,7 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectKeyRotationRequiredFrameSchema,
   projectDeviceRevokedFrameSchema,
   projectMemberRemovedFrameSchema,
+  projectMemberLeaveRequestedFrameSchema,
   projectMemberListFrameSchema,
   projectLockUpdatedFrameSchema,
   projectLockChangedFrameSchema,

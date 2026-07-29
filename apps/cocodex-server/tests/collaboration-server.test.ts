@@ -18,7 +18,10 @@ import {
   publicKeyFingerprint,
   projectLockSigningTranscript,
   projectLifecycleSigningTranscript,
+  projectKeyEnvelopeSigningTranscript,
+  projectMemberLeaveSigningTranscript,
   sharedChatCreationSigningTranscript,
+  type ProjectKeyEnvelope,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
 import { createDefaultConfig } from "../src/config";
@@ -29,6 +32,8 @@ import {
   testServerIdentityFingerprint,
 } from "./device-approval-fixture";
 import { createServerIdentity } from "../src/identity";
+import { initializeProjectKeyEpoch } from "../src/project-encryption-storage";
+import { serverEpoch } from "../src/server-state";
 import { createInvitation } from "../src/invitations";
 import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
@@ -143,6 +148,28 @@ function approvedDevice(db: Database, fingerprint: string, displayName: string):
     publicKey: pair.publicKey,
     messagingPrivateKey: messagingPair.privateKey,
     messagingPublicKey: messagingPair.publicKey,
+  };
+}
+
+function projectKeyEnvelope(
+  projectId: string,
+  sender: TestDevice,
+  recipientDeviceId: string,
+  keyEpoch: number,
+): ProjectKeyEnvelope {
+  const unsigned = {
+    version: 1 as const,
+    projectId,
+    keyEpoch,
+    recipientDeviceId,
+    senderDeviceId: sender.id,
+    sealedProjectKey: randomBytes(80).toString("base64url"),
+    senderPublicKeyPem: sender.publicKey,
+  };
+  return {
+    ...unsigned,
+    signature: sign(null, projectKeyEnvelopeSigningTranscript(unsigned), sender.privateKey)
+      .toString("base64url"),
   };
 }
 
@@ -1712,6 +1739,120 @@ describe("authenticated WSS collaboration", () => {
     await leaveAtStephen;
   });
 
+  test("quarantines a signed self-leave over WSS and completes it with owner-generated rotation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cocodex-project-leave-wss-"));
+    roots.push(root);
+    const paths = serverPaths(root);
+    const identity = createServerIdentity(paths);
+    await createTlsIdentity(paths);
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const owner = approvedDevice(db, fingerprint, "Stephen");
+    const member = approvedDevice(db, fingerprint, "Kai");
+    const project = createProject(db, "WSS leave", owner.id);
+    addProjectMember(db, project.id, owner.id, member.id);
+    initializeProjectKeyEpoch(db, project.id, owner.id, randomUUID(), [
+      projectKeyEnvelope(project.id, owner, owner.id, 1),
+      projectKeyEnvelope(project.id, owner, member.id, 1),
+    ]);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, identity);
+    servers.push(server);
+
+    const ownerSocket = await connect(server.port, owner, fingerprint, false);
+    const memberSocket = await connect(server.port, member, fingerprint, false);
+    const requestId = randomUUID();
+    const issuedAt = new Date().toISOString();
+    const unsigned = {
+      version: 1 as const,
+      requestId,
+      projectId: project.id,
+      serverFingerprint: fingerprint,
+      serverEpoch: serverEpoch(db),
+      issuedAt,
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      nonce: randomBytes(32).toString("base64url"),
+    };
+    const memberAck = nextFrame(memberSocket, "project.member.leave-requested",
+      frame => frame.requestId === requestId);
+    const ownerNotice = nextFrame(ownerSocket, "project.member.leave-requested",
+      frame => frame.requestId === requestId);
+    memberSocket.send(JSON.stringify({
+      ...unsigned,
+      type: "project.member.leave",
+      signature: sign(null, projectMemberLeaveSigningTranscript(unsigned), member.privateKey)
+        .toString("base64url"),
+    }));
+    expect(await memberAck).toMatchObject({
+      projectId: project.id,
+      deviceId: member.id,
+      created: true,
+    });
+    expect(await ownerNotice).toMatchObject({
+      projectId: project.id,
+      deviceId: member.id,
+      created: true,
+    });
+
+    const denied = nextFrame(memberSocket, "error");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.member.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await denied).error).toContain("approved project member");
+
+    const roster = nextFrame(ownerSocket, "project.member.list.result");
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.member.list",
+      requestId: randomUUID(),
+      projectId: project.id,
+    }));
+    expect((await roster).members).toContainEqual(expect.objectContaining({
+      deviceId: member.id,
+      leaveRequestId: requestId,
+    }));
+    expect(db.query("SELECT rotation_required AS rotationRequired FROM project_key_epochs WHERE project_id = ?")
+      .get(project.id)).toEqual({ rotationRequired: 1 });
+
+    const rotationId = randomUUID();
+    const removedAtMember = nextFrame(memberSocket, "project.member.removed",
+      frame => frame.deviceId === member.id);
+    const removedAtOwner = nextFrame(ownerSocket, "project.member.removed",
+      frame => frame.deviceId === member.id);
+    const rotated = nextFrame(ownerSocket, "project.key.rotated",
+      frame => frame.requestId === rotationId);
+    ownerSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.member.remove-and-rotate",
+      requestId: rotationId,
+      projectId: project.id,
+      deviceId: member.id,
+      expectedEpoch: 1,
+      envelopes: [projectKeyEnvelope(project.id, owner, owner.id, 2)],
+    }));
+    await Promise.all([removedAtMember, removedAtOwner]);
+    expect(await rotated).toMatchObject({
+      projectId: project.id,
+      keyEpoch: 2,
+      created: true,
+    });
+    expect(db.query("SELECT state, completion_rotation_id AS completionRotationId FROM project_member_leave_requests WHERE request_id = ?")
+      .get(requestId)).toEqual({ state: "completed", completionRotationId: rotationId });
+
+    const absent = nextFrame(memberSocket, "project.list.result");
+    memberSocket.send(JSON.stringify({
+      version: 1,
+      type: "project.list",
+      requestId: randomUUID(),
+    }));
+    expect((await absent).projects).toEqual([]);
+  });
   test("replays unresolved project revocation incidents once per surviving socket and cancels affected workers", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-revocation-incident-"));
     roots.push(root);

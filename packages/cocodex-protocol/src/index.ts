@@ -36,6 +36,13 @@ export {
   type ProjectLifecycleTransition,
 } from "./project-lifecycle";
 export {
+  projectMemberLeaveFrameSchema,
+  projectMemberLeaveRequestedFrameSchema,
+  projectMemberLeaveSigningTranscript,
+  type ProjectMemberLeaveFrame,
+  type ProjectMemberLeaveRequestedFrame,
+} from "./project-leave";
+export {
   projectLockStateSchema,
   projectLockUpdateFrameSchema,
   projectLockTransitionSchema,

@@ -20,6 +20,7 @@ import {
 } from "./project-invitations";
 import { generalSharedChat, insertGeneralSharedChat, requireSharedChat } from "./shared-chats";
 import { assertProjectUnlocked, projectLockState } from "./project-locks";
+import { completePendingProjectLeave } from "./project-leave";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -286,6 +287,11 @@ function approvedProjectMembers(db: Database, projectId: string): string[] {
     FROM project_members pm
     JOIN devices d ON d.id = pm.device_id
     WHERE pm.project_id = ? AND d.status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM project_member_leave_requests plr
+        WHERE plr.project_id = pm.project_id AND plr.device_id = pm.device_id
+          AND plr.state = 'pending'
+      )
     ORDER BY pm.device_id ASC
   `).all(projectId) as Array<{ deviceId: string }>;
   return rows.map(row => row.deviceId);
@@ -1297,6 +1303,15 @@ export function removeProjectMemberAndRotateKeys(
       INSERT INTO audit_events (event_type, actor_device_id, subject_id, occurred_at, details_json)
       VALUES ('project.key.rotated-after-removal', ?, ?, ?, ?)
     `).run(ownerDeviceId, memberDeviceId, timestamp, JSON.stringify({ projectId, keyEpoch, rotationId }));
+    completePendingProjectLeave(
+      db,
+      projectId,
+      memberDeviceId,
+      ownerDeviceId,
+      keyEpoch,
+      rotationId,
+      now,
+    );
     db.query(`
       INSERT INTO project_member_removal_rotations (
         rotation_id, project_id, owner_device_id, removed_device_id,
@@ -1370,6 +1385,11 @@ export function listProjectKeyEnvelopesForDevice(
     JOIN project_members pm ON pm.project_id = e.project_id AND pm.device_id = e.recipient_device_id
     JOIN devices d ON d.id = pm.device_id
     WHERE e.recipient_device_id = ? AND d.status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM project_member_leave_requests plr
+        WHERE plr.project_id = e.project_id AND plr.device_id = e.recipient_device_id
+          AND plr.state = 'pending'
+      )
     ORDER BY e.project_id ASC, e.key_epoch ASC
     LIMIT 4096
   `).all(deviceId) as KeyEnvelopeRow[];

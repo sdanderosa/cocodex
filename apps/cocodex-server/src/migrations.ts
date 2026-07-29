@@ -810,4 +810,35 @@ CREATE TABLE project_lifecycle_operations (
 CREATE INDEX project_lifecycle_operations_project_revision
   ON project_lifecycle_operations(project_id, resulting_revision);`,
   },
+  {
+    version: 33,
+    sql: `
+CREATE TABLE project_member_leave_requests (
+  request_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id),
+  server_fingerprint TEXT NOT NULL,
+  server_epoch INTEGER NOT NULL CHECK (server_epoch > 0),
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'completed')),
+  requested_at TEXT NOT NULL,
+  completed_at TEXT,
+  completed_by_device_id TEXT REFERENCES devices(id),
+  completion_rotation_id TEXT,
+  CHECK (
+    (state = 'pending' AND completed_at IS NULL AND completed_by_device_id IS NULL AND completion_rotation_id IS NULL)
+    OR
+    (state = 'completed' AND completed_at IS NOT NULL AND completed_by_device_id IS NOT NULL AND completion_rotation_id IS NOT NULL)
+  ),
+  UNIQUE(device_id, nonce)
+);
+CREATE UNIQUE INDEX project_member_leave_requests_pending
+  ON project_member_leave_requests(project_id, device_id)
+  WHERE state = 'pending';
+CREATE INDEX project_member_leave_requests_project_time
+  ON project_member_leave_requests(project_id, requested_at);`,
+  },
 ];

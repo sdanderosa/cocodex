@@ -131,6 +131,11 @@ export function listProjects(db: Database, deviceId: string): SharedProject[] {
     JOIN project_lock_state pls ON pls.project_id = p.id
     JOIN devices d ON d.id = pm.device_id
     WHERE pm.device_id = ? AND d.status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM project_member_leave_requests plr
+        WHERE plr.project_id = p.id AND plr.device_id = pm.device_id
+          AND plr.state = 'pending'
+      )
     ORDER BY p.created_at ASC, p.id ASC
   `).all(deviceId) as Array<Omit<SharedProject, "lock"> & { lockJson: string }>;
   return rows.map(({ lockJson, ...project }) => ({
@@ -152,9 +157,14 @@ export function listProjectMembers(
       d.fingerprint,
       pm.role,
       d.status,
-      d.device_key_certificate AS deviceKeyCertificate
+      d.device_key_certificate AS deviceKeyCertificate,
+      plr.request_id AS leaveRequestId,
+      plr.requested_at AS leaveRequestedAt
     FROM project_members pm
     JOIN devices d ON d.id = pm.device_id
+    LEFT JOIN project_member_leave_requests plr
+      ON plr.project_id = pm.project_id AND plr.device_id = pm.device_id
+      AND plr.state = 'pending'
     WHERE pm.project_id = ? AND d.status IN ('approved', 'revoked')
     ORDER BY CASE pm.role WHEN 'owner' THEN 0 ELSE 1 END,
       CASE d.status WHEN 'approved' THEN 0 ELSE 1 END,
@@ -168,6 +178,11 @@ export function requireProjectMembership(db: Database, projectId: string, device
     FROM project_members pm
     JOIN devices d ON d.id = pm.device_id
     WHERE pm.project_id = ? AND pm.device_id = ? AND d.status = 'approved'
+      AND NOT EXISTS (
+        SELECT 1 FROM project_member_leave_requests plr
+        WHERE plr.project_id = pm.project_id AND plr.device_id = pm.device_id
+          AND plr.state = 'pending'
+      )
   `).get(projectId, deviceId) as MembershipRow | null;
   if (!membership) throw new Error("Device is not an approved project member");
   return membership;

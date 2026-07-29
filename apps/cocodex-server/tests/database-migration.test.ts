@@ -58,7 +58,7 @@ describe("CoCodex database migrations", () => {
         "execution_signature",
       ]));
       expect(migrated.query("SELECT version FROM schema_migrations ORDER BY version").all())
-        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }, { version: 26 }, { version: 27 }, { version: 28 }, { version: 29 }, { version: 30 }, { version: 31 }, { version: 32 }]);
+        .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }, { version: 13 }, { version: 14 }, { version: 15 }, { version: 16 }, { version: 17 }, { version: 18 }, { version: 19 }, { version: 20 }, { version: 21 }, { version: 22 }, { version: 23 }, { version: 24 }, { version: 25 }, { version: 26 }, { version: 27 }, { version: 28 }, { version: 29 }, { version: 30 }, { version: 31 }, { version: 32 }, { version: 33 }]);
       expect(migrated.query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_invitations'",
       ).get()).toEqual({ name: "project_invitations" });
@@ -123,11 +123,31 @@ describe("CoCodex database migrations", () => {
         "status",
         "resolved_at",
         "resolution_rotation_id",
-      ]));      expect((migrated.query("PRAGMA table_info(projects)").all() as Array<{ name: string }>).map(column => column.name))
+      ]));
+      expect((migrated.query("PRAGMA table_info(projects)").all() as Array<{ name: string }>).map(column => column.name))
         .toEqual(expect.arrayContaining(["state", "lifecycle_revision", "updated_at", "archived_at"]));
       expect(migrated.query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_lifecycle_operations'",
       ).get()).toEqual({ name: "project_lifecycle_operations" });
+      expect(migrated.query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_member_leave_requests'",
+      ).get()).toEqual({ name: "project_member_leave_requests" });
+      expect((migrated.query(
+        "PRAGMA table_info(project_member_leave_requests)",
+      ).all() as Array<{ name: string }>).map(column => column.name)).toEqual(expect.arrayContaining([
+        "request_id",
+        "project_id",
+        "device_id",
+        "server_fingerprint",
+        "server_epoch",
+        "nonce",
+        "signature",
+        "state",
+        "requested_at",
+        "completed_at",
+        "completed_by_device_id",
+        "completion_rotation_id",
+      ]));
       migrated.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;");
       migrated.close();
       migrated = undefined;

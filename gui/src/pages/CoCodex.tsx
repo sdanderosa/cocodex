@@ -11,6 +11,7 @@ import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import {
   orderedProjects,
   projectLifecycleCommand,
+  projectLeaveCommand,
   reconcileDeletedProject,
   type ProjectLifecycleAction,
 } from "../cocodex-project-lifecycle-state";
@@ -390,6 +391,7 @@ interface SessionValue {
   project?: Project;
   frame?: {
     type?: string;
+    requestId?: string;
     projectId?: string;
     chatId?: string;
     incidentId?: string;
@@ -398,6 +400,8 @@ interface SessionValue {
     currentEpoch?: number;
     createdAt?: string;
     status?: "approved" | "revoked";
+    requestedAt?: string;
+    created?: boolean;
     chats?: SharedChat[];
     chat?: SharedChat;
     defaultChat?: SharedChat;
@@ -854,6 +858,7 @@ export function ProjectMemberRoster({
                 : "cocodex.members.unverified")}
                 {isRevokedProjectMember(member) && ` · ${t("cocodex.members.revoked")}`}</small>
               {isRevokedProjectMember(member) && <small role="status">{t("cocodex.members.revokedRecovery")}</small>}
+              {member.leaveRequestId && <small role="status">{t("cocodex.members.leaveRequestedHelp")}</small>}
             </span>
             {owner && member.role !== "owner" && <span className="cocodex-member-actions">
               {!member.trusted && !isRevokedProjectMember(member) && <button type="button" className="btn btn-ghost"
@@ -862,9 +867,11 @@ export function ProjectMemberRoster({
               </button>}
               <button type="button" className="btn btn-danger btn-ghost"
                 disabled={busy || !connected} onClick={() => onRemove(member)}>
-                {t(isRevokedProjectMember(member)
-                  ? "cocodex.members.removeAndRotate"
-                  : "cocodex.members.remove")}
+                {t(member.leaveRequestId
+                  ? "cocodex.members.completeLeave"
+                  : isRevokedProjectMember(member)
+                    ? "cocodex.members.removeAndRotate"
+                    : "cocodex.members.remove")}
               </button>
             </span>}
           </article>
@@ -1346,6 +1353,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             },
           }));
         }
+      } else if (frame?.projectId === projectId && frame.type === "project.member.leave-requested" && frame.deviceId) {
+        setProjectMembers(previous => previous.map(member => member.deviceId === frame.deviceId
+          ? {
+              ...member,
+              leaveRequestId: frame.requestId ?? null,
+              leaveRequestedAt: frame.requestedAt ?? null,
+            }
+          : member));
+        if (frame.deviceId !== status?.deviceId) setNotice(t("cocodex.members.leaveRequestedOwner"));
       } else if (frame?.projectId === projectId && frame.type === "project.member.removed" && frame.deviceId) {
         setProjectMembers(previous => previous.filter(member => member.deviceId !== frame.deviceId));
         setProjectSecurity(previous => {
@@ -1789,6 +1805,21 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     try {
       await command(projectLifecycleCommand(selectedProject, action, value));
       setNotice(t("cocodex.projects.lifecyclePending"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leaveProject = async () => {
+    if (!selectedProject || selectedProject.role !== "member" || status?.state !== "connected") return;
+    if (!window.confirm(t("cocodex.projects.leaveConfirm", { name: selectedProject.name }))) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await command(projectLeaveCommand(selectedProject));
+      setNotice(t("cocodex.projects.leaveQueued"));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2480,6 +2511,19 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                     onClick={() => void updateProjectLifecycle("delete")}>
                     {t("cocodex.projects.delete")}
                   </button>}
+                </div>
+              </section>
+            )}
+            {selectedProject?.role === "member" && (
+              <section className="cocodex-project-lifecycle">
+                <strong>{t("cocodex.projects.leave")}</strong>
+                <small>{t("cocodex.projects.leaveHelp")}</small>
+                <div>
+                  <button type="button" className="btn btn-danger btn-ghost"
+                    disabled={busy || status.state !== "connected"}
+                    onClick={() => void leaveProject()}>
+                    {t("cocodex.projects.leave")}
+                  </button>
                 </div>
               </section>
             )}

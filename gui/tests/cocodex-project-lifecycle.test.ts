@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   orderedProjects,
   projectLifecycleCommand,
+  projectLeaveCommand,
   reconcileDeletedProject,
 } from "../src/cocodex-project-lifecycle-state";
 import type { Project } from "../src/cocodex-member-state";
@@ -22,6 +23,11 @@ describe("CoCodex project lifecycle UI state", () => {
     expect(projectLifecycleCommand({ ...owner, state: "active" }, "rename", "  Nocturne Next  "))
       .toMatchObject({ action: "rename", name: "Nocturne Next", expectedRevision: 4 });
     expect(() => projectLifecycleCommand({ ...owner, role: "member" }, "restore")).toThrow("owner");
+    const member = { ...owner, role: "member" as const };
+    expect(projectLeaveCommand(member)).toEqual({
+      type: "project.member.leave", projectId: member.id,
+    });
+    expect(() => projectLeaveCommand(owner)).toThrow("non-owner");
   });
 
   test("orders archived projects last and selects another active project after deletion", () => {

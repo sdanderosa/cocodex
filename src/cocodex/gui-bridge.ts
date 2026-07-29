@@ -21,6 +21,7 @@ const RENDERER_SERVER_FRAME_TYPES = new Set([
   "project.lock.changed",
   "project.member.list.result",
   "project.member.removed",
+  "project.member.leave-requested",
   "prompt.snapshot",
   "prompt.update",
   "context.result",
@@ -84,6 +85,7 @@ const RENDERER_FRAME_FIELDS = new Set([
   "final", "created", "keyEpoch",
   "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
   "operationId", "cancelledTaskCount", "lifecycleRevision",
+  "leaveRequestId", "leaveRequestedAt", "requestedAt", "leavePending",
   "previousName", "resultingName", "previousState", "resultingState", "resultingRevision",
   "integration", "blocked", "preview", "currentTargetCommit", "expectedTargetCommit",
   "changedFiles", "conflicts", "overlaps", "blockedReasons", "integrationCommit", "targetCommit",
@@ -104,6 +106,7 @@ const ALLOWED_COMMANDS = new Set([
   "project.key.initialize",
   "project.key.rotate",
   "project.member.list",
+  "project.member.leave",
   "project.member.remove-and-rotate",
   "project.member.remove",
   "project.lock.update",
@@ -575,6 +578,13 @@ export class CoCodexGuiBridge {
         || command.confirmedVerificationPhrase.trim().length < 1
         || command.confirmedVerificationPhrase.length > 256) {
         throw new Error("Invalid device approval command");
+      }
+    }
+    if (command.type === "project.member.leave") {
+      const allowed = new Set(["id", "type", "projectId"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !/^[0-9a-f-]{36}$/i.test(command.projectId)) {
+        throw new Error("Invalid project-leave command");
       }
     }
     if (command.type === "project.lifecycle.update") {

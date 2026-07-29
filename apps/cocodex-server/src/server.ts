@@ -28,6 +28,7 @@ import {
   projectLockUpdatedFrameSchema,
   projectLifecycleUpdatedFrameSchema,
   projectDeletedFrameSchema,
+  projectMemberLeaveRequestedFrameSchema,
   sharedChatChangedFrameSchema,
   sharedChatCreatedFrameSchema,
   sharedChatListResultFrameSchema,
@@ -109,6 +110,7 @@ import {
   updateEncryptedProjectContext,
 } from "./project-encryption-storage";
 import { updateProjectLifecycle } from "./project-lifecycle";
+import { requestProjectLeave } from "./project-leave";
 import {
   assertProjectUnlocked,
   pendingProjectLockCancellations,
@@ -2013,6 +2015,38 @@ export function startCoCodexServer(
                   envelope,
                 });
               }
+            }
+            return;
+          }
+          if (message.type === "project.member.leave") {
+            const leave = requestProjectLeave(
+              db,
+              deviceId,
+              message,
+              certificateFingerprint,
+              serverEpoch(db),
+            );
+            const leaveFrame = projectMemberLeaveRequestedFrameSchema.parse({
+              version: 1,
+              type: "project.member.leave-requested",
+              requestId,
+              projectId: leave.projectId,
+              deviceId: leave.deviceId,
+              requestedAt: leave.requestedAt,
+              created: leave.created,
+            });
+            socket.send(JSON.stringify(leaveFrame));
+            if (leave.created) {
+              for (const task of leave.cancelledTasks) {
+                sendToDevice(task.targetDeviceId, {
+                  version: 1,
+                  type: "agent.cancel",
+                  taskId: task.taskId,
+                  reason: "A task participant requested to leave the project.",
+                }, true);
+              }
+              clearProjectPresence(leave.projectId, leave.deviceId);
+              sendToProjectMembers(leave.projectId, leaveFrame);
             }
             return;
           }

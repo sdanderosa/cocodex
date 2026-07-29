@@ -891,6 +891,54 @@ describe("CoCodex encrypted project context session", () => {
       WHERE rotation_id = ?
     `).get(offlineRemovalId)).toEqual({ keyEpoch: 2 });
 
+    const angelaRosterId = crypto.randomUUID();
+    angela.send({ id: angelaRosterId, type: "project.member.list", projectId: project.id });
+    await angela.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === angelaRosterId);
+    const leaveId = crypto.randomUUID();
+    angela.send({ id: leaveId, type: "project.member.leave", projectId: project.id });
+    await Promise.all([
+      angela.waitFor(event => event.source === "control"
+        && event.id === leaveId && event.ok === true && event.leavePending === true),
+      angela.waitFor(event => event.source === "project-encryption"
+        && event.state === "revoked" && event.projectId === project.id),
+      recoveredStephen.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.leave-requested"
+        && (event.frame as Record<string, unknown> | undefined)?.requestId === leaveId),
+    ]);
+    expect(loadProjectKeyState(angelaPaths.projectKeys, project.id)).toMatchObject({ revoked: true });
+    const ownerRosterId = crypto.randomUUID();
+    recoveredStephen.send({ id: ownerRosterId, type: "project.member.list", projectId: project.id });
+    await recoveredStephen.waitFor(event => event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.list.result"
+      && (event.frame as Record<string, unknown> | undefined)?.requestId === ownerRosterId);
+    const completeLeaveId = crypto.randomUUID();
+    recoveredStephen.send({
+      id: completeLeaveId,
+      type: "project.member.remove-and-rotate",
+      projectId: project.id,
+      deviceId: angelaConnection.deviceId,
+    });
+    await Promise.all([
+      recoveredStephen.waitFor(event => event.source === "control"
+        && event.id === completeLeaveId && event.ok === true && event.keyEpoch === 3),
+      recoveredStephen.waitFor(event => event.source === "project-encryption"
+        && event.state === "key-available" && event.projectId === project.id && event.keyEpoch === 3),
+      angela.waitFor(event => event.source === "server"
+        && (event.frame as Record<string, unknown> | undefined)?.type === "project.member.removed"
+        && (event.frame as Record<string, unknown> | undefined)?.deviceId === angelaConnection.deviceId),
+    ]);
+    expect(db.query(`
+      SELECT state, completed_by_device_id AS completedByDeviceId,
+        completion_rotation_id AS completionRotationId
+      FROM project_member_leave_requests WHERE request_id = ?
+    `).get(leaveId)).toEqual({
+      state: "completed",
+      completedByDeviceId: stephenConnection.deviceId,
+      completionRotationId: completeLeaveId,
+    });
+
     recoveredStephen.close();
     kai.close();
     angela.close();

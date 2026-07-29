@@ -23,6 +23,8 @@ export interface ProjectMember {
   trusted: boolean;
   /** Server-authoritative membership status. Older clients omit this field. */
   status?: "approved" | "revoked";
+  leaveRequestId?: string | null;
+  leaveRequestedAt?: string | null;
 }
 
 export interface ProjectSecurityIncident {
@@ -91,7 +93,9 @@ export function confirmProjectMemberRemoval(
   member: ProjectMember,
   confirmAction: (message: string) => boolean,
 ): boolean {
-  return confirmAction(t("cocodex.members.removeConfirm", {
+  return confirmAction(t(member.leaveRequestId
+    ? "cocodex.members.completeLeaveConfirm"
+    : "cocodex.members.removeConfirm", {
     name: member.displayName,
     fingerprint: member.fingerprint.slice(-12),
   }));

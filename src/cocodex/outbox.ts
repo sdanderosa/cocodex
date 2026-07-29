@@ -3,12 +3,13 @@ import { dirname } from "node:path";
 import {
   clientFrameSchema,
   projectKeyRotatedFrameSchema,
+  projectMemberLeaveRequestedFrameSchema,
   type ClientFrame,
 } from "../../packages/cocodex-protocol/src/index.ts";
 import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { ClientPaths } from "./paths";
 
-type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "private.receipt.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" }>;
+type DurableFrame = Extract<ClientFrame, { type: "chat.send" | "project.chat.send" | "private.send" | "private.receipt.send" | "agent.request" | "project.agent.request" | "prompt.update" | "project.prompt.update" | "artifact.publish" | "project.artifact.publish" | "project.file-reference.publish" | "context.update" | "project.context.update" | "project.member.remove-and-rotate" | "project.member.leave" }>;
 
 export interface FlushDurableOutboxOptions {
   onTerminalRejection?: (frame: DurableFrame, reason: string) => void;
@@ -29,7 +30,7 @@ function parseOutbox(path: string): OutboxFile {
     if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "private.receipt.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
-      && frame.type !== "project.member.remove-and-rotate") {
+      && frame.type !== "project.member.remove-and-rotate" && frame.type !== "project.member.leave") {
       throw new Error("Unsupported durable CoCodex event");
     }
     return frame;
@@ -89,7 +90,7 @@ export function enqueueDurableEvent(paths: ClientPaths, value: unknown): Durable
   if (frame.type !== "chat.send" && frame.type !== "project.chat.send" && frame.type !== "private.send" && frame.type !== "private.receipt.send" && frame.type !== "agent.request" && frame.type !== "project.agent.request"
       && frame.type !== "prompt.update" && frame.type !== "project.prompt.update" && frame.type !== "artifact.publish" && frame.type !== "project.artifact.publish" && frame.type !== "context.update"
       && frame.type !== "project.file-reference.publish" && frame.type !== "project.context.update"
-      && frame.type !== "project.member.remove-and-rotate") {
+      && frame.type !== "project.member.remove-and-rotate" && frame.type !== "project.member.leave") {
     throw new Error("Only supported collaboration updates and atomic member-removal rotations can be queued durably");
   }
   const events = parseOutbox(paths.outbox).events;
@@ -184,9 +185,13 @@ export async function flushDurableOutbox(
             || normalizedMessage.includes("file-reference project limit")
             || normalizedMessage.includes("file-reference envelope must use the current"))) {
           discardQueuedEvent(paths.outbox, frame.requestId);
-        } else if (frame.type === "project.member.remove-and-rotate"
+        } else if ((frame.type === "project.member.remove-and-rotate"
+          || frame.type === "project.member.leave")
           && (normalizedMessage.includes("project member removal")
             || normalizedMessage.includes("project key rotation conflict")
+            || normalizedMessage.includes("project-leave")
+            || normalizedMessage.includes("project leave")
+            || normalizedMessage.includes("leave request")
             || normalizedMessage.includes("device is not a project member")
             || normalizedMessage.includes("project owner"))) {
           // Membership/epoch/recipient-set conflicts cannot become valid by
@@ -209,6 +214,15 @@ export async function flushDurableOutbox(
           || parsed.data.keyEpoch !== frame.expectedEpoch + 1
           || !sameEnvelopeSet(parsed.data.envelopes, frame.envelopes)) {
           finish(new Error("Project member removal acknowledgement did not match the queued operation"));
+          return;
+        }
+        finish();
+      }
+      else if (response.type === "project.member.leave-requested" && frame.type === "project.member.leave") {
+        const parsed = projectMemberLeaveRequestedFrameSchema.safeParse(response);
+        if (!parsed.success) return;
+        if (parsed.data.projectId !== frame.projectId) {
+          finish(new Error("Project-leave acknowledgement did not match the queued request"));
           return;
         }
         finish();

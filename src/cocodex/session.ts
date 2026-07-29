@@ -9,6 +9,7 @@ import {
   projectInvitationSigningTranscript,
   projectLockSigningTranscript,
   projectLifecycleSigningTranscript,
+  projectMemberLeaveSigningTranscript,
   sharedChatCreationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
@@ -2441,6 +2442,7 @@ export async function runJsonLineSession(
         || frame.type === "device.approval.changed"
         || frame.type === "project.lock.updated" || frame.type === "project.lock.changed"
         || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
+        || frame.type === "project.member.leave-requested"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
         try { frame = projectServerFrameSchema.parse(frame) as Record<string, any>; }
@@ -2745,6 +2747,8 @@ export async function runJsonLineSession(
             projectWrapPublicKeyPem,
             trusted,
             status: membershipStatus,
+            leaveRequestId: member.leaveRequestId ?? null,
+            leaveRequestedAt: member.leaveRequestedAt ?? null,
           };
         });
         projectMembers.set(String(frame.projectId), members);
@@ -2759,6 +2763,8 @@ export async function runJsonLineSession(
               role: member.role,
               trusted: member.trusted,
               status: member.status ?? "approved",
+              leaveRequestId: member.leaveRequestId ?? null,
+              leaveRequestedAt: member.leaveRequestedAt ?? null,
             })),
           },
         });
@@ -3068,6 +3074,41 @@ export async function runJsonLineSession(
       } else if (frame.type === "project.key.rotation-required") {
         markProjectKeyRotationRequired(paths.projectKeys, String(frame.projectId));
         emit({ source: "project-encryption", state: "rotation-required", projectId: String(frame.projectId), removedDeviceId: String(frame.removedDeviceId), currentEpoch: Number(frame.currentEpoch) });
+      } else if (frame.type === "project.member.leave-requested") {
+        const projectId = String(frame.projectId);
+        const leavingDeviceId = String(frame.deviceId);
+        projectMembers.set(
+          projectId,
+          (projectMembers.get(projectId) ?? []).map(member => member.deviceId === leavingDeviceId
+            ? {
+                ...member,
+                leaveRequestId: String(frame.requestId),
+                leaveRequestedAt: String(frame.requestedAt),
+              }
+            : member),
+        );
+        emit({
+          source: "server",
+          frame: {
+            version: 1,
+            type: "project.member.leave-requested",
+            requestId: String(frame.requestId),
+            projectId,
+            deviceId: leavingDeviceId,
+            requestedAt: String(frame.requestedAt),
+            created: frame.created === true,
+          },
+        });
+        if (leavingDeviceId === connection.deviceId) {
+          try {
+            revokeLocalProjectAccess(
+              projectId,
+              "This device requested to leave the project; owner key rotation is pending.",
+            );
+          } catch (error) {
+            emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) });
+          }
+        }
       } else if (frame.type === "project.member.removed") {
         const projectId = String(frame.projectId);
         projectMembers.set(
@@ -4147,6 +4188,47 @@ export async function runJsonLineSession(
             type: "project.member.list",
             requestId: controlRequestId(command.id),
             projectId,
+          });
+        } else if (command.type === "project.member.leave") {
+          const projectId = String(command.projectId ?? "");
+          if (!/^[0-9a-f-]{36}$/i.test(projectId)) throw new Error("A valid project is required");
+          const current = loadProjectKeyForRotation(paths.projectKeys, projectId);
+          if (!current) throw new Error("No project encryption key is available for " + projectId);
+          const members = projectMembers.get(projectId);
+          if (!members) throw new Error("Refresh the authoritative project member list before leaving");
+          const localMember = members.find(member => member.deviceId === connection.deviceId);
+          if (!localMember || localMember.status === "revoked") {
+            throw new Error("This device is not an approved project member");
+          }
+          if (localMember.role === "owner") {
+            throw new Error("A project owner cannot leave; archive or delete the project instead");
+          }
+          const requestId = controlRequestId(command.id);
+          const issuedAt = new Date().toISOString();
+          const unsigned = {
+            version: 1 as const,
+            requestId,
+            projectId,
+            serverFingerprint: connection.serverFingerprint,
+            serverEpoch: connection.serverEpoch,
+            issuedAt,
+            expiresAt: new Date(Date.now() + 2 * 60_000).toISOString(),
+            nonce: randomBytes(32).toString("base64url"),
+          };
+          enqueueDurableEvent(paths, {
+            ...unsigned,
+            type: "project.member.leave",
+            signature: sign(null, projectMemberLeaveSigningTranscript(unsigned), identity.privateKeyPem)
+              .toString("base64url"),
+          });
+          const delivered = await flush();
+          emit({
+            source: "control",
+            id: command.id,
+            ok: true,
+            queued: delivered === 0,
+            projectId,
+            leavePending: true,
           });
         } else if (command.type === "project.member.remove-and-rotate") {
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");

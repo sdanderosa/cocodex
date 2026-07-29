@@ -375,6 +375,15 @@ describe("CoCodex GUI bridge", () => {
       projectId: memberProjectId,
     }).accepted).toBe(true);
     expect(bridge.command({
+      type: "project.member.leave",
+      projectId: memberProjectId,
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "project.member.leave",
+      projectId: memberProjectId,
+      signature: "renderer-supplied-signature",
+    })).toThrow("Invalid project-leave command");
+    expect(bridge.command({
       type: "project.member.remove-and-rotate",
       projectId: memberProjectId,
       deviceId: removedDeviceId,
@@ -503,6 +512,9 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "usage.get")).toBe(true);
     expect(received.some((value: any) => value.type === "project.member.list"
       && value.projectId === memberProjectId)).toBe(true);
+    expect(received.some((value: any) => value.type === "project.member.leave"
+      && value.projectId === memberProjectId
+      && value.signature === undefined)).toBe(true);
     expect(received.some((value: any) => value.type === "project.member.remove-and-rotate"
       && value.deviceId === removedDeviceId)).toBe(true);
     expect(received.some((value: any) => value.type === "agent.approval" && value.approved === true)).toBe(true);

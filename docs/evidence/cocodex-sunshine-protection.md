@@ -100,3 +100,17 @@ installed archive verifier, SunshineService remained Running/Automatic at PID
 5044; `sunshine.exe` remained PID 11100; TCP listeners 47984, 47989, 47990,
 and 48010 remained owned by PID 11100. Foreign OpenCodex PID 3704 remained the
 sole `127.0.0.1:10100` owner. Neither service nor its IP/ports was changed.
+
+## Project-leave continuation verification - 2026-07-28
+
+The non-interference clause remains binding for the fail-safe project-member
+leave transaction in ADR 0056. The full continuation gate passed 4,267 tests,
+4 intentional skips, 0 failures, and 21,773 assertions across 360 files. The
+focused Sunshine suite again passed 3 tests with no failures.
+
+The post-gate snapshot exactly preserved `SunshineService` Running/Automatic at
+PID 5044, `sunshine.exe` PID 11100, TCP listeners `0.0.0.0:47984`, `:47989`,
+`:47990`, and `:48010`, and UDP endpoints `0.0.0.0:47998`, `:47999`, and
+`:48000`, all under PID 11100. Foreign OpenCodex PID 3704 remained the sole
+`127.0.0.1:10100` listener. No Sunshine IP, interface, port, firewall, service,
+or process mutation occurred.
