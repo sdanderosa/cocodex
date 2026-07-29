@@ -29,12 +29,14 @@ No local executable, plugin, marketplace, profile, workspace, browser, cookie, c
 ## Current verification
 
 - Focused capability/bridge/GUI/resident-session suite: 8 pass, 0 fail, 225 assertions.
-- Maintained CoCodex suite: 220 pass, 0 fail, 2,422 assertions across 46 files.
+- Maintained CoCodex suite: 220 pass, 0 fail, 2,423 assertions across 46 files.
 - Complete GUI suite: 149 pass, 0 fail, 691 assertions across 32 files.
-- Complete repository suite: 4,270 pass, 4 intentional skips, 0 fail, 21,786 assertions across 361 files.
+- Complete repository suite: 4,270 pass, 4 intentional skips, 0 fail, 21,774 assertions across 361 files.
 - CoCodex TypeScript, privacy scan, GUI production build (154 modules), Rust tests (2 pass), and Clippy with warnings denied: pass.
 - GUI lint: 0 errors and the same pre-existing hook-dependency warning.
 - In-app Browser QA rendered the local CoCodex enrollment shell. The standalone Vite preview intentionally lacked the native status API, so it did not fabricate a connected agent card; card states are covered by the focused GUI tests.
 - Temporary preview processes and listener `127.0.0.1:4179` were removed after QA. Foreign OpenCodex PID 3704 on port 10100 and Sunshine PID 11100/listeners were unchanged.
 
-Full maintained, inherited, packaging, and host-state evidence is recorded after the release gate. This slice remains intentionally partial: hosted-agent Browser execution, watch/shared-control, sanitized browser events/results, and optional encrypted live viewing are not claimed.
+Clean source commit `0898f97aee560e86bf5a6c693f50b6eb72dddb18` (tree `21cbf56aca18b3cceffccdd445c8e752dd003f45`) produced the final private-alpha archive, Tauri runtime/desktop, NSIS, and MSI evidence under `dist/release-evidence/0898f97a/`. Archive, NSIS, MSI, and both packaged-desktop ownership smokes passed; exact hashes are recorded in `tauri-managed-client-runtime.md`.
+
+This slice remains intentionally partial: hosted-agent Browser execution, watch/shared-control, sanitized browser events/results, and optional encrypted live viewing are not claimed.

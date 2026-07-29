@@ -64,7 +64,7 @@ Status meanings:
 | 49-52 Sue Full Computer and Server-only routing | Proven | Explicit host-user full-computer fixture; not elevated-helper mode |
 | 53-61 Server offline, local Codex, queued shared/private, ordered reconnect | Proven | Same resident Client PIDs and Server restart in three-process harness |
 | 62-69 transfer to Kai, epoch, stale source, preserved history | Proven in unified scenario | Signed export/import retires Stephen source, advances epoch 1 to 2, starts Kai Server, reconnects both Clients, rejects stale source, and preserves exact sequences |
-| 70 inherited OpenCodex functionality | Proven in unified smoke and complete repository gate | Isolated non-10100 inherited proxy health and GUI 200 pass inside the scenario; complete gate: 4,267 pass, 4 skip, 0 fail, 21,773 assertions across 360 files |
+| 70 inherited OpenCodex functionality | Proven in unified smoke and complete repository gate | Isolated non-10100 inherited proxy health and GUI 200 pass inside the scenario; latest complete gate: 4,270 pass, 4 skip, 0 fail, 21,774 assertions across 361 files |
 
 ## Release decision
 
@@ -74,7 +74,7 @@ attachments/multi-device fan-out, elevated helper, browser-control surface,
 live packaged SCM/UAC/reboot acceptance and signed distribution remain release
 blockers.
 
-Fresh NSIS/MSI/runtime hashes and ownership smokes for commit `ba9438b4` are
+Fresh archive/NSIS/MSI/runtime hashes and ownership smokes for commit `0898f97a` are
 recorded in `docs/evidence/tauri-managed-client-runtime.md`. These remain
 unsigned private-alpha artifacts, not public-release evidence.
 

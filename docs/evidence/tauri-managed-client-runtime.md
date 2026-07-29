@@ -763,3 +763,64 @@ paths. The installed archive verifier passed on isolated ports 63094 and
 TCP/UDP listeners were unchanged. These artifacts remain unsigned private
 alpha outputs and do not establish signing, UAC/SCM/reboot, or physical
 two-PC acceptance.
+
+## Official Browser boundary and npm 11 repaired release - 2026-07-29
+
+Clean source commit `0898f97aee560e86bf5a6c693f50b6eb72dddb18` (tree
+`21cbf56aca18b3cceffccdd445c8e752dd003f45`) rebuilt every artifact from
+detached worktree `release-0898f97a`. Preserved outputs and logs are under
+`dist/release-evidence/0898f97a/`.
+
+    Private-alpha archive
+      10,231,873 bytes
+      SHA-256 578b64581fa2c76068b4dc20b7386c635e7d2d9e03e978e4afbc2b04bb47a1e8
+
+    NSIS installer
+      30,515,286 bytes
+      SHA-256 697bb4d91d7a057915c51f12819a24070aa2cfec70a0d62fd6fbd48d634ace82
+
+    MSI installer
+      43,884,544 bytes
+      SHA-256 924eb74489ff1686c1f536d0bcfcb9e83f21f2fed63fd040c9e08caba79937b8
+
+    Bundled runtime
+      104,889,344 bytes
+      SHA-256 b290b231bb30de7b12f6b7e2846fc2f8bf4bc3a05974106f3113caad9e4464db
+
+    Release desktop executable after bundling
+      11,854,848 bytes
+      SHA-256 1db08b7c1f55b990b356eebc4d5f8955258a26043e4e87bca3510995dcd765c2
+
+The supplied repaired archive installer passed under Node 24.18.0/npm 11.16.0
+without environment overrides. The installed-release verifier found 126 exact
+shrinkwrap-bound dependencies, OpenCodex health/GUI 200 on isolated port
+49587, and CoCodex Server start/restart/stop on isolated port 49606 (PIDs
+56152 then 14556). Shipped uninstall removed 172 packages and the exact prefix
+was removed.
+
+Fresh NSIS silent install and uninstall exited 0. Path-verified desktop PID
+59208 launched only `msedgewebview2.exe`, started zero bundled runtimes,
+logged `foreign compatible runtime rejected pid=3704`, and left port 10100
+owned by PID 3704. Its installed desktop SHA-256 was
+`f9fb5c4b5a17015147f3c7f4cd69cb9545c179dc8212b62799bedc3d531e98d3`.
+
+Fresh MSI administrative extraction exited 0. Path-verified desktop PID 65304
+also launched only WebView2, started zero bundled runtimes, rejected PID 3704,
+and left port ownership unchanged. Its desktop SHA-256 was
+`1cc6b2695c21c00d5f387f4035b40b77d99cfa0a3266d2ce4ff5565f0a96472f`;
+the extracted runtime exactly matched the bundled runtime. Both exact smoke
+roots were removed and no test process remained.
+
+Final home evidence: `opencodex-proxy` Running; `/healthz` status ok,
+OpenCodex 2.7.42, PID 3704; `codexAccountMode` `direct`; Repair Codex shortcut
+targets the protected repair script. The foreign 2.7.42 home runtime does not
+implement CoCodex's JSON `/readyz`; its SPA fallback returned HTML 200, so no
+home readiness claim is made. Current-source readiness/rollback regressions
+passed 82 tests and 362 assertions. SunshineService remained Running/Automatic
+PID 5044 and sunshine.exe PID 11100 retained TCP 47984/47989/47990/48010 and
+UDP 47998/47999/48000. No foreign process, service, IP, interface, firewall
+rule, or port was stopped, adopted, rebound, or reconfigured.
+
+All native artifacts report `NotSigned`. This remains private-alpha evidence;
+it does not establish Authenticode/signing, live UAC/SCM/reboot, or physical
+two-PC acceptance.

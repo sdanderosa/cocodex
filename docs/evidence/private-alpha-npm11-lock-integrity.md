@@ -42,3 +42,11 @@ Port 10100 remained owned by foreign PID 3704. Sunshine service/process and prot
 - GUI lint: 0 errors and one pre-existing hook-dependency warning.
 
 One first complete-suite run had a load-sensitive 5-second timeout in the unrelated provider-show masking test after 4,269 passes. The entire 26-test provider file then passed in isolation, with the affected test completing in 0.46 seconds, and the second complete repository run passed with zero failures. No production or unrelated test code was changed for that transient timeout.
+
+## Final repaired release evidence
+
+Clean commit `0898f97aee560e86bf5a6c693f50b6eb72dddb18` (tree `21cbf56aca18b3cceffccdd445c8e752dd003f45`) rebuilt the archive and every Tauri artifact. The shipped `Install-CoCodex.ps1`, without an environment override, installed successfully under npm `11.16.0`; the strict verifier again found exactly 126 shrinkwrap-bound dependencies, OpenCodex health and GUI 200 on isolated port 49587, and CoCodex Server start/restart/stop on port 49606 (PIDs 56152 then 14556). The shipped uninstaller removed all 172 installed packages and the validated prefix was removed.
+
+The final archive is 10,231,873 bytes with SHA-256 `578b64581fa2c76068b4dc20b7386c635e7d2d9e03e978e4afbc2b04bb47a1e8`. The repaired installer is 23,412 bytes with SHA-256 `3c5eb945451b93e14e9a6258b0dc46ba07f47c064ecccaf78681f7eb77ffecd7`. The release manifest identifies the exact commit/tree and the preserved evidence is under `dist/release-evidence/0898f97a/`.
+
+Focused final fail-safe verification passed 82 tests with 362 assertions, covering stopped service, reboot-persistent autostart, occupied/foreign ports, `/healthz` plus `/readyz` process identity, missing and expired Direct credentials, unusable Pool guidance, atomic native Codex restoration, pre-update backup, and `codexAccountMode` preservation.
