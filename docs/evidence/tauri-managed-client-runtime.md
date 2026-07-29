@@ -680,3 +680,69 @@ PID 3704; `codexAccountMode` direct; Repair Codex shortcut present; Sunshine
 service Running/Automatic at PID 5044; `sunshine.exe` PID 11100 with TCP ports
 47984, 47989, 47990, and 48010 unchanged. These remain unsigned private-alpha
 artifacts and do not establish live UAC/SCM/reboot or signing acceptance.
+
+## Authoritative project lifecycle rebuild - 2026-07-28
+
+Clean source commit `d774fa6cd9a31777fcdcec217cb533efbf543f5b` (tree
+`780e72bb5b5bfcc3cf173b42863dd45a0011a4e6`) rebuilt the private-alpha
+archive, bundled runtime, desktop, NSIS, and MSI from detached clean worktree
+`release-d774fa6c`. Preserved copies and smoke logs are under
+`dist/release-evidence/d774fa6c/`.
+
+    Private-alpha archive
+      10,223,276 bytes
+      SHA-256 036a8e6bd628366080613c85e8b5f01fb52d374a01d6a9827f392e8b3d72d554
+
+    NSIS installer
+      30,544,063 bytes
+      SHA-256 7068c102b4216007a9191a970dc0941482e54c6356358264dafb207ac5d8a87d
+
+    MSI installer
+      43,880,448 bytes
+      SHA-256 34580e7e9977d10f2d7af535152cb8803b927e588209df7939bb8df6cb280ea6
+
+    Bundled runtime
+      104,876,544 bytes
+      SHA-256 800475dd2e0f17aa69e8851797c4fda0e257ae890da739b287770415dc3a33de
+
+    Release desktop executable after bundling
+      11,852,800 bytes
+      SHA-256 9b5eda09c233ccb824001188fc3b35d9b392b1d6c577e5db4296c3144c40270b
+
+The provenance manifest records GUI tree SHA-256
+`e50e730eb86ecfdf4fb5a73d45add5b537daa84c2bef616b3d083c5422264382`
+and the exact source commit/tree above.
+
+Fresh NSIS silent installation exited 0. Its installed desktop SHA-256 was
+`5d84fd84f92ebb8f1c4cfb4525bb7b822c5aa7f94fa75da890610d54700f8931`.
+Path-verified desktop PID 59204 launched only direct child
+`msedgewebview2.exe`, started zero installed sidecars, logged
+`foreign compatible runtime rejected pid=3704`, and left PID 3704 owning
+port 10100. Only PID 59204 was stopped; silent uninstall exited 0 and all three
+validated NSIS smoke roots were removed.
+
+Fresh MSI administrative extraction exited 0. Its runtime hash exactly matched
+the bundled runtime; its desktop SHA-256 was
+`3697b0ecd7cc39423efaa3b5b2bf8d683d37092b9544e86d2b103e2888556256`.
+Path-verified desktop PID 39376 again launched only WebView2, started zero
+sidecars, rejected foreign PID 3704, and left port ownership unchanged. Only
+PID 39376 was stopped; the validated extraction, state, and log roots were
+removed after logs were preserved. No pre-existing `msiexec.exe` process was
+present during this run, and none was stopped.
+
+The private-alpha archive was installed into an explicit isolated npm prefix
+with PATH updates disabled. The installed-release verifier confirmed
+`@sdanderosa/cocodex@0.1.0-alpha.1`, 126 shrinkwrap-bound dependencies,
+OpenCodex health and GUI 200 on isolated port 60368, and CoCodex Server
+start/restart/stop on isolated port 62464 (PIDs 53032 then 11392). PID 3704
+retained port 10100. The package was uninstalled and the isolated prefix was
+removed.
+
+Final home checks: the `opencodex-proxy` scheduled task is Running;
+`/healthz` reports status ok, OpenCodex 2.7.42, PID 3704; OpenAI account mode
+is `direct`; the Repair Codex shortcut targets the protected repair script.
+SunshineService remains Running/Automatic at PID 5044 and `sunshine.exe`
+remains PID 11100 with TCP listeners 47984, 47989, 47990, and 48010. No
+Sunshine/OpenCodex process, address, port, or service was stopped, rebound, or
+reconfigured. These are unsigned private-alpha artifacts and do not establish
+signing, live UAC/SCM/reboot, or physical two-PC acceptance.

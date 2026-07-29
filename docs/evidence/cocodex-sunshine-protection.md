@@ -79,3 +79,24 @@ After the runs:
 - UDP endpoints were not present in the later point-in-time query; CoCodex made no UDP bind, mapping, IP configuration, process signal, or Sunshine service operation. The stable service/process identity and enforced source boundary are the claims supported here—not an inference about Sunshine's own transient UDP lifecycle.
 
 No Sunshine process or service was stopped, restarted, adopted, reconfigured, or signaled during these checks.
+
+## Explicit non-interference clause verification - 2026-07-28
+
+ADR 0054 now states the binding clause directly: CoCodex may read Sunshine
+process, service, interface, and listener state for diagnostics, but must never
+bind, reserve, forward, remap, firewall, stop, restart, reconfigure, or
+otherwise mutate Sunshine's host IP, interfaces, service, processes, or TCP/UDP
+ports. The source regression now scans the complete CoCodex Server source tree
+for prohibited Windows IP/service/process mutation commands in addition to
+testing every protected port and exact process ownership.
+
+The focused Sunshine suite passed 3 tests, 0 failures, and 102 assertions. The
+maintained CoCodex suite containing it passed 210 tests, 0 failures, and 2,350
+assertions across 42 files. The final inherited root suite passed 4,265 tests,
+4 skips, 0 failures, and 21,761 assertions across 359 files.
+
+Before and after the source tests, clean build, NSIS smoke, MSI smoke, and
+installed archive verifier, SunshineService remained Running/Automatic at PID
+5044; `sunshine.exe` remained PID 11100; TCP listeners 47984, 47989, 47990,
+and 48010 remained owned by PID 11100. Foreign OpenCodex PID 3704 remained the
+sole `127.0.0.1:10100` owner. Neither service nor its IP/ports was changed.

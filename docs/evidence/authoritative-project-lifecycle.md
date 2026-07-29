@@ -39,4 +39,4 @@ Browser DOM/computed-layout inspection of the lifecycle fixture proved both acti
 
 Before and after the Sunshine regression, the foreign OpenCodex listener remained PID 3704 on `127.0.0.1:10100`. Sunshine remained service PID 5044/application PID 11100 with TCP listeners 47984, 47989, 47990, and 48010. No process was stopped, adopted, signaled, or reconfigured.
 
-Fresh packaged installer hashes and packaged runtime ownership evidence are recorded only after the post-commit Tauri rebuild; this document does not claim them yet.
+Fresh clean-commit artifacts are preserved under `dist/release-evidence/d774fa6c/`. The private-alpha archive, NSIS, MSI, bundled runtime, and desktop hashes are recorded in `tauri-managed-client-runtime.md`. Both installer variants rejected foreign PID 3704, launched only WebView2, started no sidecar, and cleaned up exactly; the installed archive verifier also passed OpenCodex GUI/health and CoCodex Server restart on isolated non-10100 ports.

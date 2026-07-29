@@ -25,7 +25,7 @@ Status meanings:
 | Server authority/client local authority | Proven | Signed membership/chat/context/task/artifact routes; Server boundary tests reject local execution/credentials | Keep in every later feature |
 | Offline/reconnect/outbox/local Codex | Proven | Server-stop/restart three-process path, ordered shared/private outboxes, local Codex while offline | Invitation actions are not all crash-durable before Server receipt |
 | Server backup/recovery/transfer/epoch | Proven in separate tests | Encrypted signed backup/transfer, real source/destination processes, stale epoch rejection | Execute inside the single mandatory 70-step scenario |
-| OpenCodex compatibility | Proven at checkpoint | 4,265 passed, 4 skipped, 0 failed, 21,745 assertions | Must rerun after every remaining product slice |
+| OpenCodex compatibility | Proven at checkpoint | 4,265 passed, 4 skipped, 0 failed, 21,761 assertions | Must rerun after every remaining product slice |
 | Projects/chats/final goal | Proven at checkpoint | Encrypted owner/invitation lifecycle, multiple authoritative chats, ordered history, revisioned final goal, and signed owner-only rename/archive/restore/delete with revision, lock, tombstone, cascade, Client revocation, and GUI evidence | Member leave/revocation semantics and complete historical plaintext migration |
 | Shared prompt/presence/cursors | Proven in process/UI | Yjs merge, stable RelativePositions, batching, reconnect, pointer/caret/typing transport, inline remote caret/selection labels, and unified exactly-two-cursor proof | Physical two-PC/reference-level acceptance remains an external gate |
 | Named agents/direct remote control | Proven | Signed immutable definitions, host leases, trusted control, independent workers and queues | Persistent rich activity history and task editing |
@@ -64,7 +64,7 @@ Status meanings:
 | 49-52 Sue Full Computer and Server-only routing | Proven | Explicit host-user full-computer fixture; not elevated-helper mode |
 | 53-61 Server offline, local Codex, queued shared/private, ordered reconnect | Proven | Same resident Client PIDs and Server restart in three-process harness |
 | 62-69 transfer to Kai, epoch, stale source, preserved history | Proven in unified scenario | Signed export/import retires Stephen source, advances epoch 1 to 2, starts Kai Server, reconnects both Clients, rejects stale source, and preserves exact sequences |
-| 70 inherited OpenCodex functionality | Proven in unified smoke and complete repository gate | Isolated non-10100 inherited proxy health and GUI 200 pass inside the scenario; complete gate: 4,265 pass, 4 skip, 0 fail, 21,745 assertions across 359 files |
+| 70 inherited OpenCodex functionality | Proven in unified smoke and complete repository gate | Isolated non-10100 inherited proxy health and GUI 200 pass inside the scenario; complete gate: 4,265 pass, 4 skip, 0 fail, 21,761 assertions across 359 files |
 
 ## Release decision
 
