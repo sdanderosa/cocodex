@@ -43,6 +43,15 @@ describe("CoCodex Tauri dashboard configuration", () => {
     expect(nativeMain).toContain('.sidecar("cocodex-runtime")');
     expect(nativeMain).toContain("stop_owned_runtime");
     expect(nativeMain).toContain("window.location.hash = '#cocodex'");
+    expect(nativeMain).toContain("const MANAGED_PORT_START: u16 = 10101");
+    expect(nativeMain).toContain("const MANAGED_PORT_END: u16 = 10120");
+    expect(nativeMain).toContain('.env("COCODEX_HOME", &cocodex_home)');
+    expect(nativeMain).toContain('.env("OPENCODEX_HOME", &opencodex_home)');
+    const csp = String(config.app.security.csp);
+    expect(csp).not.toContain("127.0.0.1:10100");
+    for (let port = 10101; port <= 10120; port += 1) {
+      expect(csp).toContain(`http://127.0.0.1:${port}`);
+    }
   });
 
   test("derives the external-binary filename from a validated Rust target", () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
@@ -17,6 +17,8 @@ const temporaryRoot = join(
 
 let child: Bun.Subprocess | undefined;
 let baseUrl = "";
+let codexConfigPath = "";
+const nativeCodexConfig = 'model = "gpt-5.4"' + "\r\n";
 
 async function waitForHealth(timeoutMs = 15_000): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
@@ -40,9 +42,10 @@ async function waitForHealth(timeoutMs = 15_000): Promise<Record<string, unknown
 describe("compiled CoCodex Tauri sidecar", () => {
   beforeAll(async () => {
     mkdirSync(temporaryRoot, { recursive: true });
-    mkdirSync(join(temporaryRoot, "opencodex"), { recursive: true });
     mkdirSync(join(temporaryRoot, "codex"), { recursive: true });
-    mkdirSync(join(temporaryRoot, "cocodex"), { recursive: true });
+    mkdirSync(join(temporaryRoot, "cocodex", "runtime", "opencodex"), { recursive: true });
+    codexConfigPath = join(temporaryRoot, "codex", "config.toml");
+    writeFileSync(codexConfigPath, nativeCodexConfig, "utf8");
     const reservation = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -62,7 +65,8 @@ describe("compiled CoCodex Tauri sidecar", () => {
         env: {
           ...process.env,
           OCX_SERVICE: "1",
-          OPENCODEX_HOME: join(temporaryRoot, "opencodex"),
+          COCODEX_DESKTOP_MANAGED: "1",
+          OPENCODEX_HOME: join(temporaryRoot, "cocodex", "runtime", "opencodex"),
           CODEX_HOME: join(temporaryRoot, "codex"),
           COCODEX_HOME: join(temporaryRoot, "cocodex"),
         },
@@ -87,6 +91,9 @@ describe("compiled CoCodex Tauri sidecar", () => {
     expect(health.port).toBe(Number(new URL(baseUrl).port));
     expect(Number(health.pid)).toBe(child?.pid);
     expect(health.version).toBe(packageVersion);
+    await Bun.sleep(300);
+    expect(readFileSync(codexConfigPath, "utf8")).toBe(nativeCodexConfig);
+    expect(existsSync(join(temporaryRoot, "cocodex", "runtime", "opencodex", "config.json"))).toBe(true);
 
     const origin = "tauri://localhost";
     const issued = await fetch(`${baseUrl}/api/cocodex/capability`, {

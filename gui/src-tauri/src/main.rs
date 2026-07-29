@@ -3,7 +3,7 @@
 use std::{
     fs::{create_dir_all, OpenOptions},
     io::{Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -19,7 +19,8 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-const PROXY_ADDRESS: &str = "127.0.0.1:10100";
+const MANAGED_PORT_START: u16 = 10101;
+const MANAGED_PORT_END: u16 = 10120;
 const INITIAL_READY_TIMEOUT: Duration = Duration::from_secs(12);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_BACKOFF: Duration = Duration::from_secs(2);
@@ -36,6 +37,7 @@ struct ManagedRuntimeStatus {
     state: &'static str,
     owned: bool,
     pid: Option<u32>,
+    port: Option<u16>,
 }
 
 impl Default for ManagedRuntimeStatus {
@@ -44,6 +46,7 @@ impl Default for ManagedRuntimeStatus {
             state: "starting",
             owned: false,
             pid: None,
+            port: None,
         }
     }
 }
@@ -54,11 +57,46 @@ enum ProxyProbe {
     Compatible(u32),
 }
 
+fn cocodex_state_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("COCODEX_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(root);
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+        return PathBuf::from(profile).join(".cocodex");
+    }
+    std::env::temp_dir().join("CoCodex")
+}
+
+fn managed_runtime_state_root() -> PathBuf {
+    cocodex_state_root().join("runtime").join("opencodex")
+}
+
+fn managed_address(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+fn managed_port_is_allowed(port: u16) -> bool {
+    (MANAGED_PORT_START..=MANAGED_PORT_END).contains(&port)
+}
+
+fn first_available_managed_port(after: Option<u16>) -> Option<u16> {
+    let count = MANAGED_PORT_END - MANAGED_PORT_START + 1;
+    let first_offset = after
+        .filter(|port| managed_port_is_allowed(*port))
+        .map(|port| (port - MANAGED_PORT_START + 1) % count)
+        .unwrap_or(0);
+    (0..count).find_map(|step| {
+        let port = MANAGED_PORT_START + (first_offset + step) % count;
+        TcpListener::bind(managed_address(port))
+            .ok()
+            .map(|listener| {
+                drop(listener);
+                port
+            })
+    })
+}
 fn runtime_log_path() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("CoCodex")
+    cocodex_state_root()
         .join("logs")
         .join("desktop-runtime.log")
 }
@@ -88,7 +126,7 @@ fn desktop_log(message: &str) {
     let _ = writeln!(file, "[{timestamp}] {}", sanitize_runtime_detail(message));
 }
 
-fn compatible_health_pid(response: &str) -> Option<u32> {
+fn compatible_health_pid(response: &str, expected_port: u16) -> Option<u32> {
     let (headers, body) = response.split_once("\r\n\r\n")?;
     let status = headers.lines().next()?;
     if status != "HTTP/1.1 200 OK" && status != "HTTP/1.0 200 OK" {
@@ -100,7 +138,7 @@ fn compatible_health_pid(response: &str) -> Option<u32> {
     };
     let compatible = value.get("status").and_then(|value| value.as_str()) == Some("ok")
         && value.get("service").and_then(|value| value.as_str()) == Some("opencodex")
-        && value.get("port").and_then(|value| value.as_u64()) == Some(10100);
+        && value.get("port").and_then(|value| value.as_u64()) == Some(u64::from(expected_port));
     if !compatible {
         return None;
     }
@@ -111,8 +149,8 @@ fn compatible_health_pid(response: &str) -> Option<u32> {
         .filter(|pid| *pid > 0)
 }
 
-fn probe_proxy() -> ProxyProbe {
-    let address: SocketAddr = PROXY_ADDRESS.parse().expect("fixed proxy address is valid");
+fn probe_proxy(port: u16) -> ProxyProbe {
+    let address = managed_address(port);
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
         return ProxyProbe::Empty;
     };
@@ -120,7 +158,10 @@ fn probe_proxy() -> ProxyProbe {
     let _ = stream.set_write_timeout(Some(Duration::from_millis(700)));
 
     if stream
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:10100\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
         .is_err()
     {
         return ProxyProbe::Occupied;
@@ -134,7 +175,7 @@ fn probe_proxy() -> ProxyProbe {
     {
         return ProxyProbe::Occupied;
     }
-    compatible_health_pid(&response)
+    compatible_health_pid(&response, port)
         .map(ProxyProbe::Compatible)
         .unwrap_or(ProxyProbe::Occupied)
 }
@@ -147,12 +188,19 @@ fn owned_runtime_pid(state: &RuntimeState) -> Option<u32> {
         .and_then(|owned| owned.as_ref().map(CommandChild::pid))
 }
 
-fn set_runtime_status(state: &RuntimeState, status: &'static str, owned: bool, pid: Option<u32>) {
+fn set_runtime_status(
+    state: &RuntimeState,
+    status: &'static str,
+    owned: bool,
+    pid: Option<u32>,
+    port: Option<u16>,
+) {
     if let Ok(mut current) = state.status.lock() {
         *current = ManagedRuntimeStatus {
             state: status,
             owned,
             pid,
+            port,
         };
     }
 }
@@ -176,27 +224,38 @@ fn managed_runtime_status(state: tauri::State<'_, RuntimeState>) -> serde_json::
             state: "error",
             owned: false,
             pid: None,
+            port: None,
         });
     serde_json::json!({
         "state": status.state,
         "owned": status.owned,
         "pid": status.pid,
+        "port": status.port,
+        "baseUrl": status.port.map(|port| format!("http://127.0.0.1:{port}")),
     })
 }
 
-fn spawn_owned_runtime(app: &AppHandle<Wry>) -> Result<(), String> {
+fn spawn_owned_runtime(app: &AppHandle<Wry>, port: u16) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     if state.shutting_down.load(Ordering::SeqCst) {
         return Err("desktop is shutting down".into());
     }
 
+    let cocodex_home = cocodex_state_root();
+    let opencodex_home = managed_runtime_state_root();
+    create_dir_all(&opencodex_home)
+        .map_err(|error| format!("could not create isolated runtime state: {error}"))?;
+    let port_arg = port.to_string();
+
     let (mut events, child) = app
         .shell()
         .sidecar("cocodex-runtime")
         .map_err(|error| format!("could not resolve bundled runtime: {error}"))?
-        .args(["start", "--port", "10100"])
+        .args(["start", "--port", port_arg.as_str()])
         .env("OCX_SERVICE", "1")
         .env("COCODEX_DESKTOP_MANAGED", "1")
+        .env("COCODEX_HOME", &cocodex_home)
+        .env("OPENCODEX_HOME", &opencodex_home)
         .spawn()
         .map_err(|error| format!("could not start bundled runtime: {error}"))?;
     let child_pid = child.pid();
@@ -216,7 +275,9 @@ fn spawn_owned_runtime(app: &AppHandle<Wry>) -> Result<(), String> {
     // Both pipes must be drained for the child to remain able to report
     // diagnostics. Output is intentionally discarded here because it can
     // contain provider names or local filesystem paths.
-    desktop_log(&format!("started bundled runtime pid={child_pid}"));
+    desktop_log(&format!(
+        "started bundled runtime pid={child_pid} port={port}"
+    ));
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
@@ -241,7 +302,7 @@ fn stop_owned_runtime(app: &AppHandle<Wry>) {
     let state = app.state::<RuntimeState>();
     state.shutting_down.store(true, Ordering::SeqCst);
     kill_owned_child(&state);
-    set_runtime_status(&state, "stopped", false, None);
+    set_runtime_status(&state, "stopped", false, None, None);
 }
 
 fn show_main_window(app: &AppHandle<Wry>) {
@@ -257,7 +318,7 @@ fn show_main_window(app: &AppHandle<Wry>) {
 fn supervise_runtime(app: AppHandle<Wry>) {
     let mut window_shown = false;
     let initial_deadline = Instant::now() + INITIAL_READY_TIMEOUT;
-    let mut reported_foreign_pid: Option<Option<u32>> = None;
+    let mut selected_port = first_available_managed_port(None);
 
     loop {
         let state = app.state::<RuntimeState>();
@@ -265,12 +326,23 @@ fn supervise_runtime(app: AppHandle<Wry>) {
             return;
         }
 
-        match probe_proxy() {
+        let Some(port) = selected_port else {
+            set_runtime_status(&state, "unavailable", false, None, None);
+            if !window_shown {
+                desktop_log("all dedicated CoCodex runtime ports are occupied");
+                show_main_window(&app);
+                window_shown = true;
+            }
+            thread::sleep(RESTART_BACKOFF);
+            selected_port = first_available_managed_port(None);
+            continue;
+        };
+
+        match probe_proxy(port) {
             ProxyProbe::Compatible(pid) if owned_runtime_pid(&state) == Some(pid) => {
-                set_runtime_status(&state, "ready", true, Some(pid));
-                reported_foreign_pid = None;
+                set_runtime_status(&state, "ready", true, Some(pid), Some(port));
                 if !window_shown {
-                    desktop_log(&format!("owned runtime is ready pid={pid}"));
+                    desktop_log(&format!("owned runtime is ready pid={pid} port={port}"));
                     show_main_window(&app);
                     window_shown = true;
                 }
@@ -279,44 +351,28 @@ fn supervise_runtime(app: AppHandle<Wry>) {
             }
             ProxyProbe::Compatible(pid) => {
                 kill_owned_child(&state);
-                set_runtime_status(&state, "foreign-listener", false, Some(pid));
-                if reported_foreign_pid != Some(Some(pid)) {
-                    desktop_log(&format!(
-                        "foreign compatible runtime rejected pid={pid}; showing disconnected interface"
-                    ));
-                    reported_foreign_pid = Some(Some(pid));
-                }
-                if !window_shown {
-                    show_main_window(&app);
-                    window_shown = true;
-                }
-                thread::sleep(HEALTH_INTERVAL);
+                desktop_log(&format!(
+                    "foreign compatible runtime rejected pid={pid} port={port}; selecting another dedicated port"
+                ));
+                selected_port = first_available_managed_port(Some(port));
+                set_runtime_status(&state, "starting", false, None, selected_port);
                 continue;
             }
             ProxyProbe::Occupied => {
                 kill_owned_child(&state);
-                set_runtime_status(&state, "foreign-listener", false, None);
-                if reported_foreign_pid != Some(None) {
-                    desktop_log(
-                        "foreign or incompatible listener rejected; showing disconnected interface",
-                    );
-                    reported_foreign_pid = Some(None);
-                }
-                if !window_shown {
-                    show_main_window(&app);
-                    window_shown = true;
-                }
-                thread::sleep(HEALTH_INTERVAL);
+                desktop_log(&format!(
+                    "foreign or incompatible listener rejected port={port}; selecting another dedicated port"
+                ));
+                selected_port = first_available_managed_port(Some(port));
+                set_runtime_status(&state, "starting", false, None, selected_port);
                 continue;
             }
-            ProxyProbe::Empty => {
-                reported_foreign_pid = None;
-            }
+            ProxyProbe::Empty => {}
         }
 
         kill_owned_child(&state);
-        set_runtime_status(&state, "starting", false, None);
-        if let Err(error) = spawn_owned_runtime(&app) {
+        set_runtime_status(&state, "starting", false, None, Some(port));
+        if let Err(error) = spawn_owned_runtime(&app, port) {
             desktop_log(&error);
             eprintln!("CoCodex desktop runtime: {error}");
         }
@@ -330,19 +386,27 @@ fn supervise_runtime(app: AppHandle<Wry>) {
             {
                 return;
             }
-            match probe_proxy() {
+            match probe_proxy(port) {
                 ProxyProbe::Compatible(pid) if owned_runtime_pid(&state) == Some(pid) => {
-                    set_runtime_status(&state, "ready", true, Some(pid));
+                    set_runtime_status(&state, "ready", true, Some(pid), Some(port));
                     break;
                 }
                 ProxyProbe::Compatible(pid) => {
                     kill_owned_child(&state);
-                    set_runtime_status(&state, "foreign-listener", false, Some(pid));
+                    desktop_log(&format!(
+                        "listener won startup race pid={pid} port={port}; refusing adoption"
+                    ));
+                    selected_port = first_available_managed_port(Some(port));
+                    set_runtime_status(&state, "starting", false, None, selected_port);
                     break;
                 }
                 ProxyProbe::Occupied => {
                     kill_owned_child(&state);
-                    set_runtime_status(&state, "foreign-listener", false, None);
+                    desktop_log(&format!(
+                        "listener won startup race port={port}; refusing adoption"
+                    ));
+                    selected_port = first_available_managed_port(Some(port));
+                    set_runtime_status(&state, "starting", false, None, selected_port);
                     break;
                 }
                 ProxyProbe::Empty => {}
@@ -350,15 +414,16 @@ fn supervise_runtime(app: AppHandle<Wry>) {
             thread::sleep(Duration::from_millis(200));
         }
 
-        // Never leave the user with an invisible application if another
-        // process owns the port or the bundled runtime cannot initialize.
         let ready = matches!(
-            probe_proxy(),
+            probe_proxy(port),
             ProxyProbe::Compatible(pid) if owned_runtime_pid(&state) == Some(pid)
         );
+        if ready {
+            selected_port = Some(port);
+        }
         if !window_shown && (ready || Instant::now() >= initial_deadline) {
             if !ready {
-                set_runtime_status(&state, "unavailable", false, None);
+                set_runtime_status(&state, "unavailable", false, None, selected_port);
                 desktop_log("runtime readiness timed out; showing disconnected interface");
             }
             show_main_window(&app);
@@ -370,7 +435,6 @@ fn supervise_runtime(app: AppHandle<Wry>) {
         }
     }
 }
-
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -394,37 +458,63 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{compatible_health_pid, sanitize_runtime_detail};
+    use super::{
+        compatible_health_pid, first_available_managed_port, managed_address,
+        managed_port_is_allowed, sanitize_runtime_detail, TcpListener, MANAGED_PORT_END,
+        MANAGED_PORT_START,
+    };
 
     #[test]
     fn accepts_only_the_expected_loopback_runtime_identity() {
         let valid = concat!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
-            "{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":10100,\"pid\":4242}"
+            "{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":10101,\"pid\":4242}"
         );
-        assert_eq!(compatible_health_pid(valid), Some(4242));
+        assert_eq!(compatible_health_pid(valid, 10101), Some(4242));
+        assert_eq!(compatible_health_pid(valid, 10102), None);
 
         let wrong_service = concat!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
-            "{\"status\":\"ok\",\"service\":\"other\",\"port\":10100}"
+            "{\"status\":\"ok\",\"service\":\"other\",\"port\":10101,\"pid\":4242}"
         );
-        assert_eq!(compatible_health_pid(wrong_service), None);
+        assert_eq!(compatible_health_pid(wrong_service, 10101), None);
 
         let wrong_port = concat!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
-            "{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":20200}"
+            "{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":10100,\"pid\":4242}"
         );
-        assert_eq!(compatible_health_pid(wrong_port), None);
+        assert_eq!(compatible_health_pid(wrong_port, 10101), None);
         assert_eq!(
             compatible_health_pid(
-                "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":10100}"
+                "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"ok\",\"service\":\"opencodex\",\"port\":10101}",
+                10101,
             ),
             None
         );
         assert_eq!(
-            compatible_health_pid("HTTP/1.1 200 OK\r\n\r\nnot-json"),
+            compatible_health_pid("HTTP/1.1 200 OK\r\n\r\nnot-json", 10101),
             None
         );
+    }
+
+    #[test]
+    fn dedicated_range_never_includes_the_protected_home_port() {
+        assert!(!managed_port_is_allowed(10100));
+        assert!(managed_port_is_allowed(MANAGED_PORT_START));
+        assert!(managed_port_is_allowed(MANAGED_PORT_END));
+        assert!(!managed_port_is_allowed(MANAGED_PORT_END + 1));
+    }
+
+    #[test]
+    fn skips_an_occupied_dedicated_port_without_touching_its_listener() {
+        let first =
+            first_available_managed_port(None).expect("test requires one free managed port");
+        let listener =
+            TcpListener::bind(managed_address(first)).expect("selected managed port stays free");
+        let next =
+            first_available_managed_port(None).expect("test requires a second free managed port");
+        assert_ne!(next, first);
+        drop(listener);
     }
 
     #[test]

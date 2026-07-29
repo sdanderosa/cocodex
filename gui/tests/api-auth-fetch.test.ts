@@ -42,8 +42,8 @@ test("API authentication never crosses the GUI origin", async () => {
     { url: "https://evil.example/api/collect", token: null },
   ]);
   expect(promptCount).toBe(0);
-  expect(isManagedProxyRequest("http://127.0.0.1:10100/healthz")).toBe(true);
-  expect(isManagedProxyRequest("http://127.0.0.1:10101/healthz")).toBe(false);
+  expect(isManagedProxyRequest("http://127.0.0.1:10100/healthz")).toBe(false);
+  expect(isManagedProxyRequest("http://127.0.0.1:10101/healthz")).toBe(true);
 });
 
 test("Tauri rejects loopback proxy fetches until Rust proves child ownership", async () => {
@@ -66,7 +66,71 @@ test("Tauri rejects loopback proxy fetches until Rust proves child ownership", a
   });
 
   installApiAuthFetch();
-  const response = await fakeWindow.fetch("http://127.0.0.1:10100/healthz");
+  const response = await fakeWindow.fetch("http://127.0.0.1:10101/healthz");
+
+  expect(response.status).toBe(503);
+  expect(calls).toEqual([]);
+});
+
+test("Tauri rewrites managed requests to the currently attested owned endpoint", async () => {
+  const calls: string[] = [];
+  const fakeWindow = {
+    location: new URL("tauri://localhost/"),
+    __TAURI_INTERNALS__: {
+      invoke: async () => ({
+        state: "ready",
+        owned: true,
+        pid: 4242,
+        port: 10107,
+        baseUrl: "http://127.0.0.1:10107",
+      }),
+    },
+    prompt: () => null,
+    fetch: async (input: RequestInfo | URL) => {
+      calls.push(input instanceof Request ? input.url : String(input));
+      return new Response(null, { status: 200 });
+    },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: fakeWindow });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  });
+
+  installApiAuthFetch();
+  const response = await fakeWindow.fetch("http://127.0.0.1:10101/healthz?probe=1");
+
+  expect(response.status).toBe(200);
+  expect(calls).toEqual(["http://127.0.0.1:10107/healthz?probe=1"]);
+});
+
+test("Tauri rejects a forged endpoint even when ownership fields claim ready", async () => {
+  const calls: string[] = [];
+  const fakeWindow = {
+    location: new URL("tauri://localhost/"),
+    __TAURI_INTERNALS__: {
+      invoke: async () => ({
+        state: "ready",
+        owned: true,
+        pid: 4242,
+        port: 10101,
+        baseUrl: "http://127.0.0.1:10100",
+      }),
+    },
+    prompt: () => null,
+    fetch: async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(null, { status: 200 });
+    },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: fakeWindow });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  });
+
+  installApiAuthFetch();
+  const response = await fakeWindow.fetch("http://127.0.0.1:10101/healthz");
 
   expect(response.status).toBe(503);
   expect(calls).toEqual([]);

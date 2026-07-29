@@ -843,3 +843,10 @@ PID 49016 owning port 10100. Exact smoke PIDs and validated roots alone were
 cleaned. Pre-existing Windows Installer PID 64672 remained untouched. Full
 transaction, test, package, and protected-home evidence is in
 [owner-attested-plaintext-migration.md](owner-attested-plaintext-migration.md).
+## 2026-07-29 coexistence amendment
+
+The earlier port-10100 reuse/rejection behavior is superseded by ADR 0049's
+isolated managed range and
+[tauri-isolated-runtime-coexistence.md](tauri-isolated-runtime-coexistence.md).
+A healthy foreign service on 10100 is now expected to coexist with a separate
+owned CoCodex runtime on 10101–10120.

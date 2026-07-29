@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as Y from "yjs";
+import { cocodexApiJson } from "../cocodex-capability";
 import { CollaborativePromptEditor } from "../components/CollaborativePromptEditor";
 import {
   independentlyConfirmedFingerprintMatches,
@@ -442,30 +443,6 @@ interface BridgeEvent {
   sequence: number;
   channel: "output" | "error";
   value: SessionValue;
-}
-
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const body = await response.json();
-  if (!response.ok) throw new Error(String(body?.error ?? response.status));
-  return body as T;
-}
-
-const capabilityPromises = new Map<string, Promise<string>>();
-function capabilityFor(apiBase: string): Promise<string> {
-  let pending = capabilityPromises.get(apiBase);
-  if (!pending) {
-    pending = apiJson<{ capability: string }>(`${apiBase}/api/cocodex/capability`)
-      .then(value => value.capability);
-    capabilityPromises.set(apiBase, pending);
-  }
-  return pending;
-}
-
-async function cocodexApiJson<T>(apiBase: string, url: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set("X-CoCodex-Capability", await capabilityFor(apiBase));
-  return apiJson<T>(url, { ...init, headers });
 }
 
 const STATE_TKEY: Record<ConnectionState, TKey> = {
@@ -951,6 +928,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     useState(readPrivateNotificationsEnabled);
   const [privateVerificationFingerprint, setPrivateVerificationFingerprint] = useState("");
   const [notice, setNotice] = useState("");
+  const [runtimeNotice, setRuntimeNotice] = useState("");
   const [rightRailTab, setRightRailTab] = useState<RightRailTab>("agents");
   const [busy, setBusy] = useState(false);
   const cursor = useRef(0);
@@ -1046,8 +1024,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const loadStatus = useCallback(async () => {
     try {
       setStatus(await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/status`));
+      setRuntimeNotice("");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setRuntimeNotice(error instanceof Error ? error.message : String(error));
     }
   }, [apiBase]);
 
@@ -2314,7 +2293,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
         </div>}
       </header>
 
-      {notice && <div className="cocodex-notice" role="status">{notice}</div>}
+      {(runtimeNotice || notice) && <div className="cocodex-notice" role="status">{runtimeNotice || notice}</div>}
       {status?.configured && status.state !== "connected" && status.verificationPhrase
         && status.approvalExpiresAt && (
         <div className="cocodex-notice cocodex-enrollment-verification" role="status">

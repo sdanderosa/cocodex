@@ -45,6 +45,8 @@ import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 const args = process.argv.slice(2);
 const command = args[0];
 
+const desktopManagedRuntime =
+  process.env.COCODEX_DESKTOP_MANAGED?.trim() === "1";
 if (command === "--version" || command === "-v" || command === "version") {
   printVersion();
   process.exit(0);
@@ -61,7 +63,7 @@ if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
   process.exit(0);
 }
 
-maybeAutoRestoreCodexShim(command, args);
+if (!desktopManagedRuntime) maybeAutoRestoreCodexShim(command, args);
 
 function parsePortOption(): number | undefined {
   if (args.length === 1) return undefined;
@@ -167,7 +169,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   const serviceToken = loadServiceTokenFromFile(process.env);
   if (serviceToken) process.env.OPENCODEX_API_AUTH_TOKEN = serviceToken;
   const requestedPort = parsePortOption();
-  if (!recoverStaleJournal()) {
+  if (!desktopManagedRuntime && !recoverStaleJournal()) {
     process.exitCode = 1;
     return;
   }
@@ -175,7 +177,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   if (existingPid) {
     const live = await findLiveProxy();
     if (live) {
-      await syncForSafeSetup(live.port);
+      if (!desktopManagedRuntime) await syncForSafeSetup(live.port);
       console.error(`⚠️  Proxy already running (PID ${live.pid ?? existingPid}, port ${live.port}). Use 'ocx stop' first.`);
       process.exit(1);
     }
@@ -185,12 +187,19 @@ async function handleStart(options: { block?: boolean } = {}) {
   // Interactive-only update prompt. Must run BEFORE we bind a port / write a
   // PID: choosing "Update now" installs globally and exits, so we never want a
   // live daemon holding resources while it overwrites its own binary.
-  await maybeShowUpdatePrompt();
+  if (!desktopManagedRuntime) await maybeShowUpdatePrompt();
 
   // Port selection is check-then-bind: a concurrent `ocx start`/`ensure` can win the port
   // between the probe and Bun.serve. Soft starts may re-pick; hard-pinned `--port` retries
   // the same port only (never hop — that was the remaining PR #152 gap).
   let port = await chooseListenPort(requestedPort);
+  if (desktopManagedRuntime) {
+    const managedConfig = loadConfig();
+    managedConfig.hostname = "127.0.0.1";
+    managedConfig.port = port;
+    // Persist only the isolated private runtime's own bind identity.
+    saveConfig(managedConfig);
+  }
   let server: ReturnType<typeof startServer>;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -219,7 +228,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   const config = loadConfig();
   writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
-  if (!currentExternalCodexModelProvider()) writeJournal();
+  if (!desktopManagedRuntime && !currentExternalCodexModelProvider()) writeJournal();
 
   // Background proactive token refresh. No-op unless config.tokenGuardian.enabled; timer is unref'd
   // so it never keeps the process alive on its own. Stopped in syncCleanup so no refresh fires mid-drain.
@@ -235,7 +244,7 @@ async function handleStart(options: { block?: boolean } = {}) {
     cleaned = true;
     try { guardian.stop(); } catch { /* best-effort */ }
     try { historyGuardian?.stop(); } catch { /* best-effort */ }
-    try { revertSystemEnv(); } catch { /* best-effort */ }
+    if (!desktopManagedRuntime) try { revertSystemEnv(); } catch { /* best-effort */ }
     removePid(process.pid);
     removeRuntimePort(process.pid);
     if (!process.env.OCX_SERVICE && !currentExternalCodexModelProvider()) {
@@ -278,18 +287,18 @@ async function handleStart(options: { block?: boolean } = {}) {
   process.on("SIGHUP", shutdown);
   process.on("exit", syncCleanup);
 
-  // System-wide env injection AFTER signal handlers are registered (crash safety:
-  // syncCleanup reverts even if injection itself or subsequent startup steps fail).
-  await injectSystemEnv(port, config).catch(() => {});
-  // Auto-install .zshrc hook (idempotent — skips if already present).
-  installShellHook();
-
-  await maybeShowStarPrompt(); // once-only [Y/n] GitHub-star prompt on first interactive start
-  const injectionReady = await syncForSafeSetup(port, config);
-  if (!injectionReady) {
-    console.error("⚠️  Proxy is running, but persistent Codex routing was not enabled.");
+  // A desktop-managed runtime serves only the CoCodex application. It must not
+  // persistently route Codex or mutate shell/system integration.
+  if (!desktopManagedRuntime) {
+    await injectSystemEnv(port, config).catch(() => {});
+    installShellHook();
+    await maybeShowStarPrompt();
+    const injectionReady = await syncForSafeSetup(port, config);
+    if (!injectionReady) {
+      console.error("⚠️  Proxy is running, but persistent Codex routing was not enabled.");
+    }
   }
-  if (!currentExternalCodexModelProvider() && !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false) {
+  if (!desktopManagedRuntime && !currentExternalCodexModelProvider() && !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false) {
     historyGuardian = startHistoryMigrationGuardian();
   }
   // Build Desktop 3P alias registry so inbound claude-opus-4-8-{code} aliases (and legacy claude-opus-4-{code}) decode correctly.

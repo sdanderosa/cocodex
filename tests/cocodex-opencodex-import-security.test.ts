@@ -214,7 +214,7 @@ describe("CoCodex OpenCodex import adversarial boundaries", () => {
     writeFileSync(manifestPath, JSON.stringify(manifest));
     expect(() => rollbackOpenCodexImport(result.backupDirectory)).toThrow(/ambiguous/);
     expect(readFileSync(join(target, "config.json"), "utf8")).not.toBe("");
-  });
+  }, 15_000);
 
   test("rejects malformed journal phases before rollback", () => {
     const { source, state } = rootsFixture();

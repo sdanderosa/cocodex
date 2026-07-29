@@ -84,7 +84,13 @@ class JsonSessionHarness {
     this.input.write(`${JSON.stringify(command)}\n`);
   }
 
-  waitFor(predicate: (event: Record<string, unknown>) => boolean, timeoutMs = 15_000): Promise<Record<string, unknown>> {
+  waitFor(
+    predicate: (event: Record<string, unknown>) => boolean,
+    // The complete repository gate schedules hundreds of process/TLS fixtures.
+    // Preserve exact event predicates under each test's hard ceiling while
+    // allowing bounded scheduler delay; isolated sessions finish in seconds.
+    timeoutMs = 45_000,
+  ): Promise<Record<string, unknown>> {
     const existing = this.events.find(predicate);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {

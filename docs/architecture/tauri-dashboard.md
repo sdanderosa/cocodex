@@ -1,17 +1,13 @@
 # CoCodex desktop dashboard
 
-Persistent Codex routing is governed by [ADR 0050](../adr/0050-cocodex-fail-safe-proxy-injection.md). Launching the dashboard alone is never sufficient evidence that `localhost:10100` may be injected into Codex.
+Persistent Codex routing is governed by
+[ADR 0050](../adr/0050-cocodex-fail-safe-proxy-injection.md). Launching the
+desktop dashboard is never evidence that port 10100 may be injected into Codex.
 
-The CoCodex dashboard is now a shared React/Vite frontend with two delivery
-surfaces:
-
-- the existing browser dashboard (`ocx gui` or the Vite dev server), and
-- a Tauri 2 desktop shell under `gui/src-tauri`.
-
-The frontend is not duplicated. Both surfaces consume the same `gui/src`
-bundle, route state, localization, and CoCodex client bridge. The Tauri shell
-only owns the native window and packaging boundary; it does not move project,
-chat, device, or agent authority into Rust.
+The dashboard is one React/Vite frontend delivered through the browser
+dashboard and a Tauri 2 desktop shell. Project, chat, device, and agent
+authority remain in the TypeScript Client/Server protocol; Rust owns only the
+native desktop window and its bundled local-runtime lifecycle.
 
 ## Development
 
@@ -21,12 +17,12 @@ From the repository root:
 bun run dev:tauri
 ```
 
-This compiles the same OpenCodex/CoCodex local runtime used by production,
-starts the source proxy when it is not already healthy, then starts Vite on
-`http://127.0.0.1:4179` and opens it inside the Tauri window. An existing
-compatible proxy is detected and is not stopped when the Tauri process exits.
+The development hook compiles the production sidecar and starts Vite on
+`127.0.0.1:4179`. Rust starts and supervises the sidecar exactly as it does
+in a packaged app. The hook does not probe, adopt, start, or stop the user's
+port-10100 OpenCodex service.
 
-For browser-only development, the existing two-process flow remains available:
+Browser-only development remains:
 
 ```text
 bun run dev:proxy
@@ -35,57 +31,60 @@ bun run dev:gui
 
 ## Packaging
 
-The Tauri application uses the production assets from `gui/dist`:
-
 ```text
 bun run build:tauri
 ```
 
-On Windows this produces NSIS and MSI bundles when the Rust toolchain and
-WebView2 prerequisites are installed. The build first compiles
-`src/cli/index.ts` into the target-triple-named `cocodex-runtime` external
-binary required by Tauri, then embeds that binary beside the native
-application. A destination computer does not need Git, Bun, Node.js, or Rust
-to run the desktop Client. `bun run build:gui` remains the browser/package
-build and is intentionally unchanged.
+The build compiles `src/cli/index.ts` into the validated target-triple-named
+`cocodex-runtime`, builds `gui/dist`, and packages both NSIS and MSI
+installers. A destination computer does not need Git, Bun, Node.js, or Rust.
 
-The desktop shell points its API base at `http://127.0.0.1:10100` during Tauri
-development and production builds unless `VITE_API_BASE` is provided. On
-startup, Rust identity-checks an existing listener and reuses it only when its
-health response identifies the expected OpenCodex service and port. Otherwise
-it starts the pinned bundled runtime, waits for readiness before showing the
-window, monitors health, and retries with bounded backoff. Closing the
-application stops only the child that application started. A reused external
-proxy is never stopped.
+## Runtime bootstrap
 
-The OpenCodex proxy remains a separate local child process, preserving the
-existing client/execution boundary. The internet-facing CoCodex Server is
-never bundled into or started by the desktop Client and remains independently
-hosted.
+Rust selects an available port from 10101–10120, launches the bundled runtime
+with isolated state under `~/.cocodex/runtime/opencodex`, and accepts
+readiness only when the health PID and port match the child Rust owns.
+Port 10100 is reserved for the independent OpenCodex/ADR-0050 path.
+
+The renderer first invokes `managed_runtime_status`. Its fetch boundary
+accepts only an owned, ready status with a valid PID and exact
+`http://127.0.0.1:<managed-port>` base URL, then rewrites requests to that
+attested endpoint. The explicit CSP lists only ports 10101–10120. Runtime
+restart may change the endpoint without reloading the UI because each managed
+request rechecks native ownership.
+
+Closing CoCodex kills only the child retained in Rust ownership state. Foreign
+listeners are never adopted or stopped. If all dedicated ports are occupied,
+the disconnected UI is shown and the supervisor retries.
+
+## State and mutation boundary
+
+The desktop child receives:
+
+- `COCODEX_HOME=~/.cocodex`
+- `OPENCODEX_HOME=~/.cocodex/runtime/opencodex`
+- `COCODEX_DESKTOP_MANAGED=1`
+- `OCX_SERVICE=1`
+
+It may read the existing native Codex home for Direct credentials. Desktop
+startup skips persistent Codex injection, journals, model sync, history
+migration, shell hooks, system environment integration, and interactive
+self-update prompts. ADR 0050 remains the only route to system-wide Codex
+configuration.
 
 ## Security boundary
 
-The shell has only `core:default` webview capabilities and does not expose
-shell, filesystem, or arbitrary command permissions to JavaScript. Rust alone
-uses `tauri-plugin-shell` to resolve and launch the one configured external
-binary. Its CSP permits the local OpenCodex API and the secure WebSocket
-transports used by CoCodex.
+The WebView has `core:default` and notification permission only. It receives
+no shell or filesystem permission. Rust invokes one configured sidecar.
+Tauri's exact embedded origins may request the per-launch CoCodex capability;
+arbitrary localhost origins cannot. Protected routes still require the random
+capability.
 
-Only Tauri's exact embedded origins (`http://tauri.localhost`,
-`https://tauri.localhost`, and `tauri://localhost`) join the browser
-dashboard's capability boundary. Arbitrary `*.localhost` origins cannot obtain
-a CoCodex capability. The proxy's CORS preflight explicitly allows the random
-per-launch `X-CoCodex-Capability` header; protected routes still reject a
-missing or invalid capability.
+The internet-facing CoCodex Server is never bundled into or started by the
+desktop Client. Enrollment, shared state, encrypted messaging, and remote
+agent execution continue through the separate Client/Server architecture.
 
-Native lifecycle diagnostics are bounded, single-line, user-profile-redacted,
-and local-only under
-`%LOCALAPPDATA%\CoCodex\logs\desktop-runtime.log`. Runtime stdout is discarded
-and is not copied into the renderer.
-
-The desktop wrapper does not replace the CoCodex Server. Enrollment,
-authoritative shared state, encrypted private messaging, and local agent
-execution continue to run through the existing TypeScript client/server
-protocol and server process.
+Native diagnostics are bounded, single-line, profile-redacted, and local at
+`~/.cocodex/logs/desktop-runtime.log`.
 
 See ADR 0049 and `docs/evidence/tauri-managed-client-runtime.md`.

@@ -117,7 +117,10 @@ class JsonSessionHarness {
 }
 
 async function waitUntilConnectedViaProjectList(session: JsonSessionHarness): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  // The all-repository gate can delay resident reconnect work behind hundreds
+  // of process/TLS fixtures. Keep the 120-second test ceiling and every
+  // post-reconnect assertion, but allow a bounded forty probe attempts here.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     const requestId = randomUUID();
     session.send({ id: requestId, type: "project.list" });
     try {

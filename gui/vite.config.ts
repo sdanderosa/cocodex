@@ -7,9 +7,9 @@ import react from '@vitejs/plugin-react'
 const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 const isTauriHook = process.env.TAURI_ENV_PLATFORM !== undefined
 const proxyTarget = process.env.OPENCODEX_PROXY_TARGET
-  ?? (isTauriHook ? 'http://127.0.0.1:10100' : undefined)
+  ?? (isTauriHook ? 'http://127.0.0.1:10101' : undefined)
 const apiBase = process.env.VITE_API_BASE
-  ?? (isTauriHook ? 'http://127.0.0.1:10100' : '')
+  ?? (isTauriHook ? 'http://127.0.0.1:10101' : '')
 
 // https://vite.dev/config/
 export default defineConfig({

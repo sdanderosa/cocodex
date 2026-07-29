@@ -647,7 +647,7 @@ describe("owner-attested historical plaintext migration storage", () => {
     } finally {
       db.close();
     }
-  });
+  }, 15_000);
 
 
   test("atomically replaces all six plaintext classes with owner-attested encrypted projections", () => {

@@ -16,11 +16,11 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconGithub, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconSparkle, IconX, IconLayoutSidebar, IconLock } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n";
 import { Select, Switch } from "./ui";
-import { installApiAuthFetch } from "./api";
+
 import { type Page } from "./app-routing";
 import { useAppRouteState } from "./use-app-route-state";
 
-installApiAuthFetch();
+
 
 type Theme = "light" | "dark" | "system";
 
@@ -43,9 +43,9 @@ const PAGE_TKEY: Record<Page, TKey> = {
 // Tauri injects `__TAURI_INTERNALS__` into its WebView. Resolve the local
 // proxy at runtime as well as build time so a dev shell cannot silently fall
 // back to Vite's SPA response for `/api/*` when an environment marker is lost.
-const API_BASE = import.meta.env.VITE_API_BASE
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE
   || (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
-    ? "http://127.0.0.1:10100"
+    ? "http://127.0.0.1:10101"
     : "");
 const THEME_KEY = "ocx-theme";
 
@@ -77,7 +77,7 @@ function readStoredTheme(): Theme {
   return t === "light" || t === "dark" ? t : "system";
 }
 
-export default function App() {
+export default function App({ apiBase = DEFAULT_API_BASE }: { apiBase?: string }) {
   const { page, viewMode, toggleGlobalWorkspace, navigateToPage } = useAppRouteState();
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
@@ -111,7 +111,7 @@ export default function App() {
     let cancelled = false;
     const fetchRuntimeVersion = async () => {
       try {
-        const res = await fetch(`${API_BASE}/healthz`);
+        const res = await fetch(`${apiBase}/healthz`);
         if (!res.ok) return;
         const version = readRuntimeVersion(await res.json());
         if (!cancelled && version) setRuntimeVersion(version);
@@ -122,7 +122,7 @@ export default function App() {
     fetchRuntimeVersion();
     const interval = setInterval(fetchRuntimeVersion, 30000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [apiBase]);
 
   const cycleTheme = () => setTheme(t => (t === "light" ? "dark" : t === "dark" ? "system" : "light"));
   const ThemeIcon = THEME_ICON[theme];
@@ -162,19 +162,19 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_BASE}/api/claude-code`)
+    fetch(`${apiBase}/api/claude-code`)
       .then(res => res.json())
       .then(d => { if (!cancelled && typeof d.enabled === "boolean") setClaudeEnabled(d.enabled); })
       .catch(() => { /* toggle stays hidden until the API answers */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [apiBase]);
 
   const toggleClaude = async () => {
     if (claudeEnabled === null) return;
     const next = !claudeEnabled;
     setClaudeEnabled(next); // optimistic
     try {
-      const res = await fetch(`${API_BASE}/api/claude-code`, {
+      const res = await fetch(`${apiBase}/api/claude-code`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: next }),
@@ -187,7 +187,7 @@ export default function App() {
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
     setStopping(true);
-    try { await fetch(`${API_BASE}/api/stop`, { method: "POST" }); } catch { /* connection drops */ }
+    try { await fetch(`${apiBase}/api/stop`, { method: "POST" }); } catch { /* connection drops */ }
   };
 
   const brand = (
@@ -283,19 +283,19 @@ export default function App() {
             detailsLabel={t("errorBoundary.details")}
             reloadLabel={t("errorBoundary.reload")}
           >
-            {page === "dashboard" && <Dashboard apiBase={API_BASE} viewMode={viewMode} />}
-            {page === "cocodex" && <CoCodex apiBase={API_BASE} />}
-            {page === "startup" && <Startup apiBase={API_BASE} />}
-            {page === "providers" && <Providers apiBase={API_BASE} viewMode={viewMode} />}
-            {page === "models" && <Models apiBase={API_BASE} />}
-            {page === "combos" && <Combos apiBase={API_BASE} />}
-            {page === "subagents" && <Subagents apiBase={API_BASE} />}
-            {page === "logs" && <Logs apiBase={API_BASE} />}
-            {page === "usage" && <Usage apiBase={API_BASE} />}
-            {page === "storage" && <Storage apiBase={API_BASE} />}
-            {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
-            {page === "api" && <ApiKeys apiBase={API_BASE} />}
-            {page === "claude" && <ClaudeCode apiBase={API_BASE} />}
+            {page === "dashboard" && <Dashboard apiBase={apiBase} viewMode={viewMode} />}
+            {page === "cocodex" && <CoCodex apiBase={apiBase} />}
+            {page === "startup" && <Startup apiBase={apiBase} />}
+            {page === "providers" && <Providers apiBase={apiBase} viewMode={viewMode} />}
+            {page === "models" && <Models apiBase={apiBase} />}
+            {page === "combos" && <Combos apiBase={apiBase} />}
+            {page === "subagents" && <Subagents apiBase={apiBase} />}
+            {page === "logs" && <Logs apiBase={apiBase} />}
+            {page === "usage" && <Usage apiBase={apiBase} />}
+            {page === "storage" && <Storage apiBase={apiBase} />}
+            {page === "codex-auth" && <CodexAuth apiBase={apiBase} />}
+            {page === "api" && <ApiKeys apiBase={apiBase} />}
+            {page === "claude" && <ClaudeCode apiBase={apiBase} />}
           </ErrorBoundary>
         </div>
       </main>
