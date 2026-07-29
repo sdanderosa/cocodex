@@ -55,9 +55,21 @@ describe("Kimi OAuth JWT identity", () => {
 
 describe("Kimi token-response wiring (production parseTokenPayload path)", () => {
   const realFetch = globalThis.fetch;
+  const tokenTestDir = join(import.meta.dir, ".tmp-kimi-token-wiring-test");
+  let tokenTestPreviousHome: string | undefined;
+
+  beforeEach(() => {
+    tokenTestPreviousHome = process.env.OPENCODEX_HOME;
+    if (existsSync(tokenTestDir)) rmSync(tokenTestDir, { recursive: true });
+    mkdirSync(tokenTestDir, { recursive: true });
+    process.env.OPENCODEX_HOME = tokenTestDir;
+  });
 
   afterEach(() => {
     globalThis.fetch = realFetch;
+    if (tokenTestPreviousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = tokenTestPreviousHome;
+    if (existsSync(tokenTestDir)) rmSync(tokenTestDir, { recursive: true });
   });
 
   test("refreshKimiToken returns credentials carrying the JWT identity", async () => {

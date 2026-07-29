@@ -1,0 +1,1690 @@
+# CoCodex private-alpha evidence
+
+- Evidence date: 2026-07-25
+- Implementation commits: foundation `37d344d4`, recovery and trust hardening
+  `72ce0f41` / `cc206faa` / `5230f979`, shared-prompt and lifecycle work
+  `644a76e8` / `109503d5`, direct-connect and approval work `7e47ccb3` /
+  `d730d3dd`, authoritative cancellation `bc7951cb`, and revisioned project
+  context `b70f5675`, client Final Goal/docs `7010d6ec`, and signed usage
+  reports `b2c124f9`, encrypted project chat/key lifecycle `02d24e16`,
+  encrypted shared prompt updates `2be9f7d0` / teardown hardening `e15cc537`,
+  private-message hardening `63b552a6`, and PCP direct-hosting fallback
+  `943388d4`, encrypted-project restart recovery `92d98950`, and Windows
+  lifecycle timeout hardening `0f09345f`, encrypted project artifacts
+  `ba32d995`, and keyed encrypted-agent prompts/results `3259c21f`, with the
+  authoritative roster and revocation-safe key hardening in `7942452f`, and
+  atomic project-key initialization in `f80dc082`, followed by durable key
+  recovery and offline-recipient replay hardening in `f58490be`, with atomic
+  local key-store persistence in `90f03548`, and local full-computer safety
+  controls in `b07923db`.
+- authenticated prompt presence and lifecycle hardening `203dc406`, with
+  evidence `0cd1ec49` and client/server guidance `48f8aef3`; protocol, stale
+  presence, and disconnected-UI hardening `76647c34`.
+- authoritative shared chats and chat-bound encrypted collaboration
+  `3bf90fe9`; see `docs/evidence/authoritative-shared-chats.md`.
+- Branch: `feat/cocodex-foundation`
+- Platform: Windows
+- Status: focused private-alpha path passes; release gate remains incomplete
+
+## Latest authoritative agent-roster and encryption-hardening slice
+
+This recovery checkpoint adds a bounded, server-derived named-agent roster and
+status card plus revocation-safe project-key rotation. It is committed in
+`7942452f`, based on durable `HEAD` `917f29b8` (`docs: record presence
+hardening evidence`).
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+24 pass
+0 fail
+192 expect() calls
+Ran 24 tests across 4 files.
+```
+
+The server's `agent.list.result` frame is strict and project-scoped. It joins
+approved host devices to registered agents, derives readiness from authenticated
+`agent.ready` sockets, and derives active/queued/terminal state from persisted
+tasks. The GUI refreshes the roster while connected and hides it after a
+disconnect. The slice does not claim persistent activity history, task editing,
+co-agent graphs, full computer/browser helpers, or privileged execution.
+
+The same focused run covers `agent.task.list.result`: task status,
+dependencies, timestamps, event counts, and encrypted-vs-legacy routing are
+server-derived, while prompts and ciphertext are absent from the frame.
+
+Files:
+
+- `packages/cocodex-protocol/src/collaboration.ts`
+- `packages/cocodex-protocol/src/index.ts`
+- `apps/cocodex-server/src/agent-routing.ts`
+- `apps/cocodex-server/src/encrypted-agent-routing.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/agent-bridge.ts`
+- `src/cocodex/session.ts`
+- `src/cocodex/gui-bridge.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `gui/src/styles-cocodex.css`
+- `gui/src/i18n/*.ts`
+- `apps/cocodex-server/tests/agent-routing.test.ts`
+- `apps/cocodex-server/tests/collaboration-server.test.ts`
+- `packages/cocodex-protocol/tests/protocol.test.ts`
+- `tests/cocodex-gui-bridge.test.ts`
+- `docs/adr/0018-cocodex-authoritative-agent-roster-and-status.md`
+
+The full CoCodex suite was rerun after the slice and encryption hardening:
+
+```text
+87 pass
+0 fail
+801 expect() calls
+Ran 87 tests across 29 files.  (exit 0)
+test:cocodex-dependencies             (exit 0: 7 pass, 0 fail, 46 expectations)
+typecheck:cocodex                 (exit 0)
+lint:gui                          (exit 0; one pre-existing warning)
+build:gui                         (exit 0; bundle-size warning)
+privacy:scan                      (exit 0: Privacy scan passed)
+```
+
+The existing OpenCodex suite was also run from the same worktree:
+
+```powershell
+.\node_modules\.bin\bun.exe run test
+```
+
+The command reached the existing CLI model/help/provider tests but did not
+complete within the 240-second command ceiling (`exit 124`, no failing
+assertion was emitted in the captured tail). The test-started child processes
+were cleaned up, and no CoCodex listener remained. This keeps the overall
+release gate incomplete; it is not reported as an existing-suite pass.
+
+The revocation hardening adds migration 18 (`rotation_required`), atomically
+invalidates a removed host's queued work and key envelopes, rejects legacy
+plaintext project routes after encrypted mode is active, and broadcasts a
+strict `project.key.rotation-required` notice to remaining members. The focused
+WSS test proves that the owner cannot write at the old epoch until a complete
+new-epoch rotation succeeds. Client reconnects migrate the legacy project
+context projection before switching to encrypted reads; competing migration
+retries are terminally discarded from the durable outbox.
+
+Historical plaintext chat, prompt, artifact, and task rows created before a
+project's first key initialization are not retroactively rewritten in this
+slice. They are no longer served through keyed legacy routes; complete
+historical content migration remains a release-gate item and is not claimed as
+finished here.
+
+## Atomic project-key initialization checkpoint
+
+Commits `f80dc082`, `f58490be`, and `90f03548` replace the client's one-envelope-at-a-time initializer
+with a strict `project.key.initialize` batch. The server requires one
+owner-signed epoch-1 envelope for every approved project member and inserts the
+complete set plus the epoch row in one immediate SQLite transaction. The
+`project.key.initialized` response is idempotent by project-scoped request ID;
+the client reports success only after that acknowledgement, persists the signed
+batch and local key across a process restart, replays it before encrypted
+outbox traffic, validates the returned envelope set exactly, and removes the
+staged local key when the batch is rejected or mismatched. The server also
+re-delivers envelopes addressed to a device after authenticated reconnect and
+on initialization replay, covering an offline recipient.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+32 pass
+0 fail
+224 expect() calls
+Ran 32 tests across 4 files.
+```
+
+The focused run includes the durable pending-intent store test and a
+project-scoped idempotency test. The full CoCodex suite after this checkpoint
+is green: `87 pass`, `0 fail`, `801 expect() calls` across 29 files (exit `0`).
+This checkpoint does not close
+the documented whole-project historical migration, ratcheted private messaging,
+file-reference encryption, or full-computer/browser requirements.
+
+## Focused three-process path
+
+Test:
+`three-process CoCodex private alpha > two resident clients recover chat,
+local execution, and private ciphertext across restart`
+
+Command:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 60000
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+1 pass
+0 fail
+45 expect() calls
+Ran 1 test across 1 file.
+```
+
+The test compiles and launches one real `cocodex-server.exe`, one resident
+Stephen `cocodex-client.exe`, and one resident Kai `cocodex-client.exe` with
+separate temporary state roots, workspaces, identities, account fixtures, and
+a selected TLS/WSS loopback port. It records both client PIDs, force-stops and
+restarts the server on the same port and state root, and asserts that the
+original client PIDs reconnect.
+
+The exercised path includes:
+
+- invitation generation, proof-of-possession enrollment, approval, and
+  reconnect without reenrollment;
+- identical project discovery and authoritative chronological chat;
+- signed reciprocal agent routing through each host's production local
+  adapter;
+- keyed reciprocal agent routing whose prompts and streamed results stay
+  opaque in SQLite, including encrypted cancellation and post-restart result
+  recovery;
+- streamed result events and local usage callbacks;
+- explicitly supplied, Ed25519-signed recipient key certificates,
+  signed/sealed private messages, and protected fingerprint verification;
+- server ciphertext-only persistence;
+- durable offline chat queues, stable IDs, restart recovery, and duplicate-ID
+  checks;
+- revisioned server-authoritative Final Goal/context get, update, broadcast,
+  and recovery after the server restart;
+- signed sanitized usage reports from both isolated clients, membership-scoped
+  usage cards, and usage recovery after the server restart.
+
+The current hardening suite also covers malformed-frame rejection, loopback GUI
+capability/origin checks, cancellation of in-flight local execution on client
+disconnect, expiry of queued/running agent tasks, and recipient-key certificate
+binding. Remote agent execution now follows a host-owned policy: cryptographically
+pinned trusted devices run directly by default, while hosts can select an
+`always` mode that displays the complete prompt for an allow-once decision. The
+same WSS path carries bounded mouse-cursor, text-caret/selection, and ephemeral
+typing presence, and clears it on disconnect. Authenticated requester/host
+cancellation records an
+authoritative final task event and aborts the host process. `cocodex-server init` attempts the Windows Firewall rule and prints
+the single-port manual router-forwarding instructions when automatic setup is
+unavailable. Initialization now performs a bounded UPnP discovery and
+`AddPortMapping` attempt; if no gateway responds or the mapping fails, the JSON
+result explains that manual forwarding or CGNAT troubleshooting is required.
+
+The separate server CLI now also exposes `status`, `stop`, `restart`, `migrate`,
+`backup`, and `restore`. Backups are signed by the server's Ed25519 identity,
+include a SHA-256 database checksum, and are rejected if tampered with or
+presented to a different server identity. The lifecycle test exercises status
+and graceful stop against the real TLS server process.
+
+## Authenticated prompt awareness
+
+Implementation commit: `203dc406`; hardening commit: `76647c34`
+
+Test names:
+
+- `CoCodex protocol > bounds presence cursor and caret frames`
+- `CoCodex protocol > strictly validates server presence snapshots, updates, and leaves`
+- `authenticated WSS collaboration > two members share authoritative chat order and recover history by cursor`
+- `authenticated WSS collaboration > encrypted chat subscriptions also carry independent presence awareness`
+
+Command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+17 pass
+0 fail
+130 expect() calls
+Ran 17 tests across 2 files.
+```
+
+The WSS coverage exercises both the legacy and encrypted chat subscription
+routes. It proves that cursor, caret/selection, and typing state are delivered
+without clobbering one another; typing-only updates remain visible; duplicate
+sockets for one device do not clear the surviving device state; and removing a
+project member emits the strict minimal `presence.leave` frame. The server now
+validates every emitted presence frame, enforces both per-device and per-project
+update limits, caps runtime members at 128, prunes stale or revoked members on
+a bounded timer, and the resident client rejects malformed presence frames.
+The protocol schemas bound coordinates, caret offsets, display names, timestamps,
+member counts, and unknown fields.
+The GUI keeps local channels merged, batches typing updates at 100 ms, clears
+typing after 1.5 seconds of inactivity or blur, resends the cached state after
+reconnect, filters events from an old project, and renders advisory named
+caret/selection/typing status chips. It intentionally does not claim a rich
+inline caret overlay or stable Yjs RelativePosition mapping yet.
+
+Files:
+
+- `packages/cocodex-protocol/src/collaboration.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/session.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `gui/src/styles-cocodex.css`
+- `apps/cocodex-server/tests/collaboration-server.test.ts`
+
+Files:
+
+- `tests/cocodex-private-alpha-process.test.ts`
+- `tests/fixtures/codex-runtime-fixture.ts`
+- `src/cocodex/session.ts`
+- `src/cocodex/agent-bridge.ts`
+- `src/cocodex/agent-journal.ts`
+- `src/cocodex/outbox.ts`
+- `apps/cocodex-server/src/server.ts`
+- `apps/cocodex-server/src/encrypted-agent-routing.ts`
+- `packages/cocodex-protocol/src/project-agent.ts`
+
+The deterministic runtime fixture is evidence for process isolation,
+production adapter invocation, routing, streaming, local workspace
+side-effects, and per-client usage attribution. It is not evidence that two
+distinct real OpenAI accounts were billed.
+
+## Focused CoCodex suite and builds
+
+Command:
+
+```powershell
+.\node_modules\bun\bin\bun.exe run test:cocodex
+.\node_modules\bun\bin\bun.exe run lint:gui
+.\node_modules\bun\bin\bun.exe run build:gui
+.\node_modules\bun\bin\bun.exe run build:cocodex-server
+.\node_modules\bun\bin\bun.exe run build:cocodex-client
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+77 pass
+0 fail
+717 expect() calls
+Ran 77 tests across 27 files.
+dist/cocodex-server.exe compiled
+dist/cocodex-client.exe compiled
+GUI production build completed
+Typecheck completed; privacy scan passed
+```
+
+The GUI lint reported one pre-existing hook dependency warning and no errors.
+The production GUI build reported a bundle-size warning and completed.
+
+The server transfer slice is covered by signed encrypted export/import: the
+transfer file uses an AES-256-GCM envelope derived from a user passphrase,
+binds the database to the server identity and current epoch, and rejects wrong
+passphrases. Passphrases are supplied through a protected file or the
+`COCODEX_TRANSFER_PASSPHRASE` environment variable rather than process
+arguments. `transfer-import` restores a verified snapshot and advances the
+persisted epoch. The server exposes that epoch through `/v1/server-info`,
+enrollment, and `auth.ok`; clients persist the highest authenticated epoch and
+reject a stale server. The real WSS collaboration suite also publishes and
+lists a project artifact, then routes a reciprocal agent request whose signed
+dependency names the completed prior task.
+
+Additional successful gates:
+
+```text
+bun run typecheck                    exit 0
+bun run typecheck:cocodex            exit 0
+privacy scan with bundled Git        exit 0: Privacy scan passed
+anthropic-image-retry-e2e.test.ts     exit 0: 3 pass, 0 fail
+```
+
+Private-message replay protection is covered by the server shared-state tests:
+the same ciphertext cannot be accepted again under a different message ID,
+while approved-device checks continue to gate both sender and recipient.
+
+## Revisioned shared project context
+
+Commit: `b70f5675`
+
+Command:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\shared-state.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-outbox.test.ts
+```
+
+Exit status: `0`
+
+Relevant output:
+
+```text
+19 pass
+0 fail
+111 expect() calls
+Ran 19 tests across 5 files.
+```
+
+This run proves migration v8, default and revision-one Final Goal/context
+state, stale-writer rejection, membership enforcement, strict protocol and
+serialized-size bounds, real authenticated WSS get/update/broadcast, context
+recovery after a server restart, offline outbox replay, and removal of a
+non-retryable stale update so it cannot block later events. The server routes
+context broadcasts to clients that explicitly requested that project's context;
+chat subscription alone is not treated as context authorization.
+
+The post-change rerun of the full three-process harness was attempted with:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test --timeout 60000 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+It exited `124` after the outer 120-second command timeout without test output
+and left no live CoCodex process. A subsequent immediate retry completed and is
+recorded below; the cold-start timeout remains a known Windows load-sensitivity
+issue.
+
+Current retry command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'; .\node_modules\bun\bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Retry exit status: `0`.
+
+```text
+1 pass
+0 fail
+21 expect() calls
+Ran 1 test across 1 file. [8.44s]
+```
+
+The trace reached artifact build, both client connections, reciprocal local
+agent execution, private-message decryption, server stop, offline queueing,
+reconnect, recovered snapshots, and clean client shutdown. No CoCodex process
+remained afterward.
+
+## Client Final Goal surface and operator documentation
+
+Commit: `7010d6ec`
+
+The CoCodex page now loads the shared project context after project selection,
+renders the server revision, queues bounded `context.update` requests through
+the GUI bridge, and applies authoritative update/change frames. The bridge test
+asserts that context commands are capability-gated and forwarded without
+surfacing private ciphertext. `docs/cocodex-client.md` and
+`docs/cocodex-server.md` document separate builds, enrollment, direct hosting,
+manual forwarding, security boundaries, offline behavior, and deferred
+features; `docs/README.md` links them with the architecture references and
+evidence report.
+
+## Signed sanitized usage reports
+
+Commit: `b2c124f9`
+
+Commands:
+
+```powershell
+.\node_modules\bun\bin\bun.exe run typecheck:cocodex
+.\node_modules\bun\bin\bun.exe run --cwd gui build
+.\node_modules\bun\bin\bun.exe run --cwd gui lint
+.\node_modules\bun\bin\bun.exe run test:cocodex
+```
+
+Exit status: `0` for every command.
+
+The protocol test covers bounded report fields and transcript binding. The
+server usage test covers Ed25519 verification, stale revision rejection,
+membership filtering, idempotent persistence, and explicit missing reports.
+The real WSS collaboration test covers report, project-scoped get, broadcast,
+and reconnect. The three-process harness proves both isolated clients publish
+local token summaries and recover them after a server restart. The server
+stores `report_json` plus the signature in migration v9; it never receives
+provider credentials or raw account records. Optional quota percentages/reset
+times remain absent when the local runtime has not supplied them.
+
+Automatic direct hosting now attempts UPnP first, NAT-PMP, and PCP as bounded
+UDP fallbacks; packet encoding/response validation and diagnostic classification
+are covered by the port-mapping tests. Manual one-port forwarding remains the
+guaranteed baseline, and failures still explain likely CGNAT or firewall/router
+blocks instead of pretending that a mapping succeeded.
+
+## Private-message crypto boundary and hardening
+
+Implementation commit: `63b552a6`
+
+The private-alpha sealed-box path now rejects non-canonical or undersized
+ciphertexts, bounds decrypted payloads before JSON parsing, and fails closed on
+malformed payloads. The device certificate still binds the recipient's X25519
+messaging key to its Ed25519 fingerprint. ADR 0014 records the deliberate
+single-device boundary: no forward-secret or multi-device claim is made until a
+maintained compatible Matrix/vodozemac-style state machine is selected.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`; relevant output: `4 pass`, `0 fail`, `64 expect() calls`.
+
+## Project-wrap identity and encrypted Final Goal/context
+
+Implementation commit: `81532e6e`
+
+The first project-encryption slice is now connected end to end. Each client
+creates a separate X25519 project-wrap keypair; the owner can send signed,
+per-device sealed project-key envelopes. The server validates owner authority,
+approved membership, signatures, replay/idempotency, and revision conflicts,
+then persists opaque envelope JSON only. The client unwraps the project key and
+decrypts the Final Goal/context locally with libsodium XChaCha20-Poly1305.
+
+Focused command:
+
+```powershell
+.\node_modules\bun\bin\bun.exe test `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`.
+
+Relevant output:
+
+```text
+20 pass
+0 fail
+111 expect() calls
+```
+
+The real session test runs two enrolled clients against a real TLS/WSS server,
+initializes a project key, writes encrypted context, verifies the SQLite row
+does not contain the plaintext goal, and recovers the goal by local decryption
+on the other client. This does not generalize to all project records yet.
+
+## Encrypted shared chat and project-key lifecycle
+
+Implementation commit: `02d24e16`
+
+The project-key epoch state is now monotonic and server-authoritative. Owner
+rotations are compare-and-swap operations that require one signed envelope for
+every approved member; replayed rotations are idempotent. Removing a member
+deletes its project membership and key envelopes, sends a revocation notice,
+and the removed client marks its local key ring unusable for new writes.
+
+The new `project.chat.*` transport encrypts the chat body on the client with
+the current project key, signs the envelope, assigns authoritative server
+sequence, and stores only opaque envelope JSON in `project_chat_events`. The
+client decrypts and verifies the envelope before emitting the normal local
+`chat.event` shape. Existing `chat.*` fixtures remain compatible when no local
+project key exists.
+
+Focused command and evidence:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts `
+  .\tests\cocodex-outbox.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `32 pass`, `0 fail`, `218 expect() calls`.
+The complete `bun run test:cocodex` command also passed with `66 pass`, `0
+fail`, and `555 expect() calls`. The focused WSS test includes tampered
+signature rejection and a SQLite canary proving that the chat plaintext is
+absent.
+
+## Encrypted shared prompt updates
+
+Implementation commits: `2be9f7d0`, `e15cc537`
+
+The new `project.prompt.*` transport encrypts each bounded Yjs update on the
+client with the current project key and signs the envelope. The server checks
+membership, the current key epoch, the enrolled sender key, the record binding,
+and replay/idempotency, then assigns an authoritative sequence and stores only
+the opaque envelope in `project_prompt_updates`. It never applies Yjs. Both
+clients decrypt the accepted/changed update locally and feed it to the existing
+prompt document; the durable outbox and reconnect cursor cover offline replay.
+
+Focused command and evidence:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\tests\cocodex-project-encryption.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts `
+  .\tests\cocodex-outbox.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `33 pass`, `0 fail`, `239 expect() calls`.
+The session test creates a real Yjs document, encrypts its binary update, and
+applies the decrypted update on the receiving client. The WSS test also proves
+that the stored prompt envelope contains ciphertext but neither the update
+bytes nor prompt text. The encrypted-session teardown uses bounded Windows
+cleanup retries so concurrent test files do not turn a passed assertion into a
+spurious `EBUSY` failure. The same session test stops and restarts the real
+TLS/WSS server, then recovers encrypted chat, prompt, and context snapshots
+from SQLite on both clients.
+
+Full CoCodex command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `68 pass`, `0 fail`, `594 expect() calls`.
+
+## Encrypted project artifacts
+
+Implementation commit: `ba32d995`
+
+The `project.artifact.*` transport encrypts the complete artifact record on the
+client when a project key is available. The server stores only a signed opaque
+envelope plus project/task/author routing metadata in `project_artifacts`.
+Client-side decryption validates the envelope sender, key epoch, artifact ID,
+project ID, task binding, type, title, summary, status, and body before the
+normal artifact frame is exposed. The existing protected outbox carries an
+offline publish, and a subscribed list is reissued after reconnect.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`; relevant output: `19 pass`, `0 fail`, `138 expect() calls`.
+The session test uses two enrolled clients and a real TLS/WSS server, confirms
+that the SQLite artifact envelope contains neither the title nor body, and
+recovers the decrypted artifact from a post-restart list on both clients.
+
+The complete CoCodex command was rerun after this change:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `72 pass`, `0 fail`, `663 expect() calls`
+across 26 files.
+
+## Encrypted agent prompts and streamed results
+
+Implementation decision: ADR 0016. The keyed agent transport uses the existing
+signed project-content envelope: `task` for the requester prompt and
+`agent-response` for each host result. The server stores `[encrypted]` and
+opaque envelopes only; the host client decrypts, authorizes, executes locally,
+and journals result replay. Encrypted cancellation is routed as control and the
+host emits the encrypted terminal failure event.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `22 pass`, `0 fail` for the focused protocol,
+routing, migration, bridge, and three-process files (the three-process test
+alone reports `1 pass`, `0 fail`, `45 expect() calls`). The process harness
+builds and launches one real server plus isolated Stephen and Kai clients,
+initializes a project key, executes reciprocal tasks through the production
+Codex adapter, checks prompt/result canaries are absent from SQLite, exercises
+encrypted cancellation in the bridge suite, restarts the server, and recovers
+the encrypted result events by cursor.
+
+Files: `packages/cocodex-protocol/src/project-agent.ts`,
+`apps/cocodex-server/src/encrypted-agent-routing.ts`,
+`apps/cocodex-server/src/encrypted-chat.ts`, `src/cocodex/agent-bridge.ts`,
+`src/cocodex/session.ts`, and `tests/cocodex-private-alpha-process.test.ts`.
+
+## Signed CoCodex Server authority handoff
+
+Implementation commit: `d5dae7c1`
+
+Test name: `hands a live server to a prepared process and reconnects both resident clients with shared state`
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-server-transfer-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `49 expect()` calls.
+
+The test launches separate source and destination `cocodex-server` CLI
+processes with isolated temporary state roots, ports, identities, TLS
+certificates, and SQLite databases. It enrolls and approves separate Stephen
+and Kai devices over real HTTPS enrollment endpoints and WSS authentication,
+makes Stephen the project owner and Kai a member, publishes a chat event and a
+signed sealed-box private message, stops the source, exports a destination-bound
+AES-GCM transfer, proves the source status is `retired` and that a new source
+start is refused, imports into the prepared destination, starts it, and accepts
+the source-signed `ccx-transfer1.` certificate in both clients. The assertions
+cover destination endpoint/TLS/identity pin updates, authority epoch 2, replay
+rejection of the old signer, identical project roles, chronological chat
+history, private ciphertext recovery, local Kai decryption, and ciphertext-only
+storage in the imported SQLite database. All assertions use the real network
+transport; no direct server function calls substitute for the WebSocket path.
+
+Historical prior complete-suite output (superseded):
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `75 pass`, `0 fail`, `698 expect() calls`
+across 30 files. The run completed in `46.17s`.
+
+Files: `packages/cocodex-protocol/src/server-transfer.ts`,
+`apps/cocodex-server/src/backup.ts`, `apps/cocodex-server/src/server-state.ts`,
+`apps/cocodex-server/src/cli.ts`, `apps/cocodex-server/src/server.ts`,
+`src/cocodex/client.ts`, `src/cocodex/cli.ts`,
+`tests/cocodex-server-transfer-process.test.ts`,
+`apps/cocodex-server/tests/backup.test.ts`, and ADR 0017.
+
+> Historical note: the complete-suite output recorded above predates the
+> current load-sensitive gate and is not evidence for this checkpoint. The
+> focused transfer command and its 49 assertions are the authoritative result.
+>
+> Fresh verification after `d5dae7c1`: `bun run test:cocodex` exited `0` with
+> `95 pass`, `0 fail`, `870 expect()` calls across 30 files in `46.17s`.
+
+## Offline encrypted private-message round trip
+
+Implementation commit: `0792469f`
+
+The three-process private-alpha test now queues one encrypted private message
+in each direction while the server is stopped. Both messages remain in the
+protected client outboxes, are acknowledged after the server restarts, and are
+decrypted only by the intended recipient. The same test still proves the
+resident client processes retain their PIDs, recover shared chat and encrypted
+agent results, and recover after restart.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `45 expect() calls`.
+The observed trace reached `offline queues accepted`, `clients reconnected`,
+and `recovered snapshots received` before clean shutdown.
+
+## Official Codex runtime smoke
+
+Runtime discovered from the installed Codex desktop application:
+
+```text
+codex.exe 0.146.0-alpha.3.1
+source: app
+```
+
+Command shape:
+
+```powershell
+"Reply with exactly: COCODEX_OFFICIAL_RUNTIME_OK" |
+  codex.exe -C . exec --json --ephemeral --sandbox read-only -
+```
+
+Exit status: `0`
+
+Relevant sanitized output:
+
+```json
+{"type":"item.completed","item":{"type":"agent_message","text":"COCODEX_OFFICIAL_RUNTIME_OK"}}
+{"type":"turn.completed","usage":{"input_tokens":16034,"cached_input_tokens":8960,"output_tokens":11,"reasoning_output_tokens":0}}
+```
+
+This proves that the installed official runtime can authenticate, execute, and
+return real usage on Stephen's current local account. A second independently
+authenticated Kai account was not available in this environment, so mandatory
+claims 15 and 18 are not fully evidenced with two real accounts.
+
+## Local full-computer access profile and emergency controls
+
+Implementation scope: the Client now has a durable `project-only` /
+`full-computer` access profile. Full-computer mode is an explicit local opt-in
+to the official Codex `danger-full-access` sandbox; the Server protocol is
+unchanged and never receives a shell capability. Atomic local safety state
+supports emergency stop, resume, and separate full-computer enable/disable.
+
+Focused command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-agent-safety.test.ts `
+  .\tests\cocodex-agent-safety-cli.test.ts `
+  .\tests\cocodex-codex-agent-adapter.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `13 pass`, `0 fail`, `88 expect()` calls.
+The adapter test proves absent opt-in never spawns Codex, the safety test proves
+atomic persistence and downgrade fail-closed behavior, the bridge test proves
+an active task is aborted by emergency stop, and the GUI test proves the local
+safety commands are allowlisted and private ciphertext remains redacted.
+
+Files: `src/cocodex/agent-policy.ts`, `src/cocodex/agent-safety.ts`,
+  `src/cocodex/codex-agent-adapter.ts`, `src/cocodex/agent-bridge.ts`,
+`src/cocodex/session.ts`, `src/cocodex/cli.ts`, `src/cocodex/gui-bridge.ts`,
+`src/cocodex/paths.ts`, ADR 0021, and the five focused test files.
+
+Implementation commit: `b07923db`.
+
+## Incomplete release gate
+
+The complete inherited `bun test` run does not pass reliably under full Windows
+load. The final run exited `1` after approximately 672 seconds while progress
+stopped around `anthropic-image-retry-e2e.test.ts`; that exact test file then
+passed independently (`3 pass`, `0 fail`). The pristine upstream baseline had
+already shown load-sensitive duplicated timeout failures, but the required
+"all existing tests pass" gate is still not green and must not be represented
+as complete.
+
+The following also remain deferred or insufficiently evidenced:
+
+- two separately authenticated real Stephen and Kai Codex accounts;
+- whole-project encryption is not implemented yet: keyed task prompts and
+  agent results now use explicit encrypted frames, but file references remain
+  server-readable and legacy plaintext compatibility routes remain for
+  projects without a key. Final Goal/context, shared chat, shared prompt
+  updates, keyed artifacts, keyed local-file-reference metadata, and keyed
+  agent events are encrypted only through their explicit new frames. The
+  owner revocation UI now uses verified device certificates and an atomic
+  removal/complete-recipient rotation path; production-grade key-directory
+  transparency remains deferred.
+- robust CGNAT detection, relay, libp2p, forward-secret ratcheted messaging,
+  and multi-device messaging. The current GUI/server path includes a bounded
+  Yjs shared-prompt
+  document, but it does not yet provide a full Hocuspocus deployment or
+  pagination-gap UX beyond the tested cursor protocol.
+
+Accordingly, the connected deterministic private-alpha path works, but this
+report does not authorize a production or complete-private-alpha release claim.
+
+## Private mailbox delivery hardening checkpoint
+
+Implementation commit: `8ca7c5e8f675181e7e317559dcf360e6d8f25e5b`
+
+This checkpoint keeps the private-alpha sealed-box format while adding strict
+canonical ciphertext/frame bounds, an immediate SQLite transaction for the
+message and replay index, a protected atomic client mailbox cursor with bounded
+receipts, serialized snapshot/live delivery, GUI ciphertext redaction for
+accepted frames, and an active WSS authorization-revocation sweep. The
+mailbox test also proves that a client's own sent messages advance its cursor,
+so reconnects do not replay sender history indefinitely.
+
+Focused protocol, crypto, mailbox, and real three-process harness:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `25 pass`, `0 fail`, `156 expect()` calls.
+The alpha harness launched one compiled CoCodex Server process and isolated
+Stephen and Kai Client processes with separate roots, identities, databases,
+ports, and workspaces. It observed local agent execution, encrypted private
+delivery, server termination, offline queueing, reconnect, and recovery while
+both client PIDs remained resident.
+
+Focused WSS authorization/revocation test:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `74 expect()` calls.
+The revocation case uses a real authenticated socket, revokes its device in
+SQLite, and observes close code `1008` with the revocation reason without
+requiring another client frame.
+
+Complete CoCodex suite (serialized to avoid the known Windows process-load
+race):
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex -- --max-concurrency=1
+```
+
+Exit status: `0`; relevant output: `91 pass`, `0 fail`, `823 expect()` calls
+across 30 files. The same suite's unbounded parallel invocation is not used as
+release evidence: it reached `89 pass` and exposed two load-sensitive failures
+(the repository's existing 20-second agent-safety CLI timeout and a mailbox
+timing assertion); the serial retry reached `90 pass` with only the CLI
+timeout, and a clean serialized retry then passed. The CLI test passes alone
+in `1.3s`.
+
+Build and static checks:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run lint:gui
+```
+
+Every command exited `0`. The GUI lint produced one existing
+`react-hooks/exhaustive-deps` warning and no errors. The separate client and
+server compile artifacts were produced, and the privacy scan found no private
+plaintext leak.
+
+Files: `packages/cocodex-protocol/src/collaboration.ts`,
+`packages/cocodex-protocol/src/index.ts`,
+`packages/cocodex-protocol/tests/protocol.test.ts`,
+`apps/cocodex-server/src/private-messages.ts`,
+`apps/cocodex-server/src/server.ts`,
+`apps/cocodex-server/tests/collaboration-server.test.ts`,
+`src/cocodex/private-mailbox.ts`, `src/cocodex/session.ts`,
+`src/cocodex/gui-bridge.ts`, `src/cocodex/paths.ts`,
+`tests/cocodex-private-mailbox.test.ts`,
+`tests/cocodex-private-alpha-process.test.ts`, ADR 0014, ADR 0022, and the
+open-source reference matrix.
+
+The Matrix binding audit is recorded in ADR 0022. The evaluated packages were
+Apache-2.0 references only and were removed from `package.json`/`bun.lock`
+because the Bun durable-store and packaged native-runtime gates were not met.
+The alpha therefore makes no forward-secrecy, ratchet, or multi-device claim.
+
+## Dependency-bound agent dispatch and private delivery retry checkpoint
+
+Implementation commit: `c55c1ac5`
+
+The local plaintext-agent verifier now includes the complete dependency list in
+both requester and server dispatch transcripts. Server task creation
+canonicalizes duplicate dependency IDs, makes replay idempotent under that
+canonical form, and rejects dependency cycles with a bounded graph walk. The
+encrypted task path applies the same checks. Private delivery now acknowledges
+only successfully opened or self-authored messages; an unknown sender or
+decryption failure advances the server cursor while retaining the ciphertext in
+the protected, bounded local mailbox for retry after trust/key recovery. The
+client also processes `private.accepted` frames so self-sent messages are
+durably accounted for without waiting for a later snapshot.
+
+Focused verification:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0` for every command. Relevant output: typecheck passed;
+agent-routing `3 pass`, bridge recovery `6 pass`, mailbox `4 pass`; combined
+protocol/private-alpha verification `27 pass`, `0 fail`, `164 expect()` calls.
+The alpha test used one real compiled server and two resident isolated client
+processes, exercised server restart and offline queues, and verified private
+mailbox recovery across both directions. The tests also cover duplicate
+dependency replay, cycle rejection, signed dependency verification, bounded
+deferred ciphertext, and deferred-message removal after a successful receipt.
+
+Files: `apps/cocodex-server/src/agent-routing.ts`,
+`apps/cocodex-server/src/encrypted-agent-routing.ts`,
+`src/cocodex/agent-bridge.ts`, `src/cocodex/private-mailbox.ts`,
+`src/cocodex/session.ts`, and their focused server/client tests.
+
+The serialized full-suite rerun after this checkpoint was also attempted:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex -- --max-concurrency=1
+```
+
+It exited `1` after `92 pass`, `2 fail`, `799 expect()` calls. The failures are
+the known Windows load-sensitive `cocodex-agent-safety-cli` 20-second timeout
+and one intermittent private-alpha mailbox timing failure. The private-alpha
+test then passed twice when run alone (each run `1 pass`, `0 fail`, `48
+expect()` calls), and the focused combined command above passed. The complete
+existing-suite gate therefore remains open and is not claimed as green.
+
+## Final verification after recovery checkpoint
+
+Implementation checkpoints for this verification: `c55c1ac5` and pagination
+test commit `b04f18a9`. The final focused integration/security command was:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `40 pass`, `0 fail`, `299 expect()` calls
+across seven files. This includes the real WSS revocation test, dependency
+cycle/idempotency and signed-host tests, bounded deferred-mailbox tests, and
+the three-process restart/offline/private-alpha harness.
+
+The final static/build commands were:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run lint:gui
+```
+
+Every command exited `0`. The separate Client and Server executables compiled,
+the privacy scan passed, and GUI lint reported one existing
+`react-hooks/exhaustive-deps` warning with no errors. No CoCodex server/client
+process or listener was left running after verification.
+
+The previously deferred 501-event cursor check is now covered by
+`authenticated WSS collaboration > paginates 501 chat and private events over
+the real WSS cursor protocol`. It launches the real TLS/WSS server, writes 501
+authoritative chat events and 501 encrypted private messages, reconnects Kai,
+and verifies exact 500/1 pages and sequence boundaries for both streams.
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  --test-name-pattern "paginates 501"
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `12 expect()` calls in
+`2.84s`; the complete collaboration-server file also passed (`4 pass`, `0
+fail`, `86 expect()` calls).
+
+## Current recovery verification (2026-07-26)
+
+This section records the latest durable working-tree checkpoint. It does not
+replace the historical commit list above or claim that the pending worktree
+delta has been published yet. The base branch head before the pending delta is
+`50d7e3ba0cd5c85676bb25d91bc6795eddb0d6a4`.
+
+Commands were run from the Windows checkout using the repository-local Bun
+binary and the verified PortableGit runtime for subprocess tests:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-opencodex-import.test.ts `
+  .\tests\cocodex-opencodex-import-security.test.ts --timeout 60000
+.\node_modules\.bin\bun.exe run test:cocodex
+.\node_modules\.bin\bun.exe run test:batched
+cd gui; ..\node_modules\.bin\bun.exe test
+cd gui; ..\node_modules\.bin\bun.exe run lint
+cd gui; ..\node_modules\.bin\bun.exe run build
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run privacy:scan
+```
+
+Results:
+
+- `typecheck:cocodex`: exit `0`.
+- OpenCodex import flow and adversarial boundaries: `10 pass`, `0 fail`,
+  `33 expect()` calls.
+- `test:cocodex`: `119 pass`, `0 fail`, `1,118 expect()` calls across 30
+  files, including the real three-process restart/offline harness and the
+  live server-transfer process.
+- `test:batched`: `341/341` files completed across 14 fresh workers, `4,171`
+  passed, `0` failed, `20,736` assertions.
+- GUI tests: `112 pass`, `0 fail`, `550 expect()` calls.
+- GUI lint: exit `0`, zero errors, one existing hook warning.
+- GUI build, separate Client build, and separate Server build: exit `0`.
+- Privacy scan: exit `0`, `Privacy scan passed`.
+
+The pending import-flow delta is limited to the client-local preview/apply/
+rollback implementation, its ADR and documentation, and focused tests. It
+never sends provider configuration or authentication material to the Server.
+No CoCodex-named process or listener remained after the verification runs.
+
+## Final import hardening verification (2026-07-26)
+
+The final client-local OpenCodex compatibility import delta was verified after
+closing the adversarial review findings. Commands ran from the Windows checkout
+with the repository-local Bun binary:
+
+```powershell
+.\node_modules\bun\bin\bun.exe run typecheck:cocodex
+.\node_modules\bun\bin\bun.exe test tests\cocodex-opencodex-import.test.ts tests\cocodex-opencodex-import-security.test.ts --timeout 30000
+.\node_modules\bun\bin\bun.exe run privacy:scan
+.\node_modules\bun\bin\bun.exe run test:cocodex
+.\node_modules\bun\bin\bun.exe test tests\release-helper.test.ts
+$env:OCX_TEST_WORKER_SIZE='341'; .\node_modules\bun\bin\bun.exe run test:batched
+```
+
+Evidence:
+
+- Typecheck: exit `0`.
+- Focused import/security tests: `20 pass`, `0 fail`, `81 expect()` calls, including
+  vendor-header, access-key, password/passphrase, manifest-phase, journal-integrity,
+  backup-integrity, and target-overlap adversarial cases.
+- Privacy scan: exit `0`; output `Privacy scan passed`.
+- CLI open-only smoke: exit `0`; preview/apply/rollback passed with `available: 1`,
+  `excluded: 10`, `missing: 5`; source secrets were not printed, the source stayed
+  unchanged, and the disposable smoke directory was removed.
+- Private-alpha suite: `119 pass`, `0 fail`, `1,118 expect()` calls across 30
+  files, including the real three-process restart/recovery harness.
+- Isolated release-helper test: `5 pass`, `0 fail`, `18 expect()` calls.
+- Serial inherited suite: exit `0`; output `PASS: all 341 files completed across
+  1 fresh workers`.
+
+The default 14-worker batched invocation was also run and exited `1` only in
+`tests/release-helper.test.ts`: Windows resolved the real checkout Git instead
+of that test's fake Git shim, so the branch guard reported
+`feat/cocodex-foundation`. The same test passes in isolation and the serial
+batched run is the authoritative inherited-suite result for this checkout.
+
+## Explicit private-message sharing into an agent
+
+Implementation commit: `3790c771`
+
+The private-alpha client now retains successfully decrypted private text only
+in the resident process. A local host can explicitly issue `private.share` with
+one project, one agent, and one message ID. The client requires the message to
+be present in that resident session and the project to have an encryption key,
+then sends the text through the existing signed encrypted-agent envelope. The
+message ID is bound into requester/server dispatch signatures and persisted as
+an audit marker; the server never receives the private text. The local bridge
+adds the client’s own enrolled key to its trust map so this explicitly marked
+same-device task can be approved and executed, while ordinary same-device
+agent requests remain rejected.
+
+Focused real-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `67 expect()` calls.
+The harness built separate compiled Server and Client executables, enrolled
+and approved Stephen and Kai, delivered a real encrypted private message,
+initialized a keyed project, explicitly shared the message with Stephen’s
+agent, observed local approval and execution, and streamed the result to Kai.
+It also asserted the private canary appears in Stephen’s local execution
+result, is absent from Kai’s workspace, and is absent from the server SQLite
+private-message ciphertext, task prompt envelope, result envelope, and raw
+database bytes. The same process run then completed the remaining encrypted
+agent tasks, offline queues, server restart, and recovery checks.
+
+Focused protocol/routing/migration/bridge/UI command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\agent-routing.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\tests\cocodex-agent-bridge-recovery.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `31 pass`, `0 fail`, `239 expect()` calls.
+The migration assertion covers schema version 19 and the new
+`private_share_message_id` column. Static/build verification after the slice:
+`typecheck`, `typecheck:cocodex`, `privacy:scan`, GUI build, Client compile,
+and Server compile each exited `0`; GUI lint exited `0` with only the existing
+`use-app-route-state.ts:84` hook warning.
+
+The package-level `bun run test:cocodex` was also attempted after the slice and
+returned `94 pass`, `1 fail`, `890 expect()` calls because the existing
+`cocodex-agent-safety-cli` child-process test hit its 20-second Windows
+load-sensitive timeout. That test passes in isolation (`1 pass`, `0 fail`,
+`10 expect()` calls, about 1.3s), and a direct serialized invocation of the
+same 30-file suite passed with `95 pass`, `0 fail`, and `890 expect()` calls in
+`46.65s`. The default package wrapper remains explicitly non-authoritative
+under this host’s process-load behavior; no test is skipped or disabled.
+
+## Private delivery/read receipt checkpoint (2026-07-26)
+
+This checkpoint adds the bounded single-device private delivery/read lifecycle
+needed by the private alpha. It is intentionally not a claim that the complete
+long-term messaging lifecycle exists: conversations, attachments, replies,
+reactions, edit/delete events, multi-device fan-out, independent ratchets,
+forward secrecy, and device-wide receipt transcripts remain deferred.
+
+The implementation uses the existing WSS-authenticated device session and the
+existing sealed-box private-message envelope. The server stores only receipt
+metadata (message ID, authenticated device IDs, status, sequence, and accepted
+time); it never receives private plaintext or ciphertext for a receipt. The
+client persists a separate receipt cursor and queues receipt frames durably
+while offline. Receipt invariants require recipient-only submission,
+delivered-before-read ordering, monotonic status, and idempotent retries.
+
+Focused protocol/server/client command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\apps\cocodex-server\tests\shared-state.test.ts `
+  .\apps\cocodex-server\tests\database-migration.test.ts `
+  .\apps\cocodex-server\tests\collaboration-server.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts `
+  .\tests\cocodex-private-mailbox.test.ts `
+  .\tests\cocodex-private-messaging.test.ts
+```
+
+Exit status: `0`; relevant output: `42 pass`, `0 fail`, `377 expect()` calls
+across seven files in `13.41s`. This covers migration 26, recipient-only and
+ordering rules, idempotency, ciphertext-only SQLite storage, real WSS receipt
+routing and recovery, independent mailbox cursors, sealed-box crypto, and
+renderer redaction/read controls.
+
+Real three-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `242 expect()` calls in
+`11.77s`. The harness used one real Server process and isolated Stephen/Kai
+Client processes, delivered and recovered the private message, acknowledged
+delivery, issued an explicit read receipt, restarted the Server, and recovered
+the sender-visible receipt in order.
+
+Static/security commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+```
+
+Both exited `0`; typecheck completed for protocol, Server, and root TypeScript,
+and the privacy scan reported `Privacy scan passed`. No CoCodex Server/client
+process or listener remained after the runs. The implementation delta is
+recorded in ADR 0034 and published in commit
+`c18dedde37ab83b6d4cdcb4a9065f3724847da20` on
+`feat/cocodex-foundation`.
+
+## Encrypted local private-history checkpoint (2026-07-26)
+
+Feature commit:
+`426ee9b716d6381e4870c0d047d89e73a64c1f4e` (`feat(cocodex): persist
+encrypted private history`).
+
+This bounded checkpoint adds ciphertext-only sender/recipient history,
+self-sealed sender copies, sender echo, offline restart replay, persisted
+delivery/read replay, authoritative Server-sequence ordering, local search,
+and renderer redaction. Staged/queued/accepted states reconcile a crash between
+the local history write and durable outbox write; an unqueued staged remnant is
+removed rather than presented as sent. Pending entries are never silently
+evicted at the 512-entry capacity boundary.
+
+Focused real-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `249 expect()` calls in
+`13.23s`. The harness ran one separate Server and isolated Stephen/Kai Client
+processes, restarted Stephen and recovered both private-message directions,
+proved plaintext canaries absent from `private-history.json`, then stopped the
+Server, restarted Kai offline, and recovered the sender copy, authoritative
+sequence, and persisted read receipt.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `126 pass`, `0 fail`, `1162 expect()` calls
+across 31 files. The command includes the real process harness and five focused
+history tests for ciphertext-only persistence, immutable acknowledgements,
+bounded accepted-message eviction, pending-message preservation, and
+staged/outbox crash reconciliation.
+
+Static, privacy, and executable commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`;
+Client and Server compiled to `dist/cocodex-client.exe` and
+`dist/cocodex-server.exe`.
+
+GUI commands:
+
+```powershell
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`; GUI tests reported `112 pass`, `0 fail`, and
+`550 expect()` calls. Lint retained the pre-existing
+`use-app-route-state.ts:84` hook warning and no errors. The production build
+completed with the existing large-chunk advisory.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. No
+CoCodex process or listener remained after the runs. This checkpoint does not
+claim conversations, replies, reactions, edit/delete events, attachments,
+multi-device fan-out, ratchets, forward secrecy, post-compromise recovery, or
+concurrent standalone-CLI/resident writes; ADR 0035 records those limits.
+
+## Verified private-contact checkpoint (2026-07-26)
+
+Feature commit:
+`32c51dcd195145ca6e93f6de594dad3b2549afed`
+(`feat(cocodex): add verified private contacts`).
+
+This checkpoint replaces manual recipient UUID/fingerprint/certificate entry
+with a bounded Server-authoritative directory of approved certificate-bearing
+devices. The resident Client verifies each self-signed certificate, keeps raw
+certificate/key material out of the renderer, binds the protected offline
+cache to the local device and authenticated Server authority, and requires an
+independently confirmed fingerprint before local trust. Certificate publication
+is idempotent and rate-limited.
+
+The adversarial repair also covers stale offline contacts: if a cached
+recipient is revoked, the terminal Server rejection removes only that
+ciphertext frame, marks its encrypted local-history entry **Not sent**, removes
+the stale resident contact, and continues draining later durable events.
+
+Real three-process command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 180000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `259 expect()` calls in
+`13.30s`. One real Server process and isolated Stephen/Kai Client processes
+discovered each other without exposing certificates, rejected a mismatched
+trust command, sent private ciphertext in both directions, restarted and used
+the authority-bound offline cache, then revoked cached Stephen. Kai visibly
+recovered the queued private message as rejected while a later queued shared
+chat event was accepted, proving the outbox did not head-of-line block.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `135 pass`, `0 fail`, `1214 expect()` calls
+across 33 files in `54.69s`. This includes strict protocol schemas, directory
+filtering, real WSS discovery/revocation, certificate-publication throttling,
+authority-bound cache validation, terminal outbox continuation, encrypted
+history rejection state, bridge redaction, and the process harness.
+
+Full existing OpenCodex regression command:
+
+```powershell
+$env:OCX_TEST_BATCH_SIZE='5'
+$env:OCX_TEST_WORKER_SIZE='50'
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; relevant output: all `343` root test files completed across
+seven fresh workers in `255s`. The initial unisolated `bun test` attempt
+exceeded its 15-minute outer command window and is not used as evidence; the
+repository's isolated batched harness completed successfully without disabled
+or skipped files.
+
+Static, privacy, and executable commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`.
+The separate applications compiled to `dist/cocodex-client.exe` and
+`apps/cocodex-server/dist/cocodex-server.exe`.
+
+GUI commands:
+
+```powershell
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`; GUI tests reported `115 pass`, `0 fail`, and
+`560 expect()` calls. Lint retained one pre-existing
+`use-app-route-state.ts:84` hook warning and no errors. The production build
+completed with the existing large-chunk advisory.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. A
+post-run process/listener check found no Bun, CoCodex Client, or CoCodex Server
+process and no associated listener. ADR 0036 records the selected architecture,
+security invariants, open-source concept references, licensing decision, and
+remaining deferred messaging lifecycle work.
+
+## Atomic encrypted Co-Project creation checkpoint (2026-07-26)
+
+Feature commit:
+`ed87ebfe46839d4a1dba5f79837e267b84f69fa3`
+(`feat(cocodex): create encrypted projects atomically`).
+
+This checkpoint removes Server-CLI project pre-seeding from the mandatory
+private-alpha path. The Stephen Client now creates a named project for a
+locally fingerprint-verified Kai device, generates and stages its epoch-one
+key and exact signed request in one protected local write, and sends one
+strict `project.create` request. One Server SQLite transaction commits the
+project, complete membership, epoch, and all addressed sealed-key envelopes.
+Exact replay is idempotent and does not rebroadcast. Transient rate-limit
+errors retain the durable signed intent and key for timed or reconnect replay.
+
+Real resident/WSS recovery command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-project-encryption-session.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `82 expect()` calls.
+The first test ran one Server and isolated Stephen/Kai resident Clients over
+real TLS/WSS, created the same encrypted project on both devices, consumed the
+12-attempt creation allowance, proved the thirteenth exact intent and local key
+remained durable after a retryable error, restarted the Server, and observed
+automatic completion of that same signed request.
+
+Real three-process command:
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-process.test.ts --timeout 120000
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `260 expect()` calls.
+The harness started a separate Server process and isolated Stephen/Kai Client
+processes with distinct directories, identities, accounts, database, and
+project roots. Stephen created the project through his Client, both sides
+received addressed epoch-one keys, both agent-execution directions streamed
+through shared chat, private ciphertext worked, and restart recovery completed.
+Resident output was scanned to prove sealed project keys were not emitted.
+
+Authoritative CoCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `139 pass`, `0 fail`, `1283 expect()` calls
+across 33 files in `57.32s`. This includes protocol transcript/schema tests,
+SQLite rollback and conflicting-replay tests, authenticated WSS rate/replay
+tests, protected-store fault injection, renderer redaction, GUI bridge tests,
+resident restart recovery, and the three-process path.
+
+Full existing OpenCodex regression command:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; durable output ended with
+`PASS: all 343 files completed across 14 fresh workers`. No file was disabled
+or skipped. An earlier batch attempt with one unexplained worker failure and
+an empty redirected recovery attempt are not used as completion evidence; the
+subsequent complete isolated run is the evidence.
+
+Static, privacy, executable, and GUI commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+cd gui
+..\node_modules\.bin\bun.exe test
+..\node_modules\.bin\bun.exe run lint
+..\node_modules\.bin\bun.exe run lint:i18n
+..\node_modules\.bin\bun.exe run build
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`;
+Client and Server produced separate executables. GUI tests reported
+`116 pass`, `0 fail`, and `563 expect()` calls. GUI lint retained the one
+pre-existing `use-app-route-state.ts:84` hook warning and no errors; the build
+retained the existing large-chunk advisory.
+
+The security recheck confirmed the single-write staging, signature binding,
+transaction rollback, addressed-envelope routing, replay suppression, GUI
+redaction, and retry recovery. ADR 0037 explicitly records the remaining
+private-alpha limit: a modified approved Client can add another approved device
+to a bounded unsolicited project because per-project recipient acceptance is
+deferred. The recipient will not open the envelope until it independently
+trusts the owner fingerprint, and membership alone cannot execute a command.
+
+`git diff --check` exited `0` apart from line-ending conversion notices. The
+post-run process check found no Bun, CoCodex Client, or CoCodex Server process.
+
+## Explicit encrypted project invitation checkpoint (2026-07-27)
+
+Feature commit: `6f139d5fbef192556fb335b2c4bb2716d60d3d7d`.
+
+This checkpoint supersedes the unsolicited-initial-membership limitation
+recorded in the preceding atomic-creation checkpoint. `project.create` is now
+owner-only. Stephen's Client can select a locally fingerprint-verified,
+project-capable Kai device and issue one owner-signed, expiring,
+current-epoch invitation with an addressed sealed project-key envelope. The
+Server stores the opaque pending row but does not add Kai. Kai's resident
+Client verifies Stephen's certificate, owner and envelope signatures, local
+trust, recipient binding, Server fingerprint, epoch, and expiry before
+enabling acceptance. Kai's signed acceptance inserts membership, the key
+envelope, accepted state, and audit event in one immediate SQLite
+transaction.
+
+The lifecycle also includes signed decline and owner cancellation, exact
+create/decision replay, canonical transcript hashing, time and pending limits,
+and auditable invalidation after expiry, device revocation,
+rotation-required state, or epoch advancement. A dedicated immutable creation
+record keeps the original owner-only `project.create` replay idempotent even
+after Kai later joins. Certificates, public-key payloads, sealed project keys,
+invitation signatures, and decrypted project keys are projected out before
+renderer delivery.
+
+Focused protocol, storage, WSS, enrollment, and renderer command:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\apps\cocodex-server\tests\enrollment.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-storage.test.ts `
+  .\apps\cocodex-server\tests\project-encryption-server.test.ts `
+  .\packages\cocodex-protocol\tests\protocol.test.ts `
+  .\tests\cocodex-gui-bridge.test.ts
+```
+
+Exit status: `0`; relevant output: `37 pass`, `0 fail`, `463 expect()` calls.
+The named storage test
+`requires an addressed signed acceptance before atomically adding membership
+and its key` proves unauthorized-before-acceptance, outsider rejection,
+acceptance and exact replay, decline, cancel, signature/envelope tamper
+rejection, time expiry, epoch invalidation, revocation invalidation, ciphertext
+storage, rollback, and audit rows. The named WSS test
+`creates owner-only over WSS, requires signed invitation acceptance, and
+rate-limits replay` uses two authenticated sockets and the production TLS/WSS
+frame handlers.
+
+Resident integration command:
+
+```powershell
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-project-encryption-session.test.ts
+```
+
+Exit status: `0`; relevant output: `3 pass`, `0 fail`, `88 expect()` calls.
+The first test uses isolated Stephen/Kai Client state and one real Server. Kai
+receives an empty authoritative project list and no local project key before
+acceptance. After the safe invitation DTO and explicit accept command, Kai
+receives member metadata and persists the acknowledged epoch-one key. Both
+resident event logs are scanned for sealed-key and certificate canaries.
+
+Mandatory three-process command:
+
+```powershell
+$env:COCODEX_TEST_TRACE='1'
+.\node_modules\.bin\bun.exe test `
+  .\tests\cocodex-private-alpha-process.test.ts
+```
+
+Exit status: `0`; relevant output: `1 pass`, `0 fail`, `265 expect()` calls.
+The test compiles and starts a separate CoCodex Server executable, Stephen
+Client executable, and Kai Client executable with independent state roots,
+identities, accounts, workspaces, and the real TLS/WSS transport. Its
+authoritative database read proves only the owner member exists before Kai
+accepts. The rest of the same path proves bidirectional host-local agent
+execution, ordered encrypted shared chat, private ciphertext and explicit
+agent share, offline shared/private queues, Server restart, ordered recovery,
+and local private-history recovery.
+
+Authoritative CoCodex regression:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:cocodex
+```
+
+Exit status: `0`; relevant output: `140 pass`, `0 fail`, `1354 expect()` calls
+across 33 files. No test was disabled or skipped.
+
+Full inherited OpenCodex regression:
+
+```powershell
+.\node_modules\.bin\bun.exe run test:batched
+```
+
+Exit status: `0`; relevant output:
+`PASS: all 343 files completed` across 14 fresh workers. This is the
+repository's isolated whole-suite runner; no inherited test file was removed
+or disabled.
+
+Static, privacy, executable, and GUI commands:
+
+```powershell
+.\node_modules\.bin\bun.exe run typecheck:cocodex
+.\node_modules\.bin\bun.exe run privacy:scan
+.\node_modules\.bin\bun.exe run build:cocodex-client
+.\node_modules\.bin\bun.exe run build:cocodex-server
+.\node_modules\.bin\bun.exe run --cwd gui test
+.\node_modules\.bin\bun.exe run --cwd gui lint
+.\node_modules\.bin\bun.exe run --cwd gui lint:i18n
+.\node_modules\.bin\bun.exe run --cwd gui build
+```
+
+Every command exited `0`. The privacy scan reported `Privacy scan passed`.
+The Client and Server compiled as separate executables. GUI tests reported
+`116 pass`, `0 fail`, and `563 expect()` calls. GUI lint retained one
+pre-existing `use-app-route-state.ts:84` hook warning and no errors; the
+production build retained the existing large-chunk advisory.
+
+Primary files:
+
+- `packages/cocodex-protocol/src/project-invitation.ts`
+- `apps/cocodex-server/src/project-invitations.ts`
+- `apps/cocodex-server/src/project-encryption-storage.ts`
+- `apps/cocodex-server/src/server.ts`
+- `src/cocodex/session.ts`
+- `src/cocodex/gui-bridge.ts`
+- `gui/src/pages/CoCodex.tsx`
+- `apps/cocodex-server/tests/project-encryption-storage.test.ts`
+- `apps/cocodex-server/tests/project-encryption-server.test.ts`
+- `tests/cocodex-project-encryption-session.test.ts`
+- `tests/cocodex-private-alpha-process.test.ts`
+- ADR 0038 and the Client/Server architecture documentation
+
+`git diff --check` exited `0` apart from line-ending conversion notices. The
+post-run audit found no surviving CoCodex test process or dedicated listener.
+
+Known limit: a committed invitation or accepted membership recovers through
+the authoritative invitation/project/key lists after either process restarts.
+An invite create/respond/cancel frame that was prepared but never received by
+the Server is exact-replayed across a same-resident transport reconnect, but
+that pending action is not yet stored in a protected client outbox across a
+Client process crash. It is not counted as durable offline invitation-action
+delivery in this checkpoint.
+
+## Offline host-local Codex continuity checkpoint (2026-07-27)
+
+The mandatory three-process harness now executes an official Codex turn on
+Kai's still-running Client while the separate CoCodex Server process is
+confirmed terminated. The Client uses Kai's isolated account fixture and
+workspace, streams the local result, writes the runtime fixture's filesystem
+marker, and increments Kai's protected local usage summary. A read-only SQLite
+before/after check proves that no authoritative Server task was created.
+
+The same resident Kai and Stephen Client PIDs then queue shared and encrypted
+private messages, reconnect after Server restart, and recover those events in
+order. The focused process run passed with `1 pass`, `0 fail`, and `280
+expect()` calls. `bun run test:cocodex` passed with `156 pass`, `0 fail`, and
+`1434 expect()` calls across 35 files. `typecheck:cocodex`, the separate Client
+build, and the privacy scan each exited `0`.
+
+See ADR 0043 and `docs/evidence/offline-local-codex-continuity.md`.

@@ -10,6 +10,8 @@ import localI18nPlugin from './.eslint/local-i18n-plugin.ts'
 export default defineConfig([
   globalIgnores([
     'dist',
+    'src-tauri/gen/**',
+    'src-tauri/target/**',
     'src/i18n/**',
     '**/*.test.ts',
     '**/*.test.tsx',

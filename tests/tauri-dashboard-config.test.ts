@@ -1,0 +1,75 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, test } from "bun:test";
+import {
+  parseRustHostTriple,
+  serverSidecarOutputPath,
+  sidecarOutputPath,
+  validateTargetTriple,
+} from "../scripts/build-tauri-sidecar";
+
+const repoRoot = resolve(import.meta.dir, "..");
+
+function readJson(relativePath: string): Record<string, any> {
+  return JSON.parse(readFileSync(resolve(repoRoot, relativePath), "utf8")) as Record<string, any>;
+}
+
+describe("CoCodex Tauri dashboard configuration", () => {
+  test("bundles the managed runtime without granting webview shell access", () => {
+    const config = readJson("gui/src-tauri/tauri.conf.json");
+    const capabilities = readJson("gui/src-tauri/capabilities/default.json");
+    const cargoManifest = readFileSync(resolve(repoRoot, "gui/src-tauri/Cargo.toml"), "utf8");
+    const nativeMain = readFileSync(resolve(repoRoot, "gui/src-tauri/src/main.rs"), "utf8");
+
+    expect(config.productName).toBe("CoCodex");
+    expect(config.identifier).toBe("com.cocodex.desktop");
+    expect(config.build.frontendDist).toBe("../dist");
+    expect(config.build.devUrl).toBe("http://127.0.0.1:4179");
+    expect(config.build.beforeDevCommand).toContain("dev-tauri.ts");
+    expect(config.build.beforeBuildCommand).toContain("build-tauri-frontend.ts");
+    expect(config.app.windows).toHaveLength(1);
+    expect(config.app.windows[0].label).toBe("main");
+    expect(config.app.windows[0].visible).toBe(false);
+    expect(config.bundle.externalBin).toEqual(["binaries/cocodex-runtime", "binaries/cocodex-server"]);
+    for (const icon of config.bundle.icon as string[]) {
+      expect(existsSync(resolve(repoRoot, "gui/src-tauri", icon))).toBe(true);
+    }
+    expect(capabilities.windows).toEqual(["main"]);
+    expect(capabilities.permissions).toEqual(["core:default", "notification:default"]);
+    expect(capabilities.permissions).not.toContain("shell:default");
+    expect(capabilities.permissions).not.toContain("shell:allow-execute");
+    expect(cargoManifest).toContain('tauri-plugin-notification = "2"');
+    expect(nativeMain).toContain("tauri_plugin_notification::init()");
+    expect(cargoManifest).toContain('tauri-plugin-shell = "2"');
+    expect(nativeMain).toContain('.sidecar("cocodex-runtime")');
+    expect(nativeMain).toContain('.sidecar("cocodex-server")');
+    expect(nativeMain).toContain("desktop_server_prepare");
+    expect(nativeMain).toContain("desktop_server_bootstrap_approve");
+    expect(nativeMain).toContain("server_port_is_protected");
+    expect(nativeMain).toContain("stop_owned_runtime");
+    expect(nativeMain).toContain("window.location.hash = '#cocodex'");
+    expect(nativeMain).toContain("const MANAGED_PORT_START: u16 = 10101");
+    expect(nativeMain).toContain("const MANAGED_PORT_END: u16 = 10120");
+    expect(nativeMain).toContain('.env("COCODEX_HOME", &cocodex_home)');
+    expect(nativeMain).toContain('.env("OPENCODEX_HOME", &opencodex_home)');
+    const csp = String(config.app.security.csp);
+    expect(csp).not.toContain("127.0.0.1:10100");
+    for (let port = 10101; port <= 10120; port += 1) {
+      expect(csp).toContain(`http://127.0.0.1:${port}`);
+    }
+  });
+
+  test("derives the external-binary filename from a validated Rust target", () => {
+    expect(parseRustHostTriple("rustc 1.97.1\nhost: x86_64-pc-windows-msvc\n")).toBe(
+      "x86_64-pc-windows-msvc",
+    );
+    expect(validateTargetTriple("aarch64-apple-darwin")).toBe("aarch64-apple-darwin");
+    expect(() => validateTargetTriple("../escape")).toThrow("invalid Rust target triple");
+    expect(serverSidecarOutputPath("x86_64-pc-windows-msvc")).toEndWith(
+      "cocodex-server-x86_64-pc-windows-msvc.exe",
+    );
+    expect(sidecarOutputPath("x86_64-pc-windows-msvc")).toEndWith(
+      "cocodex-runtime-x86_64-pc-windows-msvc.exe",
+    );
+  });
+});

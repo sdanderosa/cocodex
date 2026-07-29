@@ -6,6 +6,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const safeInjectionDeps = `{
+  proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
+  verifyPidIdentity: pid => pid,
+  diagnoseService: () => ({ supported: true, installed: true, enabled: true, running: true, viable: true, startable: true, stale: false, conflict: false, backend: "scheduler", summary: "test service" }),
+  diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
+}`;
 
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
@@ -194,7 +201,7 @@ describe("codex-journal", () => {
     const r = runScript(testDir, `
       const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
       (async () => {
-        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null, safetyDeps: ${safeInjectionDeps} });
         const result = restoreNativeCodex();
         console.log(JSON.stringify({ success: result.success }));
       })();
@@ -214,7 +221,7 @@ describe("codex-journal", () => {
       const path = require("path");
       const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
       (async () => {
-        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null, safetyDeps: ${safeInjectionDeps} });
         fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
         const result = restoreNativeCodex();
         console.log(JSON.stringify({ success: result.success, message: result.message }));
@@ -240,7 +247,7 @@ describe("codex-journal", () => {
       const path = require("path");
       const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");
       (async () => {
-        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null });
+        await injectCodexConfig(10100, { port: 10100, providers: {}, defaultProvider: "openai" }, { catalogPath: null, safetyDeps: ${safeInjectionDeps} });
         fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
         const result = restoreNativeCodex();
         console.log(JSON.stringify({ success: result.success, message: result.message }));
@@ -276,5 +283,63 @@ describe("codex-journal", () => {
     expect(JSON.parse(r2.stdout).restored).toBe(true);
     expect(readFileSync(join(testDir, "config.toml"), "utf8")).toContain("original config");
     expect(existsSync(journalPath)).toBe(false);
+  });
+
+  test("startup stale-injection recovery strips owned localhost routing but preserves later user edits", () => {
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-journal-opencodex-"));
+    const cliConfig = {
+      port: 10100,
+      hostname: "127.0.0.1",
+      codexAutoStart: false,
+      syncResumeHistory: false,
+      providers: {},
+      defaultProvider: "openai",
+    };
+    writeFileSync(join(opencodexHome, "config.json"), JSON.stringify(cliConfig), "utf8");
+    const prepare = spawnSync(process.execPath, ["--eval", `
+      const fs = require("fs");
+      const { injectCodexConfig } = require("./src/codex/inject");
+      const config = ${JSON.stringify(cliConfig)};
+      const safetyDeps = {
+        proxyIdentityAt: async () => ({ pid: 1234 }),
+      proxyReadinessAt: async () => ({ ok: true, pid: 1234, provider: "openai", accountMode: "direct", code: "ready", message: "ready", canUseDirect: true }),
+        verifyPidIdentity: pid => pid,
+        diagnoseService: () => ({ supported: true, installed: true, enabled: true, running: true, viable: true, startable: true, stale: false, conflict: false, backend: "scheduler", summary: "test service" }),
+        diagnoseCodexShim: () => ({ installed: false, healthy: false, summary: "not installed" }),
+      };
+      injectCodexConfig(10100, config, { catalogPath: null, safetyDeps }).then(result => {
+        fs.appendFileSync(require("path").join(process.env.CODEX_HOME, "config.toml"), "\\n[tools]\\nweb_search = true\\n", "utf8");
+        console.log(JSON.stringify(result));
+      });
+    `], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CODEX_HOME: testDir,
+        OPENCODEX_HOME: opencodexHome,
+      },
+      encoding: "utf8",
+    });
+    expect(prepare.status).toBe(0);
+
+    const recovered = spawnSync(process.execPath, [join(repoRoot, "src", "cli", "index.ts"), "ensure"], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CODEX_HOME: testDir,
+        OPENCODEX_HOME: opencodexHome,
+        COCODEX_HOME: join(opencodexHome, "cocodex"),
+      },
+      encoding: "utf8",
+    });
+    try {
+      expect(recovered.status).toBe(1);
+      const config = readFileSync(join(testDir, "config.toml"), "utf8");
+      expect(config).not.toContain("localhost:10100");
+      expect(config).toContain("[tools]");
+      expect(config).toContain("web_search = true");
+    } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
+    }
   });
 });

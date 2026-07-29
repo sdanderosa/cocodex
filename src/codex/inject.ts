@@ -6,6 +6,7 @@ import { migrateHistoryToOpenai, syncCodexHistoryProvider } from "./history-prov
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH, DEFAULT_CATALOG_PATH, parseTomlString, readRootTomlString, resolveCodexConfigPath, tomlString } from "./paths";
 import { resolveEffectiveProjectModelProvider } from "./project-config-warnings";
 import type { OcxConfig } from "../types";
+import { verifyInjectionReadiness, type InjectionSafetyDeps } from "./injection-guard";
 
 const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
 
@@ -54,6 +55,29 @@ export interface InjectCodexOptions {
    * failing on a missing model_catalog_json file.
    */
   catalogPath?: string | null;
+  /** Injectable diagnostics used by focused safety tests. Production callers omit this. */
+  safetyDeps?: InjectionSafetyDeps;
+  /** Atomic writer seam for configuration-write rollback tests. */
+  atomicWrite?: typeof atomicWriteFile;
+}
+
+function incompleteInjection(message: string): { success: false; message: string } {
+  let restored: { success: boolean; message: string };
+  try {
+    restored = restoreNativeCodex();
+  } catch (error) {
+    return {
+      success: false,
+      message: `CoCodex setup incomplete: ${message}. Native Codex restoration FAILED: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  return {
+    success: false,
+    message: `CoCodex setup incomplete: ${message}. `
+      + (restored.success
+        ? `Native Codex configuration restored. ${restored.message}`
+        : `Native Codex restoration FAILED: ${restored.message}`),
+  };
 }
 
 /**
@@ -507,8 +531,24 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
     return { success: false, message: `Codex config not found at ${CODEX_CONFIG_PATH}. Is Codex installed?` };
   }
 
-  const rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
-  const activeProvider = externalCodexModelProvider(rawContent);
+  let rawContent: string;
+  try {
+    rawContent = readFileSync(CODEX_CONFIG_PATH, "utf-8");
+  } catch (error) {
+    return {
+      success: false,
+      message: `CoCodex setup incomplete: could not read Codex configuration: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  let activeProvider: string | null;
+  try {
+    activeProvider = externalCodexModelProvider(rawContent);
+  } catch (error) {
+    return {
+      success: false,
+      message: `CoCodex setup incomplete: could not parse Codex configuration: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (activeProvider) {
     // A launcher may have journaled before the provider manager took ownership. Never let shutdown
     // replay that stale snapshot over externally managed config.
@@ -523,103 +563,144 @@ export async function injectCodexConfig(port: number, config?: OcxConfig, option
     };
   }
 
-  writeJournal();
-  // EOL boundary: transforms below are LF-pure; preserve the file's dominant ending on write.
-  const eol = dominantEol(rawContent);
-  let content = applyEol(rawContent, "\n");
-
-  // Idempotent clean-up of any prior injection: drop the provider table (marker-based) and every
-  // stray/mis-nested model_provider line, so re-injecting can't duplicate keys or leave the buggy
-  // table-nested key behind.
-  // Design B form FIRST: removeOcxSection also keys on the marker line, so a root-level
-  // marker + openai_base_url pair must be gone before it scans or it would swallow root keys.
-  content = stripInjectedOpenaiBaseUrl(content);
-  if (content.includes("[model_providers.opencodex]")) {
-    content = removeOcxSection(content);
+  let safetyConfig: OcxConfig;
+  try {
+    safetyConfig = config ?? loadConfig();
+  } catch (error) {
+    return incompleteInjection(`could not read lifecycle configuration: ${error instanceof Error ? error.message : String(error)}`);
   }
-  content = removeProfileSection(content);
-  content = stripExistingModelProvider(content);
-  content = stripRootContextWindowOverrides(content);
-  content = normalizeServiceTier(content);
-  content = ensureFastModeFeature(content);
-
-  const catalogPath = chooseCatalogPathForInjection(content, options.catalogPath);
-  content = catalogPath ? setRootModelCatalogPath(content, catalogPath) : stripOpencodexCatalogPath(content);
-
-  const legacyMode = shouldInjectApiAuthHeader(config);
-  let keptUserBaseUrl = false;
-  if (legacyMode) {
-    // Legacy (non-loopback) injection: the built-in openai provider cannot carry the
-    // x-opencodex-api-key env header, so keep the opencodex provider table + root re-tag.
-    // 1) Root key BEFORE the first table header (must be a global, not nested under a table).
-    content = setRootModelProvider(content);
-    // 2) Provider table appended at EOF (position-independent).
-    content = content.trimEnd() + "\n" + buildProviderTableBlock(port, websocketsEnabled(config ?? {}), true, config?.hostname);
-  } else {
-    // Design B (loopback): a single root override; codex keeps its native `openai` provider id
-    // so thread history is never remapped. Any legacy form was already stripped above.
-    content = stripInjectedOpenaiBaseUrl(content); // normalize before idempotent re-insert
-    const result = setRootOpenaiBaseUrl(content, port, config?.hostname);
-    content = result.content;
-    keptUserBaseUrl = result.keptUserBaseUrl;
+  try {
+    // This journal is the exact pre-attempt native snapshot. It is created
+    // before any persistent routing write and retained until native restore.
+    writeJournal();
+  } catch (error) {
+    return incompleteInjection(`could not save the exact native Codex backup: ${error instanceof Error ? error.message : String(error)}`);
   }
+  let readiness: Awaited<ReturnType<typeof verifyInjectionReadiness>>;
+  try {
+    readiness = await verifyInjectionReadiness(port, safetyConfig, options.safetyDeps);
+  } catch (error) {
+    return incompleteInjection(`proxy readiness verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!readiness.ok) return incompleteInjection(readiness.message);
+  const effectiveConfig = safetyConfig;
+  try {
+    // EOL boundary: transforms below are LF-pure; preserve the file's dominant ending on write.
+    const eol = dominantEol(rawContent);
+    let content = applyEol(rawContent, "\n");
 
-  const profileContent = buildProfileFile(port, catalogPath, websocketsEnabled(config ?? {}), legacyMode, config?.hostname);
-  content = applyEol(content, eol);
-  atomicWriteFile(CODEX_CONFIG_PATH, content);
-  atomicWriteFile(CODEX_PROFILE_PATH, profileContent);
-  markJournalInjectedState(content, profileContent);
-  // Legacy mode still forward-tags history so re-tagged threads stay listable. Design B needs
-  // the opposite: a one-time migration of previously re-tagged threads BACK to openai (restore
-  // machinery; cheap no-op when there is nothing to migrate).
-  const history = config?.syncResumeHistory !== false
-    ? (legacyMode ? syncCodexHistoryProvider("opencodex") : migrateHistoryToOpenai())
-    : { rows: 0, files: 0 };
+    // Idempotent clean-up of any prior injection: drop the provider table (marker-based) and every
+    // stray/mis-nested model_provider line, so re-injecting can't duplicate keys or leave the buggy
+    // table-nested key behind.
+    // Design B form FIRST: removeOcxSection also keys on the marker line, so a root-level
+    // marker + openai_base_url pair must be gone before it scans or it would swallow root keys.
+    content = stripInjectedOpenaiBaseUrl(content);
+    if (content.includes("[model_providers.opencodex]")) {
+      content = removeOcxSection(content);
+    }
+    content = removeProfileSection(content);
+    content = stripExistingModelProvider(content);
+    content = stripRootContextWindowOverrides(content);
+    content = normalizeServiceTier(content);
+    content = ensureFastModeFeature(content);
 
-  const catalogMessage = catalogPath
-    ? `  Codex model catalog: ${catalogPath}\n`
-    : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
-  const migratedRows = (history.rows ?? 0) + ("ejectedRows" in history ? history.ejectedRows ?? 0 : 0);
-  const historyMessage = config?.syncResumeHistory === false
-    ? `  Codex resume history: left unchanged (syncResumeHistory=false).\n`
-    : history.failed
-      ? (legacyMode
-        ? `  ⚠️ Codex resume history sync SKIPPED: the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'.\n`
-        // Honest in every caller context: the daemon retries in the background while it runs,
-        // and this inject path re-runs the migration on every future start/sync anyway.
-        : `  ⚠️ Codex resume history migration deferred: the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'.\n`)
-      : legacyMode
-        ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
-        : migratedRows > 0
-          ? `  Codex resume history: ${migratedRows} legacy opencodex-tagged thread(s) migrated back to openai (one-time).\n`
-          : `  Codex resume history: untouched (threads keep their native openai tag).\n`;
-  // A user-owned root openai_base_url means we did NOT install routing — say so honestly
-  // instead of claiming the proxy route is active (catalog/fast_mode were still written).
-  if (keptUserBaseUrl) {
+    const catalogPath = chooseCatalogPathForInjection(content, options.catalogPath);
+    content = catalogPath ? setRootModelCatalogPath(content, catalogPath) : stripOpencodexCatalogPath(content);
+
+    const legacyMode = shouldInjectApiAuthHeader(effectiveConfig);
+    let keptUserBaseUrl = false;
+    if (legacyMode) {
+      // Legacy (non-loopback) injection: the built-in openai provider cannot carry the
+      // x-opencodex-api-key env header, so keep the opencodex provider table + root re-tag.
+      // 1) Root key BEFORE the first table header (must be a global, not nested under a table).
+      content = setRootModelProvider(content);
+      // 2) Provider table appended at EOF (position-independent).
+      content = content.trimEnd() + "\n" + buildProviderTableBlock(port, websocketsEnabled(effectiveConfig), true, effectiveConfig.hostname);
+    } else {
+      // Design B (loopback): a single root override; codex keeps its native `openai` provider id
+      // so thread history is never remapped. Any legacy form was already stripped above.
+      content = stripInjectedOpenaiBaseUrl(content); // normalize before idempotent re-insert
+      const result = setRootOpenaiBaseUrl(content, port, effectiveConfig.hostname);
+      content = result.content;
+      keptUserBaseUrl = result.keptUserBaseUrl;
+    }
+
+    const profileContent = buildProfileFile(port, catalogPath, websocketsEnabled(effectiveConfig), legacyMode, effectiveConfig.hostname);
+    content = applyEol(content, eol);
+    const atomicWrite = options.atomicWrite ?? atomicWriteFile;
+    try {
+      atomicWrite(CODEX_CONFIG_PATH, content);
+      atomicWrite(CODEX_PROFILE_PATH, profileContent);
+      markJournalInjectedState(content, profileContent);
+    } catch (error) {
+      return incompleteInjection(`atomic configuration write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Close the verification-to-write race before any history migration or success message. If the
+    // proxy crashed or its protection disappeared while files were being updated, roll back first.
+    const postWriteReadiness = await verifyInjectionReadiness(port, effectiveConfig, options.safetyDeps);
+    if (!postWriteReadiness.ok) return incompleteInjection(`post-injection verification failed: ${postWriteReadiness.message}`);
+
+    // Legacy mode still forward-tags history so re-tagged threads stay listable. Design B needs
+    // the opposite: a one-time migration of previously re-tagged threads BACK to openai (restore
+    // machinery; cheap no-op when there is nothing to migrate).
+    const history = effectiveConfig.syncResumeHistory !== false
+      ? (legacyMode ? syncCodexHistoryProvider("opencodex") : migrateHistoryToOpenai())
+      : { rows: 0, files: 0 };
+
+    // History migration can hold a DB lock long enough for the proxy or its startup protection to
+    // disappear. Recheck at the transaction boundary so a successful file write is never reported
+    // as safe after the serving process has gone away.
+    const postHistoryReadiness = await verifyInjectionReadiness(port, effectiveConfig, options.safetyDeps);
+    if (!postHistoryReadiness.ok) return incompleteInjection(`post-injection verification failed: ${postHistoryReadiness.message}`);
+
+    const catalogMessage = catalogPath
+      ? `  Codex model catalog: ${catalogPath}\n`
+      : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
+    const migratedRows = (history.rows ?? 0) + ("ejectedRows" in history ? history.ejectedRows ?? 0 : 0);
+    const historyMessage = effectiveConfig.syncResumeHistory === false
+      ? `  Codex resume history: left unchanged (syncResumeHistory=false).\n`
+      : history.failed
+        ? (legacyMode
+          ? `  ⚠️ Codex resume history sync SKIPPED: the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'.\n`
+          // Honest in every caller context: the daemon retries in the background while it runs,
+          // and this inject path re-runs the migration on every future start/sync anyway.
+          : `  ⚠️ Codex resume history migration deferred: the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'.\n`)
+        : legacyMode
+          ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
+          : migratedRows > 0
+            ? `  Codex resume history: ${migratedRows} legacy opencodex-tagged thread(s) migrated back to openai (one-time).\n`
+            : `  Codex resume history: untouched (threads keep their native openai tag).\n`;
+    // A user-owned root openai_base_url means we did NOT install routing — say so honestly
+    // instead of claiming the proxy route is active (catalog/fast_mode were still written).
+    if (keptUserBaseUrl) {
+      return {
+        success: true,
+        message: `⚠️ Codex routing NOT injected: your config already sets a root openai_base_url, and opencodex never overwrites a user-owned override.\n` +
+          catalogMessage +
+          historyMessage +
+          `  To route plain codex through the proxy, remove your openai_base_url line from ~/.codex/config.toml and rerun 'ocx start'.\n` +
+          `  Reference config: ${CODEX_PROFILE_PATH}`,
+      };
+    }
+    const headline = legacyMode
+      ? `Injected opencodex as default provider into Codex config.\n`
+      : `Pointed Codex's built-in openai provider at the opencodex proxy (openai_base_url).\n`;
     return {
       success: true,
-      message: `⚠️ Codex routing NOT injected: your config already sets a root openai_base_url, and opencodex never overwrites a user-owned override.\n` +
+      message: headline +
         catalogMessage +
         historyMessage +
-        `  To route plain codex through the proxy, remove your openai_base_url line from ~/.codex/config.toml and rerun 'ocx start'.\n` +
-        `  Reference config: ${CODEX_PROFILE_PATH}`,
+        `  All models now route through opencodex proxy (like OpenRouter).\n` +
+        `  OpenAI models (gpt-5.5, etc.) are passed through to OpenAI.\n` +
+        `  Custom models route to their configured providers.\n` +
+        (legacyMode
+          ? `  Fallback: codex --profile opencodex (same behavior)`
+          : `  Fallback reference: ${CODEX_PROFILE_PATH}`),
     };
+  } catch (error) {
+    return incompleteInjection(`injection transaction failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const headline = legacyMode
-    ? `Injected opencodex as default provider into Codex config.\n`
-    : `Pointed Codex's built-in openai provider at the opencodex proxy (openai_base_url).\n`;
-  return {
-    success: true,
-    message: headline +
-      catalogMessage +
-      historyMessage +
-      `  All models now route through opencodex proxy (like OpenRouter).\n` +
-      `  OpenAI models (gpt-5.5, etc.) are passed through to OpenAI.\n` +
-      `  Custom models route to their configured providers.\n` +
-      (legacyMode
-        ? `  Fallback: codex --profile opencodex (same behavior)`
-        : `  Fallback reference: ${CODEX_PROFILE_PATH}`),
-  };
 }
 
 function removeOcxSection(content: string): string {

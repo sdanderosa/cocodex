@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests } from "../src/codex/catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, setProviderModelsFetchForTests } from "../src/codex/catalog";
 import {
   CURSOR_STATIC_MODELS,
   filterCursorConfiguredModelsByLiveDiscovery,
@@ -29,6 +29,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  setProviderModelsFetchForTests(null);
   clearModelCache();
   resetOpenAiApiCatalogWarningStateForTests();
 });
@@ -419,14 +420,17 @@ describe("combo catalog capability intersection", () => {
         "a/m1", "b/m2", "combo/mixed",
       ]);
       expect(filterCatalogVisibleModels(first, config).some(model => model.id === "mixed")).toBe(false);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]?.[0])).toContain("[REDACTED]");
-      expect(String(warn.mock.calls[0]?.[0])).not.toContain(warningSentinel);
+      const comboWarnings = () => warn.mock.calls
+        .map(call => String(call[0]))
+        .filter(message => message.startsWith('[opencodex] Combo "'));
+      expect(comboWarnings()).toHaveLength(1);
+      expect(comboWarnings()[0]).toContain("[REDACTED]");
+      expect(comboWarnings()[0]).not.toContain(warningSentinel);
       expect(second).toEqual(first);
 
       resetCatalogRuntimeStateForTests();
       await gatherRoutedModels(config);
-      expect(warn).toHaveBeenCalledTimes(2);
+      expect(comboWarnings()).toHaveLength(2);
     } finally {
       warn.mockRestore();
     }
@@ -1097,8 +1101,9 @@ describe("Codex catalog routed normalization", () => {
 
   test("failed discovery falls back to defaultModel when no static models are configured (#308)", async () => {
     clearModelCache("anthropic-compatible-default");
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response("not found", { status: 404 })) as typeof fetch;
+    setProviderModelsFetchForTests(
+      (async () => new Response("not found", { status: 404 })) as typeof fetch,
+    );
     try {
       const models = await gatherRoutedModels({
         providers: {
@@ -1116,17 +1121,18 @@ describe("Codex catalog routed normalization", () => {
         "anthropic-compatible-default/claude-sonnet-5",
       ]);
     } finally {
-      globalThis.fetch = originalFetch;
+      setProviderModelsFetchForTests(null);
       clearModelCache("anthropic-compatible-default");
     }
   });
 
   test("successful live discovery stays authoritative over the defaultModel fallback", async () => {
     clearModelCache("anthropic-compatible-live");
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({
-      data: [{ id: "live-claude-model" }],
-    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    setProviderModelsFetchForTests(
+      (async () => new Response(JSON.stringify({
+        data: [{ id: "live-claude-model" }],
+      }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
+    );
     try {
       const models = await gatherRoutedModels({
         providers: {
@@ -1142,7 +1148,7 @@ describe("Codex catalog routed normalization", () => {
 
       expect(models.map(model => model.id)).toEqual(["live-claude-model"]);
     } finally {
-      globalThis.fetch = originalFetch;
+      setProviderModelsFetchForTests(null);
       clearModelCache("anthropic-compatible-live");
     }
   });

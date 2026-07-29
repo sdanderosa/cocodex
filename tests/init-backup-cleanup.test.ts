@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupOpenAiTierBackupAfterInit } from "../src/cli/init";
+import { buildInitConfig, cleanupOpenAiTierBackupAfterInit } from "../src/cli/init";
 import { classifyOpenAiTierBackup } from "../src/config";
 
 describe("cleanupOpenAiTierBackupAfterInit", () => {
@@ -87,5 +87,44 @@ describe("cleanupOpenAiTierBackupAfterInit", () => {
     expect(classifyOpenAiTierBackup(enc("garbage"))).toBe("stale");
     expect(classifyOpenAiTierBackup(enc(JSON.stringify({ openaiProviderTierVersion: 1 })))).toBe("rollback");
     expect(classifyOpenAiTierBackup(enc(JSON.stringify({})))).toBe("rollback");
+  });
+});
+describe("init account-mode preservation", () => {
+  const directConfig = {
+    port: 10100,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as const;
+
+  test("preserves Direct when OpenAI is selected again", () => {
+    const result = buildInitConfig(
+      directConfig,
+      10100,
+      "openai",
+      {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+      },
+    );
+    expect(result.providers.openai?.codexAccountMode).toBe("direct");
+  });
+
+  test("preserves the OpenAI row and Direct mode when another provider is selected", () => {
+    const result = buildInitConfig(
+      directConfig,
+      10100,
+      "custom",
+      { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "test-only" },
+    );
+    expect(result.defaultProvider).toBe("custom");
+    expect(result.providers.openai?.codexAccountMode).toBe("direct");
   });
 });

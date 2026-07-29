@@ -1,0 +1,172 @@
+# Verified Windows private-alpha distribution evidence
+
+- Date: 2026-07-27
+- Branch: `feat/cocodex-foundation`
+- Base commit: `1c323a20`
+- Implementation commit: recorded by the commit containing this file
+- Status: hardened clean-commit build and exact installed lifecycle passed;
+  final GitHub publication remains maintainer-dispatch-only
+
+## Artifact under test
+
+The local release builder produced:
+
+```text
+dist/private-alpha/0.1.0-alpha.1/
+  Install-CoCodex.ps1
+  RELEASE.json
+  SHA256SUMS.txt
+  sdanderosa-cocodex-0.1.0-alpha.1.tgz
+```
+
+The earlier development archive was intentionally invalidated by the
+distribution security review. No pre-commit digest is an operator artifact.
+The final clean-commit archive records its own SHA-256, source commit/tree, GUI
+digest, and dependency-lock digest in the same manually approved GitHub
+artifact. Operators must use those values from that downloaded bundle.
+The accepted application archive SHA-256 is
+`37f91be08b4972a937d596c0af40de50a7b0d94c2968f37cf1692b2a1403e7d7`;
+`RELEASE.json` binds it to the final source commit containing this evidence.
+
+## Focused package tests
+
+```powershell
+.\node_modules\.bin\bun.exe test --max-concurrency=1 `
+  .\tests\cocodex-private-alpha-package.test.ts `
+  .\tests\update-job.test.ts `
+  .\apps\cocodex-server\tests\cli-process.test.ts
+```
+
+Exit status `0`: 29 focused tests, 0 failures in the independent distribution
+review, followed by 6 package-security tests with 482 assertions after the
+review repairs. The package tests prove the CoCodex package name, command
+manifest, unchanged runtime dependencies, required release inputs,
+checksum-before-install ordering, real PowerShell tamper rejection, and the
+CoCodex-to-upstream update gate. The process tests prove a health-verified real
+Server restart and cleanup after failed listener startup.
+
+The complete hardened CoCodex suite subsequently passed with 172 tests, 0
+failures, and 1,996 assertions. That run includes the real three-process
+Stephen/Kai private-alpha recovery test.
+
+A later loaded run exposed the mailbox-receipt poller's anomalous 10-second
+timeout versus the harness-wide 30-second bound. After aligning that bound, the
+real three-process private-alpha test passed three consecutive repetitions
+(36.6 s, 37.1 s, and 37.5 s).
+
+## Exact installer with standard npm
+
+An isolated npm 11.6.2 runtime and Node 24.14.0 installed the earlier exact
+development archive into
+a repository-local temporary prefix:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\dist\private-alpha\0.1.0-alpha.1\Install-CoCodex.ps1 `
+  -Action Install `
+  -PackagePath .\dist\private-alpha\0.1.0-alpha.1\sdanderosa-cocodex-0.1.0-alpha.1.tgz `
+  -ChecksumPath .\dist\private-alpha\0.1.0-alpha.1\SHA256SUMS.txt `
+  -NpmPrefix .\tmp\private-alpha-npm-install `
+  -SkipPathUpdate
+```
+
+Exit status `0` for the pre-review archive. The final locked-root install used
+Node 24.14.0 and pinned npm 10.9.4, added 127 packages, and all five commands
+passed. The hardened follow-up additionally rejects a wrong
+checksum-valid package before npm, pins the complete npm dependency graph, and
+requires exact installed package/lock identity. The release workflow repeats
+the exact installed lifecycle on both the minimum supported Node 22.12 runtime
+with npm 10 and current Node 24. An artifact is not operator-ready unless that
+workflow or the equivalent local clean-commit lifecycle succeeds.
+
+The hardened installed-tree verifier deliberately caught npm global
+installation resolving `@hono/node-server` beyond the shrinkwrap. The release
+manifest now carries exact Bun-derived npm overrides in addition to the
+shrinkwrap, and the final lifecycle must prove every installed dependency is
+one of the locked name/version pairs before the artifact is accepted.
+
+## Installed Client and inherited runtime
+
+The installed `cocodex --help`, `cocodex-server --help`, and `ocx --version`
+commands exited `0`. `ocx update` exited `1` before any upstream update and
+reported that `@sdanderosa/cocodex` is not connected to the
+`@bitkyc08/opencodex` release feed.
+
+The final installed-tree verifier accepted 124 installed dependencies and
+rejected anything outside the shrinkwrap. With isolated `OPENCODEX_HOME` and
+`CODEX_HOME`, the installed `ocx start`
+command served:
+
+```text
+GET http://127.0.0.1:50228/healthz
+200 {"status":"ok","service":"opencodex","version":"0.1.0-alpha.1",...}
+
+GET http://127.0.0.1:50228/
+200 (961-byte GUI entry document)
+```
+
+The runtime was stopped through the installed command without touching the
+user's real OpenCodex or Codex state.
+
+## Installed Server lifecycle
+
+The installed Server initialized an isolated state root and listened on one
+reserved TLS port. Runtime evidence:
+
+```text
+initial PID: 45808
+GET https://127.0.0.1:50241/healthz
+200 {"ok":true,"service":"cocodex-server","protocol":1}
+
+restart PID: 49988
+PID changed: true
+GET https://127.0.0.1:50241/healthz
+200 {"ok":true,"service":"cocodex-server","protocol":1}
+
+stop: {"stopped":true,"pid":49988}
+status after stop: "running":false
+```
+
+The restart command did not report success until the replacement process owned
+the PID file and the protocol-specific health response passed.
+
+The stopped-process guard initially and correctly failed closed, but a normal
+PowerShell parent command containing the selected prefix was also counted as a
+CoCodex process. The final guard ignores only its PowerShell/cmd shell-host
+ancestor chain; Bun/Node application ancestors still block mutation. The
+corrected isolated uninstall exited `0`, npm removed 126 application packages,
+and `node_modules/@sdanderosa/cocodex` no longer existed. Client, Server,
+OpenCodex, and Codex state roots were not targeted.
+
+## Primary files
+
+- `scripts/build-cocodex-private-alpha.ts`
+- `scripts/Install-CoCodex.ps1`
+- `tests/cocodex-private-alpha-package.test.ts`
+- `apps/cocodex-server/src/cli.ts`
+- `apps/cocodex-server/tests/cli-process.test.ts`
+- `bin/ccx.mjs`
+- `bin/ccx-server.mjs`
+- `bin/ocx.mjs`
+- `src/update/index.ts`
+- `src/update/job.ts`
+- `.github/workflows/cocodex-private-alpha.yml`
+- `docs/adr/0048-cocodex-verified-windows-private-alpha-distribution.md`
+
+## Honest limits
+
+The archive is not Authenticode- or Sigstore-signed. Its checksum is meaningful
+only inside a trusted complete manually approved GitHub artifact; pull-request
+runs never upload an operator bundle. The package is not published
+to npm and has no automatic CoCodex update feed. The current installer is
+Windows-only, uses a dedicated user-level application root, and does not install a Windows
+Service. Standard npm performs the supported install from the committed
+SHA-512-integrity shrinkwrap. That graph is required to match the name,
+version, and integrity of the Bun-tested graph, and lifecycle scripts are
+allowlisted only for the pinned Bun runtime. pnpm is not the private-alpha
+operator path.
+
+This distribution evidence does not upgrade the current single-device sealed
+box private messaging into a ratcheting protocol. Forward secrecy,
+post-compromise recovery, multi-device sessions, and encrypted attachments
+remain later security work.

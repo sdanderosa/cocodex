@@ -65,6 +65,7 @@ import { handleAgentSettingsRoutes } from "./management/agent-settings-routes";
 import { handleOauthAccountRoutes } from "./management/oauth-account-routes";
 import { handleComboRoutes } from "./management/combo-routes";
 import { handleSystemRoutes } from "./management/system-routes";
+import { handleCoCodexRoutes } from "./management/cocodex-routes";
 import type { ManagementContext } from "./management/context";
 export type { ManagementApiDeps } from "./management/context";
 import { fetchAllModels } from "./management/shared";
@@ -74,7 +75,7 @@ export const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string;
   } catch {
-    return "0.0.0";
+    return process.env.OPENCODEX_BUNDLED_VERSION?.trim() || "0.0.0";
   }
 })();
 
@@ -130,7 +131,8 @@ export async function handleManagementAPI(req: Request, url: URL, config: OcxCon
     ??     (await handleAgentSettingsRoutes(ctx))
     ??     (await handleOauthAccountRoutes(ctx))
     ??     (await handleComboRoutes(ctx))
-    ??     (await handleSystemRoutes(ctx));
+    ??     (await handleSystemRoutes(ctx))
+    ??     (await handleCoCodexRoutes(ctx));
   if (routed) return routed;
 
   if (url.pathname === "/api/stop" && req.method === "POST") {

@@ -110,6 +110,14 @@ interface InstallCodexShimInternalOptions {
   expectedReplacements?: ReadonlyMap<string, ShimPathFingerprint>;
   allowFreshInstall: boolean;
   beforeGuardedRefresh?: (wrapperPath: string, index: number) => void;
+  beforeFreshInstall?: (wrapperPath: string, index: number) => void;
+  writeShimFn?: typeof writeShim;
+  writeStateFn?: typeof writeState;
+}
+
+export interface CodexShimInstallOptions {
+  /** Narrow deterministic seam used to verify fresh-install rollback. */
+  beforeFreshInstall?: (wrapperPath: string, index: number) => void;
 }
 
 export type CodexShimAutoRestoreResult =
@@ -955,6 +963,104 @@ function applyGuardedRefreshTransaction(
   return true;
 }
 
+interface FreshInstallJournalEntry {
+  target: ShimFileState;
+  originalMoved: boolean;
+  wrapperWriteStarted: boolean;
+}
+
+function rollbackFreshInstall(
+  journal: readonly FreshInstallJournalEntry[],
+  statePathBefore: Buffer | null,
+  statePathWasPresent: boolean,
+): Error[] {
+  const rollbackErrors: Error[] = [];
+  const attempt = (operation: () => void): void => {
+    try {
+      operation();
+    } catch (error) {
+      rollbackErrors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+
+  for (const entry of [...journal].reverse()) {
+    attempt(() => {
+      if (entry.wrapperWriteStarted && existsSync(entry.target.wrapperPath)) {
+        unlinkSync(entry.target.wrapperPath);
+      }
+    });
+    attempt(() => {
+      if (entry.originalMoved && existsSync(entry.target.backupPath) && !existsSync(entry.target.originalPath)) {
+        renameSync(entry.target.backupPath, entry.target.originalPath);
+      }
+    });
+  }
+  attempt(() => {
+    if (statePathWasPresent) {
+      if (statePathBefore === null) throw new Error("missing pre-install Codex shim state snapshot");
+      writeFileSync(statePath(), statePathBefore);
+    } else if (existsSync(statePath())) {
+      unlinkSync(statePath());
+    }
+  });
+  return rollbackErrors;
+}
+
+function installFreshShimTransaction(
+  targets: readonly ShimFileState[],
+  options: InstallCodexShimInternalOptions,
+): { installed: boolean; message: string } {
+  const journal: FreshInstallJournalEntry[] = [];
+  const shimWriter = options.writeShimFn ?? writeShim;
+  const stateWriter = options.writeStateFn ?? writeState;
+  const stateFile = statePath();
+  let statePathWasPresent = false;
+  let statePathBefore: Buffer | null = null;
+
+  try {
+    statePathWasPresent = existsSync(stateFile);
+    if (statePathWasPresent) statePathBefore = readFileSync(stateFile);
+    const seen = new Set<string>();
+    for (const [index, target] of targets.entries()) {
+      if (seen.has(target.wrapperPath)) throw new Error(`duplicate Codex shim target: ${target.wrapperPath}`);
+      seen.add(target.wrapperPath);
+      if (existsSync(target.backupPath)) {
+        throw new Error(`refusing to overwrite existing backup: ${target.backupPath}`);
+      }
+      options.beforeFreshInstall?.(target.wrapperPath, index);
+      const entry: FreshInstallJournalEntry = {
+        target,
+        originalMoved: false,
+        wrapperWriteStarted: false,
+      };
+      journal.push(entry);
+      if (existsSync(target.originalPath)) {
+        renameSync(target.originalPath, target.backupPath);
+        entry.originalMoved = true;
+      }
+      if (!target.preserveOnly) {
+        entry.wrapperWriteStarted = true;
+        shimWriter(target.wrapperPath, target.realPath ?? target.backupPath);
+      }
+    }
+    stateWriter(primaryState([...targets]));
+    return {
+      installed: true,
+      message: `Codex autostart shim installed at ${targets.map(t => t.wrapperPath).join(", ")}. Original saved at ${targets.map(t => t.backupPath).join(", ")}.`,
+    };
+  } catch (error) {
+    const rollbackErrors = rollbackFreshInstall(journal, statePathBefore, statePathWasPresent);
+    const detail = error instanceof Error ? error.message : String(error);
+    const rollbackDetail = rollbackErrors.length > 0
+      ? ` Rollback FAILED: ${rollbackErrors.map(item => item.message).join("; ")}`
+      : " Rollback completed.";
+    return {
+      installed: false,
+      message: `Codex autostart shim install failed: ${detail}.${rollbackDetail}`,
+    };
+  }
+}
+
 function installCodexShimInternal(options: InstallCodexShimInternalOptions): { installed: boolean; message: string } {
   const existing = readState();
   if (existing) {
@@ -1022,22 +1128,11 @@ function installCodexShimInternal(options: InstallCodexShimInternalOptions): { i
     })();
   if (!targets) return { installed: false, message: lastShimDiscoveryError ?? "Could not find a codex executable on PATH." };
 
-  for (const target of targets) {
-    if (existsSync(target.backupPath)) return { installed: false, message: `Refusing to overwrite existing backup: ${target.backupPath}` };
-  }
-  for (const target of targets) {
-    if (existsSync(target.originalPath)) renameSync(target.originalPath, target.backupPath);
-    if (!target.preserveOnly) writeShim(target.wrapperPath, target.realPath ?? target.backupPath);
-  }
-  writeState(primaryState(targets));
-  return {
-    installed: true,
-    message: `Codex autostart shim installed at ${targets.map(t => t.wrapperPath).join(", ")}. Original saved at ${targets.map(t => t.backupPath).join(", ")}.`,
-  };
+  return installFreshShimTransaction(targets, options);
 }
 
-export function installCodexShim(): { installed: boolean; message: string } {
-  return installCodexShimInternal({ allowFreshInstall: true });
+export function installCodexShim(options: CodexShimInstallOptions = {}): { installed: boolean; message: string } {
+  return installCodexShimInternal({ allowFreshInstall: true, ...options });
 }
 
 export function autoRestoreCodexShim(options: {

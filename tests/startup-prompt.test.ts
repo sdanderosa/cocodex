@@ -20,7 +20,7 @@ describe("startup star prompt", () => {
   test("ocx start waits for the interactive prompt before sync/injection", async () => {
     const cli = await readText("src/cli/index.ts");
     const promptIndex = cli.indexOf("await maybeShowStarPrompt()");
-    const syncIndex = cli.indexOf("await syncModelsToCodex(port)");
+    const syncIndex = cli.indexOf("await syncForSafeSetup(port, config)");
 
     expect(cli).not.toContain("void maybeShowStarPrompt()");
     expect(promptIndex).toBeGreaterThan(-1);

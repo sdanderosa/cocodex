@@ -21,5 +21,7 @@ function chmodTree(path: string): void {
 }
 
 chmodIfExists(join(root, "bin", "ocx.mjs"), 0o755);
+chmodIfExists(join(root, "bin", "ccx.mjs"), 0o755);
+chmodIfExists(join(root, "bin", "ccx-server.mjs"), 0o755);
 chmodIfExists(join(root, "bin", "package-main.mjs"), 0o644);
 chmodTree(join(root, "gui", "dist"));

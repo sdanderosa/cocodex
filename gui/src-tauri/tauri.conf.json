@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CoCodex",
+  "version": "0.1.0",
+  "identifier": "com.cocodex.desktop",
+  "build": {
+    "beforeDevCommand": "bun ../scripts/dev-tauri.ts",
+    "beforeBuildCommand": "bun ../scripts/build-tauri-frontend.ts",
+    "devUrl": "http://127.0.0.1:4179",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CoCodex",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:10101 http://127.0.0.1:10102 http://127.0.0.1:10103 http://127.0.0.1:10104 http://127.0.0.1:10105 http://127.0.0.1:10106 http://127.0.0.1:10107 http://127.0.0.1:10108 http://127.0.0.1:10109 http://127.0.0.1:10110 http://127.0.0.1:10111 http://127.0.0.1:10112 http://127.0.0.1:10113 http://127.0.0.1:10114 http://127.0.0.1:10115 http://127.0.0.1:10116 http://127.0.0.1:10117 http://127.0.0.1:10118 http://127.0.0.1:10119 http://127.0.0.1:10120 ws://127.0.0.1:10101 ws://127.0.0.1:10102 ws://127.0.0.1:10103 ws://127.0.0.1:10104 ws://127.0.0.1:10105 ws://127.0.0.1:10106 ws://127.0.0.1:10107 ws://127.0.0.1:10108 ws://127.0.0.1:10109 ws://127.0.0.1:10110 ws://127.0.0.1:10111 ws://127.0.0.1:10112 ws://127.0.0.1:10113 ws://127.0.0.1:10114 ws://127.0.0.1:10115 ws://127.0.0.1:10116 ws://127.0.0.1:10117 ws://127.0.0.1:10118 ws://127.0.0.1:10119 ws://127.0.0.1:10120 ws: wss: https:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "externalBin": ["binaries/cocodex-runtime", "binaries/cocodex-server"],
+    "category": "Utility",
+    "shortDescription": "A secure collaborative Codex workspace",
+    "longDescription": "CoCodex is a private collaborative workspace for shared projects, agents, and Codex sessions.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

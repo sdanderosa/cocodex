@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
@@ -11,6 +11,7 @@ export type CodexRuntimeSource =
   | "configured"
   | "shim"
   | "path"
+  | "app"
   | "fallback";
 
 export interface ResolvedCodexRuntime {
@@ -305,6 +306,21 @@ function shimCandidates(deps: ResolveCodexRuntimeDeps): string[] {
   }
 }
 
+function codexAppCandidates(deps: ResolveCodexRuntimeDeps): string[] {
+  if ((deps.platform ?? process.platform) !== "win32") return [];
+  const localAppData = (deps.env ?? process.env).LOCALAPPDATA;
+  if (!localAppData) return [];
+  const root = join(localAppData, "OpenAI", "Codex", "bin");
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => join(root, entry.name, "codex.exe"))
+      .filter(candidate => (deps.existsSync ?? existsSync)(candidate))
+      .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
+  } catch {
+    return [];
+  }
+}
 function pathCandidates(deps: ResolveCodexRuntimeDeps): string[] {
   const env = deps.env ?? process.env;
   const platform = deps.platform ?? process.platform;
@@ -425,6 +441,9 @@ function resolveCodexRuntimeUncached(deps: ResolveCodexRuntimeDeps = {}): Resolv
 
   for (const command of shimCandidates(deps)) {
     ordered.push({ command, source: "shim" });
+  }
+  for (const command of codexAppCandidates(deps)) {
+    ordered.push({ command, source: "app" });
   }
   for (const command of pathCandidates(deps)) {
     ordered.push({ command, source: "path" });

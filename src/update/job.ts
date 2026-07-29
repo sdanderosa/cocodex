@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
+import { atomicWriteFile, backupConfigBeforeUpdate, getConfigDir, loadConfig, readPid, readRuntimePort } from "../config";
 import { killProxy } from "../lib/process-control";
 import { waitForPortAvailable } from "../server/ports";
 import { proxyIdentityAt } from "../server/proxy-liveness";
@@ -16,6 +16,7 @@ import {
   defaultUpdateTag,
   detectInstall,
   latestVersion,
+  registryUpdateSupported,
   updateCommand,
   updateCommandStr,
 } from "./index";
@@ -73,12 +74,14 @@ export interface UpdateCheckDeps {
   currentVersion: () => string;
   detectInstall: () => Installer;
   latestVersion: (tag: Channel) => string | null;
+  registryUpdateSupported?: () => boolean;
 }
 
 const defaultCheckDeps: UpdateCheckDeps = {
   currentVersion,
   detectInstall,
   latestVersion,
+  registryUpdateSupported,
 };
 
 function nodeBin(): string {
@@ -191,13 +194,17 @@ export function checkForUpdate(
 ): UpdateCheckResult {
   const current = deps.currentVersion();
   const installer = deps.detectInstall();
+  const registrySupported = deps.registryUpdateSupported?.() ?? true;
   const channel = requestedChannel ?? normalizeUpdateChannel(null, current);
-  const latest = installer === "source" ? null : deps.latestVersion(channel);
+  const latest = installer === "source" || !registrySupported ? null : deps.latestVersion(channel);
   const updateAvailable = !!latest && isNewer(latest, current, channel);
   let reason: string | undefined;
   let command = installer === "source" ? manualSourceCommand() : updateExecutionCommand(installer, channel).display;
 
-  if (installer === "source") {
+  if (!registrySupported) {
+    reason = "private_alpha_package";
+    command = "Install-CoCodex.ps1 -PackagePath <verified-package.tgz>";
+  } else if (installer === "source") {
     reason = "source_checkout";
     command = manualSourceCommand();
   } else if (!latest) {
@@ -212,7 +219,7 @@ export function checkForUpdate(
     channel,
     installer,
     updateAvailable,
-    canUpdate: installer !== "source" && updateAvailable,
+    canUpdate: registrySupported && installer !== "source" && updateAvailable,
     command,
     releaseNotesUrl: RELEASE_NOTES_URL,
     ...(reason ? { reason } : {}),
@@ -519,6 +526,11 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
       installer: check.installer,
       command: cmd.display,
     }, integrityLine);
+
+    const configBackup = backupConfigBeforeUpdate();
+    job = updateJob(job, {}, configBackup
+      ? `Backed up OpenCodex configuration to ${configBackup}`
+      : "No persisted OpenCodex configuration required backup.");
 
     if (process.platform === "win32") {
       try {

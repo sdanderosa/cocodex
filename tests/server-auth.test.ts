@@ -34,7 +34,7 @@ import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isol
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalGlobalFetch = globalThis.fetch;
-const TEST_DIR = join(import.meta.dir, ".tmp-server-auth-test");
+const TEST_DIR = join(import.meta.dir, `.tmp-server-auth-${process.pid}`);
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 
 function config(hostname?: string): OcxConfig {
@@ -252,6 +252,8 @@ describe("server local API auth", () => {
     expect(isLoopbackHostname(undefined)).toBe(true);
     expect(isLoopbackHostname("")).toBe(true);
     expect(isLoopbackHostname("localhost")).toBe(true);
+    expect(isLoopbackHostname("tauri.localhost")).toBe(true);
+    expect(isLoopbackHostname("window.tauri.localhost")).toBe(true);
     expect(isLoopbackHostname("127.0.0.1")).toBe(true);
     expect(isLoopbackHostname("::1")).toBe(true);
     expect(isApiAuthRequired(config())).toBe(false);

@@ -150,9 +150,13 @@ const helpEntries: Record<string, HelpEntry> = {
 };
 
 function packageVersion(): string {
-  const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
-  const parsed = JSON.parse(raw) as { version?: unknown };
-  return typeof parsed.version === "string" ? parsed.version : "unknown";
+  try {
+    const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : "unknown";
+  } catch {
+    return process.env.OPENCODEX_BUNDLED_VERSION?.trim() || "unknown";
+  }
 }
 
 export function printVersion(): void {

@@ -2,6 +2,12 @@
 
 This is the Vite/React dashboard used by `ocx gui` in packaged installs.
 
+The same dashboard can be packaged as a native desktop window with Tauri 2.
+From the repository root, run `bun run dev:tauri` for a development window or
+`bun run build:tauri` to create Windows bundles. The browser dashboard remains
+available through the commands below; Tauri is a delivery shell around this
+frontend, not a second implementation.
+
 ## Source checkout development
 
 Run the proxy and dashboard as two separate dev processes:

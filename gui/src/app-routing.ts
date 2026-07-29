@@ -5,6 +5,7 @@ import { providersHashForViewMode, type ViewMode } from "./view-mode";
 
 export type Page =
   | "dashboard"
+  | "cocodex"
   | "startup"
   | "providers"
   | "models"
@@ -19,6 +20,7 @@ export type Page =
 
 export const VALID_PAGES = new Set<Page>([
   "dashboard",
+  "cocodex",
   "startup",
   "providers",
   "models",

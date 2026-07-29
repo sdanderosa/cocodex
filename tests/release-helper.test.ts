@@ -190,12 +190,15 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
   for (const name of ["bun", "gh", "git", "npm"] as const) {
     installCommandShim(shimDir, name);
   }
+  const inheritedEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PATH"),
+  );
 
   const result = spawnSync(process.execPath, [releaseScriptPath, version], {
     cwd: repoRoot,
     env: {
-      ...process.env,
-      PATH: `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+      ...inheritedEnvironment,
+      PATH: shimDir,
       FAKE_RELEASE_LOG: logPath,
       FAKE_GIT_BRANCH: scenario.branch ?? "main",
       FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",

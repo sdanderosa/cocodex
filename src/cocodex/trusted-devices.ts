@@ -1,0 +1,33 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+
+const schema = z.object({
+  version: z.literal(1),
+  fingerprints: z.record(z.uuid(), z.string().min(16).max(256)),
+}).strict();
+
+export function loadTrustedDevices(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  hardenSecretPath(path, { required: true });
+  return schema.parse(JSON.parse(readFileSync(path, "utf8"))).fingerprints;
+}
+
+export function trustDevice(path: string, deviceId: string, fingerprint: string): void {
+  const fingerprints = loadTrustedDevices(path);
+  const validated = schema.parse({
+    version: 1,
+    fingerprints: { ...fingerprints, [deviceId]: fingerprint },
+  });
+  mkdirSync(dirname(path), { recursive: true });
+  hardenSecretDir(dirname(path), { required: true });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(validated, null, 2)}\n`, {
+    encoding: "utf8", mode: 0o600, flag: "wx",
+  });
+  hardenSecretPath(temporary, { required: true });
+  renameSync(temporary, path);
+  hardenSecretPath(path, { required: true });
+}

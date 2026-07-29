@@ -18,6 +18,12 @@ gui/vite.config.*
 gui/eslint.config.*
 gui/bun.lock
 
+# Nested workspace development state is not part of the installed applications.
+apps/**/node_modules/
+apps/**/tests/
+packages/**/node_modules/
+packages/**/tests/
+
 # misc
 *.test.ts
 *.map

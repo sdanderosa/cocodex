@@ -58,6 +58,11 @@ export function removeJournal(): void {
   try { unlinkSync(JOURNAL_PATH); } catch { /* ignore */ }
 }
 
+/** True when a valid crash/stale-injection journal still needs native recovery. */
+export function hasPendingJournal(): boolean {
+  return readJournal() !== null;
+}
+
 function readJournal(): Journal | null {
   if (!existsSync(JOURNAL_PATH)) return null;
   try {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,17 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
 const isolatedCodexHome = mkdtempSync(join(tmpdir(), "ocx-prov-codex-home-"));
+const isolatedRuntimeDir = mkdtempSync(join(tmpdir(), "ocx-prov-runtime-"));
+const isolatedCodexRuntime = join(
+  isolatedRuntimeDir,
+  process.platform === "win32" ? "codex.cmd" : "codex",
+);
+if (process.platform === "win32") {
+  writeFileSync(isolatedCodexRuntime, "@echo off\r\necho codex-cli 0.133.0\r\n", "utf8");
+} else {
+  writeFileSync(isolatedCodexRuntime, "#!/bin/sh\necho 'codex-cli 0.133.0'\n", "utf8");
+  chmodSync(isolatedCodexRuntime, 0o755);
+}
 
 function runCli(args: string[], env: Record<string, string> = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -15,7 +26,12 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     // ALWAYS isolate CODEX_HOME: `provider add --sync` runs syncModelsToCodex, which rewrites the
     // catalog under CODEX_HOME. With the real ~/.codex and a config.port matching the live proxy,
     // a test run would WIPE the user's routed catalog entries (live-catalog pollution).
-    env: { ...process.env, CODEX_HOME: isolatedCodexHome, ...env },
+    env: {
+      ...process.env,
+      CODEX_CLI_PATH: isolatedCodexRuntime,
+      CODEX_HOME: isolatedCodexHome,
+      ...env,
+    },
     encoding: "utf8",
   });
 }

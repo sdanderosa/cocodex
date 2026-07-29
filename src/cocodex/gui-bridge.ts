@@ -1,0 +1,703 @@
+import { existsSync } from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { PassThrough } from "node:stream";
+import { enrollClient, loadClientConnection } from "./client";
+import { clientPaths, type ClientPaths } from "./paths";
+import { runJsonLineSession, type JsonLineSessionOptions } from "./session";
+import { loadLocalAgentPolicyStore } from "./agent-policy";
+import { agentRuntimePaths } from "./agent-runtime-paths";
+import { loadAgentSafety } from "./agent-safety";
+
+const MAX_EVENTS = 500;
+const RENDERER_SERVER_FRAME_TYPES = new Set([
+  "project.list.result",
+  "project.created",
+  "project.changed",
+  "project.chat.list.result",
+  "project.chat.created",
+  "project.chat.changed",
+  "project.device-revoked",
+  "project.lock.updated",
+  "project.lock.changed",
+  "project.member.list.result",
+  "project.member.removed",
+  "project.member.leave-requested",
+  "prompt.snapshot",
+  "prompt.update",
+  "context.result",
+  "context.updated",
+  "context.changed",
+  "usage.result",
+  "usage.changed",
+  "usage.accepted",
+  "agent.list.result",
+  "agent.task.list.result",
+  "artifact.list.result",
+  "artifact.accepted",
+  "artifact.published",
+  "file-reference.list.result",
+  "file-reference.accepted",
+  "file-reference.published",
+  "presence.snapshot",
+  "presence.update",
+  "presence.leave",
+  "chat.snapshot",
+  "chat.event",
+  "agent.result",
+  "private.receipt",
+  "private.receipt.accepted",
+  "private.typing",
+]);
+const SENSITIVE_RENDERER_KEYS = new Set([
+  "ciphertext",
+  "localCiphertext",
+  "sealedProjectKey",
+  "projectWrapPublicKeyPem",
+  "deviceKeyCertificate",
+  "privateKey",
+  "privateKeyPem",
+  "envelope",
+  "envelopes",
+]);
+const RENDERER_FRAME_FIELDS = new Set([
+  "version", "type", "requestId", "projectId", "chatId",
+  "chats", "chat", "defaultChat", "creatorDeviceId", "createdByDeviceId", "state",
+  "projects", "project", "members", "events", "event", "updates", "update",
+  "context", "reports", "report", "agents", "tasks", "artifacts", "artifact",
+  "references", "reference",
+  "id", "name", "role", "deviceId", "displayName", "fingerprint", "trusted",
+  "sequence", "eventId", "messageId", "senderDeviceId", "recipientDeviceId", "receipt", "content", "acceptedAt",
+  "updateId", "finalGoal", "revision", "updatedByDeviceId", "updatedAt",
+  "requests", "inputTokens", "cachedInputTokens", "outputTokens",
+  "reasoningOutputTokens", "activeAgents", "accountLabel",
+  "fiveHourPercent", "fiveHourResetAt", "weeklyPercent", "weeklyResetAt",
+  "monthlyPercent", "monthlyResetAt", "customWindows", "label", "percent", "resetAt",
+  "agentId", "agentName", "primaryModel", "primaryEffort", "coAgentModel",
+  "coAgentEffort", "maxConcurrentCoAgents", "hostDeviceId", "hostDisplayName",
+  "enabled", "status", "activeTasks", "queuedTasks", "lastTaskAt",
+  "requesterDeviceId", "targetDeviceId", "dependencies", "inputArtifactIds",
+  "workspaceMode", "workspaceRef", "branch", "baseCommit", "mergeTarget",
+  "startedAt", "completedAt", "lastActivityAt", "eventCount", "encrypted",
+  "taskId", "authorDeviceId", "title", "summary", "createdAt",
+  "referenceId", "artifactId", "relativePath", "commitSha", "sha256",
+  "sizeBytes", "mediaType", "hostDeviceId",
+  "cursor", "caret", "relativeCaret", "typing", "x", "y", "anchor", "head",
+  "final", "created", "keyEpoch",
+  "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
+  "operationId", "cancelledTaskCount", "lifecycleRevision",
+  "leaveRequestId", "leaveRequestedAt", "requestedAt", "leavePending",
+  "previousName", "resultingName", "previousState", "resultingState", "resultingRevision",
+  "integration", "blocked", "preview", "currentTargetCommit", "expectedTargetCommit",
+  "changedFiles", "conflicts", "overlaps", "blockedReasons", "integrationCommit", "targetCommit",
+  "commit", "queued",
+]);
+const ALLOWED_COMMANDS = new Set([
+  "device.approval.list",
+  "device.approval.update",
+  "project.list",
+  "project.create",
+  "project.lifecycle.update",
+  "project.invite.list",
+  "project.invite.create",
+  "project.invite.respond",
+  "project.invite.cancel",
+  "project.key.get",
+  "project.key.share",
+  "project.key.initialize",
+  "project.key.rotate",
+  "project.member.list",
+  "project.member.leave",
+  "project.member.remove-and-rotate",
+  "project.member.remove",
+  "project.lock.update",
+  "device.trust",
+  "chat.subscribe",
+  "chat.send",
+  "project.chat.subscribe",
+  "project.chat.send",
+  "project.chat.list",
+  "project.chat.create",
+  "prompt.subscribe",
+  "prompt.update",
+  "project.prompt.subscribe",
+  "project.prompt.update",
+  "context.get",
+  "context.update",
+  "project.context.get",
+  "project.context.update",
+  "usage.get",
+  "presence.update",
+  "agent.request",
+  "agent.configure",
+  "private.share",
+  "agent.list",
+  "agent.task.list",
+  "agent.cancel",
+  "agent.approval",
+  "codex.browser.capability",
+  "codex.official-app.open",
+  "agent.safety.status",
+  "agent.emergency.stop",
+  "agent.emergency.resume",
+  "agent.full-computer.enable",
+  "agent.full-computer.disable",
+  "private.send",
+  "private.typing",
+  "private.read",
+  "artifact.publish",
+  "artifact.list",
+  "project.artifact.publish",
+  "git.integration.preview",
+  "git.integration.integrate",
+  "project.artifact.list",
+  "project.file-reference.publish",
+  "project.file-reference.list",
+]);
+
+type SessionRunner = (paths: ClientPaths, options: JsonLineSessionOptions) => Promise<void>;
+
+export interface CoCodexGuiEvent {
+  sequence: number;
+  channel: "output" | "error";
+  value: unknown;
+}
+
+export interface CoCodexGuiStatus {
+  configured: boolean;
+  running: boolean;
+  state: "not-configured" | "stopped" | "connecting" | "connected" | "retrying";
+  deviceId?: string;
+  deviceFingerprint?: string;
+  displayName?: string;
+  verificationPhrase?: string;
+  approvalExpiresAt?: string;
+  server?: { host: string; port: number };
+  agentConfigured: boolean;
+  agentAccessProfile?: "project-only" | "full-computer";
+  agentWorkspaceMode?: "shared" | "git-worktree";
+  agentExecutionEnabled?: boolean;
+  agentFullComputerEnabled?: boolean;
+  localAgents: Array<{
+    agentId: string;
+    projectId: string;
+    primaryModel: string;
+    primaryEffort: string;
+    coAgentModel: string | null;
+    coAgentEffort: string | null;
+    maxConcurrentCoAgents: number;
+    accessProfile: "project-only" | "full-computer";
+    workspaceMode: "shared" | "git-worktree";
+    executionEnabled: boolean;
+    fullComputerEnabled: boolean;
+  }>;
+  latestEventSequence: number;
+}
+
+function withoutSensitiveServerPayloads(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, any>;
+  if (record.source === "project-security" && record.state === "device-revoked") {
+    // Incident metadata is deliberately projected field-by-field. In
+    // particular, never forward a server frame, cancelled-task payload, key
+    // envelope, certificate, or signature through this resident-process
+    // boundary.
+    return {
+      source: "project-security",
+      state: "device-revoked",
+      ...(typeof record.projectId === "string" ? { projectId: record.projectId } : {}),
+      ...(typeof record.revokedDeviceId === "string" ? { revokedDeviceId: record.revokedDeviceId } : {}),
+      ...(typeof record.currentEpoch === "number" ? { currentEpoch: record.currentEpoch } : {}),
+      ...(record.promotedOwnerDeviceId === null || typeof record.promotedOwnerDeviceId === "string"
+        ? { promotedOwnerDeviceId: record.promotedOwnerDeviceId }
+        : {}),
+      ...(typeof record.incidentId === "string" ? { incidentId: record.incidentId } : {}),
+      ...(record.localDeviceRevoked === true ? { localDeviceRevoked: true } : {}),
+      keyRotationRequired: true,
+    };
+  }
+  if (record.source === "project-security"
+    && (record.state === "active" || record.state === "locked")) {
+    return {
+      source: "project-security",
+      state: record.state,
+      ...(typeof record.projectId === "string" ? { projectId: record.projectId } : {}),
+      ...(typeof record.revision === "number" ? { revision: record.revision } : {}),
+      ...(typeof record.reason === "string" || record.reason === null ? { reason: record.reason } : {}),
+      ...(typeof record.lockedAt === "string" || record.lockedAt === null ? { lockedAt: record.lockedAt } : {}),
+      ...(typeof record.lockedByDeviceId === "string" || record.lockedByDeviceId === null
+        ? { lockedByDeviceId: record.lockedByDeviceId }
+        : {}),
+    };
+  }
+  if (record.source === "private-contacts" && Array.isArray(record.contacts)) {
+    return {
+      source: "private-contacts",
+      contacts: record.contacts.map((candidate: unknown) => {
+        const contact = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          deviceId: contact.deviceId,
+          displayName: contact.displayName,
+          fingerprint: contact.fingerprint,
+          trusted: contact.trusted === true,
+          projectCapable: contact.projectCapable === true,
+        };
+      }),
+    };
+  }
+  if (record.source === "device-approvals" && Array.isArray(record.devices)) {
+    return {
+      source: "device-approvals",
+      devices: record.devices.map((candidate: unknown) => {
+        const device = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          deviceId: device.deviceId,
+          displayName: device.displayName,
+          fingerprint: device.fingerprint,
+          verificationPhrase: device.verificationPhrase,
+          enrolledAt: device.enrolledAt,
+          approvalExpiresAt: device.approvalExpiresAt,
+        };
+      }),
+    };
+  }
+  if (record.source === "project-invitations" && Array.isArray(record.invitations)) {
+    return {
+      source: "project-invitations",
+      invitations: record.invitations.map((candidate: unknown) => {
+        const invitation = candidate && typeof candidate === "object"
+          ? candidate as Record<string, unknown>
+          : {};
+        return {
+          invitationId: invitation.invitationId,
+          projectId: invitation.projectId,
+          projectName: invitation.projectName,
+          ownerDeviceId: invitation.ownerDeviceId,
+          ownerDisplayName: invitation.ownerDisplayName,
+          ownerFingerprint: invitation.ownerFingerprint,
+          recipientDeviceId: invitation.recipientDeviceId,
+          recipientDisplayName: invitation.recipientDisplayName,
+          recipientFingerprint: invitation.recipientFingerprint,
+          keyEpoch: invitation.keyEpoch,
+          issuedAt: invitation.issuedAt,
+          expiresAt: invitation.expiresAt,
+          status: invitation.status,
+          direction: invitation.direction,
+          trusted: invitation.trusted === true,
+          actionable: invitation.actionable === true,
+        };
+      }),
+    };
+  }
+  if (record.source === "private-typing") {
+    return {
+      source: "private-typing",
+      ...(typeof record.senderDeviceId === "string" ? { senderDeviceId: record.senderDeviceId } : {}),
+      ...(typeof record.recipientDeviceId === "string" ? { recipientDeviceId: record.recipientDeviceId } : {}),
+      typing: record.typing === true,
+    };
+  }
+  if (record.source === "private" && record.message && typeof record.message === "object") {
+    const message = record.message as Record<string, unknown>;
+    return {
+      source: "private",
+      message: {
+        messageId: message.messageId,
+        senderDeviceId: message.senderDeviceId,
+        recipientDeviceId: message.recipientDeviceId,
+        text: message.text,
+        ...(typeof message.clientCreatedAt === "string" ? { clientCreatedAt: message.clientCreatedAt } : {}),
+        ...(typeof message.acceptedAt === "string" ? { acceptedAt: message.acceptedAt } : {}),
+        ...(typeof message.serverSequence === "number" ? { serverSequence: message.serverSequence } : {}),
+        ...(message.direction === "sent" || message.direction === "received"
+          ? { direction: message.direction }
+          : {}),
+        ...(typeof message.restored === "boolean" ? { restored: message.restored } : {}),
+        ...(message.deliveryState === "staged" || message.deliveryState === "queued"
+          || message.deliveryState === "accepted" || message.deliveryState === "rejected"
+          ? { deliveryState: message.deliveryState }
+          : {}),
+        ...(typeof message.rejectionReason === "string"
+          ? { rejectionReason: message.rejectionReason }
+          : {}),
+      },
+    };
+  }
+  const frame = record.frame;
+  if (!frame || typeof frame !== "object") return value;
+  if (frame.type === "project.key.result"
+    || frame.type === "project.key.changed"
+    || frame.type === "project.key.accepted"
+    || frame.type === "project.key.initialized"
+    || frame.type === "project.key.rotated") {
+    return {
+      source: "server",
+      frame: {
+        type: frame.type,
+        ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+        ...(typeof frame.projectId === "string" ? { projectId: frame.projectId } : {}),
+        ...(typeof frame.keyEpoch === "number" ? { keyEpoch: frame.keyEpoch } : {}),
+        ...(typeof frame.currentEpoch === "number" ? { currentEpoch: frame.currentEpoch } : {}),
+        ...(typeof frame.rotationRequired === "boolean" ? { rotationRequired: frame.rotationRequired } : {}),
+        ...(typeof frame.created === "boolean" ? { created: frame.created } : {}),
+      },
+    };
+  }
+  if (frame.type === "project.device-revoked") {
+    // This is a strict security incident frame. Only non-sensitive identity
+    // and recovery metadata is useful to the renderer.
+    return {
+      source: "server",
+      frame: {
+        type: "project.device-revoked",
+        ...(typeof frame.incidentId === "string" ? { incidentId: frame.incidentId } : {}),
+        ...(typeof frame.projectId === "string" ? { projectId: frame.projectId } : {}),
+        ...(typeof frame.revokedDeviceId === "string" ? { revokedDeviceId: frame.revokedDeviceId } : {}),
+        ...(typeof frame.currentEpoch === "number" ? { currentEpoch: frame.currentEpoch } : {}),
+        ...(frame.promotedOwnerDeviceId === null || typeof frame.promotedOwnerDeviceId === "string"
+          ? { promotedOwnerDeviceId: frame.promotedOwnerDeviceId }
+          : {}),
+        ...(typeof frame.createdAt === "string" ? { createdAt: frame.createdAt } : {}),
+      },
+    };
+  }
+  if (frame.type === "private.message" && frame.message) {
+    return { source: "server", frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
+  }
+  if (frame.type === "private.accepted" && frame.message) {
+    return { source: "server", frame: { ...frame, message: { ...frame.message, ciphertext: undefined } } };
+  }
+  if (frame.type === "private.snapshot" && Array.isArray(frame.messages)) {
+    return {
+      source: "server",
+      frame: {
+        ...frame,
+        messages: frame.messages.map((message: Record<string, unknown>) => ({
+          ...message,
+          ciphertext: undefined,
+        })),
+      },
+    };
+  }
+  if ((frame.type === "private.receipt" || frame.type === "private.receipt.accepted") && frame.receipt) {
+    const receipt = frame.receipt as Record<string, unknown>;
+    return {
+      source: "server",
+      frame: {
+        type: frame.type,
+        ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+        receipt: {
+          sequence: receipt.sequence,
+          messageId: receipt.messageId,
+          senderDeviceId: receipt.senderDeviceId,
+          recipientDeviceId: receipt.recipientDeviceId,
+          receipt: receipt.receipt,
+          acceptedAt: receipt.acceptedAt,
+        },
+      },
+    };
+  }
+  if (record.source === "server" && !RENDERER_SERVER_FRAME_TYPES.has(String(frame.type))) {
+    return { source: "protocol", error: "Unsupported server frame withheld from the renderer" };
+  }
+  const projectRendererFields = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(projectRendererFields);
+    if (!candidate || typeof candidate !== "object") return candidate;
+    const projected: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(candidate as Record<string, unknown>)) {
+      if (!RENDERER_FRAME_FIELDS.has(key) || SENSITIVE_RENDERER_KEYS.has(key)) continue;
+      projected[key] = projectRendererFields(child);
+    }
+    return projected;
+  };
+  return { source: "server", frame: projectRendererFields(frame) };
+}
+
+export class CoCodexGuiBridge {
+  private input?: PassThrough;
+  private readonly capability = randomBytes(32).toString("base64url");
+  private running = false;
+  private state: CoCodexGuiStatus["state"] = "stopped";
+  private sequence = 0;
+  private readonly events: CoCodexGuiEvent[] = [];
+  constructor(
+    private readonly paths: ClientPaths = clientPaths(),
+    private readonly runner: SessionRunner = runJsonLineSession,
+  ) {}
+
+  issueCapability(): string { return this.capability; }
+
+  acceptsCapability(value: string | null): boolean {
+    if (!value) return false;
+    const actual = Buffer.from(value);
+    const expected = Buffer.from(this.capability);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
+
+  status(): CoCodexGuiStatus {
+    const configured = existsSync(this.paths.connection);
+    let connection: ReturnType<typeof loadClientConnection> | undefined;
+    if (configured) {
+      try {
+        connection = loadClientConnection(this.paths);
+      } catch {
+        // The resident session reports a precise local error when started.
+      }
+    }
+    let agentAccessProfile: CoCodexGuiStatus["agentAccessProfile"];
+    let agentWorkspaceMode: CoCodexGuiStatus["agentWorkspaceMode"];
+    let agentExecutionEnabled: boolean | undefined;
+    let agentFullComputerEnabled: boolean | undefined;
+    const localAgents: CoCodexGuiStatus["localAgents"] = [];
+    if (existsSync(this.paths.agentPolicy)) {
+      try {
+        const store = loadLocalAgentPolicyStore(this.paths.agentPolicy);
+        for (const policy of store.agents) {
+          const runtime = agentRuntimePaths(this.paths, policy.agentId, store.version === 1);
+          const safety = loadAgentSafety(runtime.safety, policy);
+          localAgents.push({
+            agentId: policy.agentId,
+            projectId: policy.projectId,
+            primaryModel: policy.primaryModel,
+            primaryEffort: policy.primaryEffort,
+            coAgentModel: policy.coAgentModel,
+            coAgentEffort: policy.coAgentEffort,
+            maxConcurrentCoAgents: policy.maxConcurrentCoAgents,
+            accessProfile: policy.accessProfile,
+            workspaceMode: policy.workspaceMode,
+            executionEnabled: safety.executionEnabled,
+            fullComputerEnabled: safety.fullComputerEnabled,
+          });
+        }
+        if (localAgents.length === 1) {
+          agentAccessProfile = localAgents[0].accessProfile;
+          agentWorkspaceMode = localAgents[0].workspaceMode;
+          agentExecutionEnabled = localAgents[0].executionEnabled;
+          agentFullComputerEnabled = localAgents[0].fullComputerEnabled;
+        }
+      } catch {
+        // The resident session reports malformed policy details as an event.
+      }
+    }
+    return {
+      configured,
+      running: this.running,
+      state: configured ? this.state : "not-configured",
+      ...(connection ? {
+        deviceId: connection.deviceId,
+        deviceFingerprint: connection.deviceFingerprint,
+        displayName: connection.displayName,
+        verificationPhrase: connection.verificationPhrase,
+        approvalExpiresAt: connection.approvalExpiresAt,
+        server: { host: connection.host, port: connection.port },
+      } : {}),
+      agentConfigured: existsSync(this.paths.agentPolicy),
+      agentAccessProfile,
+      agentWorkspaceMode,
+      agentExecutionEnabled,
+      agentFullComputerEnabled,
+      localAgents,
+      latestEventSequence: this.sequence,
+    };
+  }
+
+  async enroll(invite: string, displayName: string): Promise<CoCodexGuiStatus> {
+    if (this.running) throw new Error("Stop the local CoCodex session before enrollment");
+    if (invite.trim().length < 32) throw new Error("Paste a valid CoCodex invitation");
+    if (displayName.trim().length < 1 || displayName.trim().length > 80) {
+      throw new Error("Display name must be 1-80 characters");
+    }
+    await enrollClient(invite.trim(), displayName.trim(), this.paths);
+    this.state = "stopped";
+    return this.status();
+  }
+
+  start(): CoCodexGuiStatus {
+    if (this.running) return this.status();
+    if (!existsSync(this.paths.connection)) {
+      throw new Error("Enroll this device before starting the CoCodex session");
+    }
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    this.input = input;
+    this.running = true;
+    this.state = "connecting";
+    this.capture(output, "output");
+    this.capture(errorOutput, "error");
+    void this.runner(this.paths, { input, output, errorOutput })
+      .catch(error => this.append("error", {
+        source: "session",
+        state: "stopped",
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      .finally(() => {
+        if (this.input === input) this.input = undefined;
+        this.running = false;
+        this.state = "stopped";
+        output.destroy();
+        errorOutput.destroy();
+      });
+    return this.status();
+  }
+
+  stop(): CoCodexGuiStatus {
+    if (this.input && !this.input.destroyed) {
+      this.input.write(`${JSON.stringify({ id: crypto.randomUUID(), type: "shutdown" })}\n`);
+      this.input.end();
+    }
+    return this.status();
+  }
+
+  command(command: Record<string, unknown>): { accepted: true; id: string } {
+    if (!this.running || !this.input || this.input.destroyed) {
+      throw new Error("The local CoCodex session is not running");
+    }
+    if (typeof command.type !== "string" || !ALLOWED_COMMANDS.has(command.type)) {
+      throw new Error("Unsupported CoCodex GUI command");
+    }
+    if (command.type === "private.send" && "recipientKeyCertificate" in command) {
+      throw new Error("The GUI must resolve private contacts inside the resident Client");
+    }
+    if (command.type === "device.approval.list") {
+      const allowed = new Set(["id", "type"]);
+      if (Object.keys(command).some(key => !allowed.has(key))) {
+        throw new Error("Invalid device approval list command");
+      }
+    }
+    if (command.type === "device.approval.update") {
+      const allowed = new Set([
+        "id", "type", "targetDeviceId", "decision", "confirmedVerificationPhrase",
+      ]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.targetDeviceId !== "string"
+        || !/^[0-9a-f-]{36}$/i.test(command.targetDeviceId)
+        || (command.decision !== "approve" && command.decision !== "reject")
+        || typeof command.confirmedVerificationPhrase !== "string"
+        || command.confirmedVerificationPhrase.trim().length < 1
+        || command.confirmedVerificationPhrase.length > 256) {
+        throw new Error("Invalid device approval command");
+      }
+    }
+    if (command.type === "project.member.leave") {
+      const allowed = new Set(["id", "type", "projectId"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !/^[0-9a-f-]{36}$/i.test(command.projectId)) {
+        throw new Error("Invalid project-leave command");
+      }
+    }
+    if (command.type === "codex.browser.capability") {
+      const allowed = new Set(["id", "type"]);
+      if (Object.keys(command).some(key => !allowed.has(key))) {
+        throw new Error("Invalid Codex browser-capability command");
+      }
+    }
+    if (command.type === "codex.official-app.open") {
+      const allowed = new Set(["id", "type", "agentId"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.agentId !== "string"
+        || command.agentId.length < 1 || command.agentId.length > 120) {
+        throw new Error("Invalid official Codex app command");
+      }
+    }
+    if (command.type === "project.lifecycle.update") {
+      const allowed = new Set([
+        "id", "type", "projectId", "action", "expectedRevision", "name", "confirmationName",
+      ]);
+      const action = command.action;
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !/^[0-9a-f-]{36}$/i.test(command.projectId)
+        || !["rename", "archive", "restore", "delete"].includes(String(action))
+        || !Number.isInteger(command.expectedRevision) || Number(command.expectedRevision) < 0
+        || ((action === "rename") !== (typeof command.name === "string"
+          && command.name.trim().length > 0 && command.name.trim().length <= 120))
+        || ((action === "delete") !== (typeof command.confirmationName === "string"
+          && command.confirmationName.length > 0 && command.confirmationName.length <= 120))) {
+        throw new Error("Invalid project lifecycle command");
+      }
+    }
+    if (command.type === "project.lock.update") {
+      const allowed = new Set(["id", "type", "projectId", "action", "expectedRevision", "reason"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string"
+        || (command.action !== "lock" && command.action !== "unlock")
+        || (command.expectedRevision !== undefined
+          && (!Number.isInteger(command.expectedRevision) || Number(command.expectedRevision) < 0))
+        || (command.reason !== undefined
+          && (typeof command.reason !== "string" || command.reason.trim().length < 1
+            || command.reason.trim().length > 512))) {
+        throw new Error("Invalid project lock command");
+      }
+    }
+    if (command.type === "git.integration.preview" || command.type === "git.integration.integrate") {
+      const allowed = new Set(["id", "type", "projectId", "chatId", "taskId", "expectedTargetCommit"]);
+      const uuid = /^[0-9a-f-]{36}$/i;
+      const commit = /^[0-9a-f]{40,64}$/i;
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !uuid.test(command.projectId)
+        || typeof command.taskId !== "string" || !uuid.test(command.taskId)
+        || (command.chatId !== undefined
+          && (typeof command.chatId !== "string" || !uuid.test(command.chatId)))
+        || (command.expectedTargetCommit !== undefined
+          && (typeof command.expectedTargetCommit !== "string" || !commit.test(command.expectedTargetCommit)))
+        || (command.type === "git.integration.integrate" && command.expectedTargetCommit === undefined)) {
+        throw new Error("Invalid Git integration command");
+      }
+    }
+    const id = typeof command.id === "string" && command.id.length > 0
+      ? command.id
+      : crypto.randomUUID();
+    this.input.write(`${JSON.stringify({ ...command, id })}\n`);
+    return { accepted: true, id };
+  }
+
+  eventsAfter(afterSequence: number): { events: CoCodexGuiEvent[]; latestEventSequence: number } {
+    const after = Number.isSafeInteger(afterSequence) && afterSequence >= 0 ? afterSequence : 0;
+    return {
+      events: this.events.filter(event => event.sequence > after),
+      latestEventSequence: this.sequence,
+    };
+  }
+
+  private capture(stream: PassThrough, channel: CoCodexGuiEvent["channel"]): void {
+    let pending = "";
+    stream.setEncoding("utf8");
+    stream.on("data", chunk => {
+      pending += String(chunk);
+      while (true) {
+        const newline = pending.indexOf("\n");
+        if (newline < 0) break;
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (!line.trim()) continue;
+        try {
+          this.append(channel, JSON.parse(line));
+        } catch {
+          this.append("error", { source: "bridge", error: "Invalid local session event" });
+        }
+      }
+    });
+  }
+
+  private append(channel: CoCodexGuiEvent["channel"], rawValue: unknown): void {
+    const value = withoutSensitiveServerPayloads(rawValue);
+    const record = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+    if (record?.source === "session" && typeof record.state === "string") {
+      if (record.state === "connected") this.state = "connected";
+      else if (record.state === "retrying") this.state = "retrying";
+      else if (record.state === "disconnected") this.state = "connecting";
+    }
+    this.events.push({ sequence: ++this.sequence, channel, value });
+    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+  }
+}
+
+let sharedBridge: CoCodexGuiBridge | undefined;
+
+export function getCoCodexGuiBridge(): CoCodexGuiBridge {
+  sharedBridge ??= new CoCodexGuiBridge();
+  return sharedBridge;
+}

@@ -4,6 +4,17 @@ import { loadConfig, readRuntimePort } from "../config";
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    if (process.platform !== "win32") {
+      try {
+        const state = execFileSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        if (state.startsWith("Z")) return false;
+      } catch {
+        // A missing ps utility must not turn an unverified process into "dead".
+      }
+    }
     return true;
   } catch {
     return false;

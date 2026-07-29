@@ -13,6 +13,7 @@ const ADD_USAGE = "Usage: ocx models add <provider> <modelId> [--display-name <n
 const REMOVE_USAGE = "Usage: ocx models remove <customId|provider/modelId> [--yes]";
 const LIST_CUSTOM_USAGE = "Usage: ocx models list-custom [--json]";
 const ALLOWED_MODALITIES = new Set(["text", "image", "audio"]);
+const LIVE_SYNC_TIMEOUT_MS = 5_000;
 
 interface ModelEntry {
   provider: string;
@@ -102,8 +103,21 @@ function rejectUnexpectedArgs(args: string[], usage: string): void {
 async function syncCustomModelsIfLive(): Promise<void> {
   const live = await findLiveProxy();
   if (!live) return;
-  await syncModelsToCodex(live.port).catch(error => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const boundedSync = Promise.race([
+    syncModelsToCodex(live.port),
+    new Promise<never>((_, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error(`catalog sync exceeded ${LIVE_SYNC_TIMEOUT_MS}ms`)),
+        LIVE_SYNC_TIMEOUT_MS,
+      );
+      timeout.unref();
+    }),
+  ]);
+  await boundedSync.catch(error => {
     console.error(`Warning: custom model saved, but catalog sync failed: ${error instanceof Error ? error.message : String(error)}`);
+  }).finally(() => {
+    if (timeout) clearTimeout(timeout);
   });
 }
 
@@ -312,21 +326,23 @@ function handleConfiguredModels(args: string[]): void {
   console.log("Note: providers with liveModels may have additional models at runtime.");
 }
 
-function runCustomCommand(command: Promise<void>): void {
-  command.catch(error => {
+async function runCustomCommand(command: Promise<void>): Promise<void> {
+  try {
+    await command;
+  } catch (error) {
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
-  });
+  }
 }
 
-export function handleModels(args: string[]): void {
+export async function handleModels(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
   if (subcommand === "add") {
-    runCustomCommand(handleCustomAdd(rest));
+    await runCustomCommand(handleCustomAdd(rest));
     return;
   }
   if (subcommand === "remove") {
-    runCustomCommand(handleCustomRemove(rest));
+    await runCustomCommand(handleCustomRemove(rest));
     return;
   }
   if (subcommand === "list-custom") {

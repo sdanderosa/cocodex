@@ -10,7 +10,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,18 @@ const PKG = "@bitkyc08/opencodex";
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "src", "cli", "index.ts");
+
+function currentPackageMetadata() {
+  try {
+    const value = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
+    return {
+      name: typeof value.name === "string" ? value.name : "?",
+      version: typeof value.version === "string" ? value.version : "?",
+    };
+  } catch {
+    return { name: "?", version: "?" };
+  }
+}
 
 function isNodeModulesInstall() {
   return here.split(/[\\/]/).includes("node_modules");
@@ -34,11 +46,7 @@ function npmBin() {
 }
 
 function currentPackageVersion() {
-  try {
-    return JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")).version ?? "?";
-  } catch {
-    return "?";
-  }
+  return currentPackageMetadata().version;
 }
 
 function updateTag(currentVersion) {
@@ -61,6 +69,24 @@ function expandUserPath(raw) {
 function configDir() {
   const raw = process.env.OPENCODEX_HOME?.trim();
   return resolve(raw ? expandUserPath(raw) : join(homedir(), ".opencodex"));
+}
+
+function backupConfigBeforeUpdate() {
+  const source = join(configDir(), "config.json");
+  if (!existsSync(source)) return null;
+  const now = Date.now();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const backup = `${source}.pre-update.${now}${suffix}.bak`;
+    try {
+      copyFileSync(source, backup, fsConstants.COPYFILE_EXCL);
+      return backup;
+    } catch (error) {
+      if (error?.code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error("Could not allocate a unique pre-update config backup path");
 }
 
 function shouldRepairCodexShim() {
@@ -113,6 +139,15 @@ function runTrayLifecycle(launcher, action) {
 }
 
 function runNpmSelfUpdate() {
+  const installedPackage = currentPackageMetadata().name;
+  if (installedPackage !== PKG) {
+    console.error(
+      `This ${installedPackage} build is not connected to the ${PKG} release feed.\n`
+      + "Install a newer verified CoCodex private-alpha package with its bundled "
+      + "Install-CoCodex.ps1 script. Local Client and Server state is preserved.",
+    );
+    process.exit(1);
+  }
   const current = currentPackageVersion();
   const tag = updateTag(current);
   const npm = npmBin();
@@ -132,6 +167,9 @@ function runNpmSelfUpdate() {
     console.log(`Already on the latest ${tag} version (v${latest}).`);
     process.exit(0);
   }
+
+  const configBackup = backupConfigBeforeUpdate();
+  if (configBackup) console.log(`Backed up OpenCodex configuration to ${configBackup}`);
 
   // Remember whether a background service manages the proxy BEFORE stopping — `ocx stop`
   // unloads it permanently, so a successful update must reinstall it afterwards.
@@ -305,12 +343,13 @@ function findBunBinary(bunDir) {
 }
 
 function fail(msg) {
+  const installedPackage = currentPackageMetadata().name;
   console.error(
     `opencodex: ${msg}\n` +
       "The bundled Bun runtime could not be prepared. This usually means the\n" +
       "install skipped lifecycle scripts (e.g. npm blocked bun's postinstall\n" +
       "under allowScripts) or optional dependencies. Reinstall with:\n" +
-      "  npm install -g --allow-scripts=bun @bitkyc08/opencodex\n" +
+      `  npm install -g --allow-scripts=bun ${installedPackage}\n` +
       "(use sudo if the original install used sudo; without --ignore-scripts\n" +
       "and without --omit=optional / optional=false)"
   );
@@ -327,6 +366,14 @@ function resolveBun() {
 
   let bin = findBunBinary(bunDir);
   if (bin) return bin;
+
+  // CoCodex private-alpha bundles are checksum-verified before installation.
+  // Never turn a missing runtime into an unverified first-launch download that
+  // is outside that bundle and its npm shrinkwrap. The inherited upstream
+  // package retains its historical repair behavior for compatibility.
+  if (currentPackageMetadata().name !== PKG) {
+    fail("Bun binary is missing; CoCodex runtime repair is install-time only.");
+  }
 
   // Lazy fallback: --ignore-scripts (or a failed postinstall) leaves the
   // ~450-byte placeholder stub. Run the bun package's own installer once.

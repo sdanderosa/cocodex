@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort } from "./config";
 import { loadConfig } from "./config";
 import { restoreNativeCodex } from "./codex/inject";
+import { writeJournal } from "./codex/journal";
 import { isWslRuntime } from "./codex/home";
 import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
@@ -1003,6 +1004,39 @@ export interface ParsedServiceArgs {
   invalid: string[];
 }
 
+async function verifyInstalledServiceAndInjection(): Promise<boolean> {
+  const { findLiveProxy } = await import("./server/proxy-liveness");
+  const deadline = Date.now() + 12_000;
+  let live = await findLiveProxy();
+  while (!live && Date.now() < deadline) {
+    await Bun.sleep(150);
+    live = await findLiveProxy();
+  }
+  if (!live) {
+    const restored = restoreNativeCodex();
+    console.error("❌ CoCodex setup incomplete: installed service did not pass /healthz.");
+    console.error(restored.success
+      ? `   Native Codex configuration restored. ${restored.message}`
+      : `   Native Codex restoration FAILED: ${restored.message}`);
+    return false;
+  }
+
+  const { syncModelsToCodex } = await import("./codex/sync");
+  try {
+    const result = await syncModelsToCodex(live.port);
+    if (result.ok) return true;
+    console.error(`❌ ${result.message}`);
+    return false;
+  } catch (error) {
+    const restored = restoreNativeCodex();
+    console.error(`❌ CoCodex setup incomplete: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(restored.success
+      ? `   Native Codex configuration restored. ${restored.message}`
+      : `   Native Codex restoration FAILED: ${restored.message}`);
+    return false;
+  }
+}
+
 /**
  * `ocx service [sub] [--native|--scheduler]`. The first non-flag token is the
  * subcommand; backend flags are only meaningful for `install` (validated by the caller).
@@ -1050,15 +1084,34 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
     process.exit(1);
   }
   switch (command) {
-    case "install":
+    case "install": {
       assertServiceEnvironmentMatchesInstall();
       assertServiceAuthEnvironment();
-      await ops.install();
+      const serviceExistedBefore = diagnoseService().installed;
+      try {
+        writeJournal();
+        await ops.install();
+        if (!await verifyInstalledServiceAndInjection()) throw new Error("service startup verification failed");
+      } catch (error) {
+        console.error(`CoCodex setup incomplete: ${error instanceof Error ? error.message : String(error)}`);
+        try { ops.stop(); } catch { /* best-effort rollback */ }
+        await stopTrackedProxyForServiceCommand().catch(() => {});
+        if (!serviceExistedBefore) {
+          try { ops.uninstall(); } catch { /* best-effort rollback */ }
+        }
+        const restored = restoreNativeCodex();
+        console.error(restored.success
+          ? `Native Codex configuration restored. ${restored.message}`
+          : `Native Codex restoration FAILED: ${restored.message}`);
+        process.exitCode = 1;
+        return;
+      }
       console.log(backend === "native"
-        ? "✅ opencodex native service installed + started (windowless, starts at boot, auto-restarts on crash)."
-        : "✅ opencodex service installed + started (auto-starts on login, auto-restarts on crash).");
+        ? "✅ opencodex native service installed, health-verified, and safely injected (windowless, starts at boot, auto-restarts on crash)."
+        : "✅ opencodex service installed, health-verified, and safely injected (auto-starts on login, auto-restarts on crash).");
       if (process.platform === "linux") console.log("   For auto-start on boot: loginctl enable-linger $USER");
       break;
+    }
     case "start":
       ops.start();
       console.log("✅ service started.");

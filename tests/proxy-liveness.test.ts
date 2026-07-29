@@ -45,6 +45,18 @@ describe("proxyIdentityAt", () => {
     expect(identity).toEqual({ pid: 4242 });
   });
 
+  test("clears and aborts its owned probe signal after a completed request", async () => {
+    let signal: AbortSignal | undefined;
+    const identity = await proxyIdentityAt(10100, {}, {
+      fetchFn: (async (_url: string | URL | Request, init?: RequestInit) => {
+        signal = init?.signal ?? undefined;
+        return healthz(OURS);
+      }) as typeof fetch,
+    });
+    expect(identity).toEqual({ pid: 4242 });
+    expect(signal?.aborted).toBe(true);
+  });
+
   test("rejects foreign 200s, non-OK responses, and pid mismatches", async () => {
     expect(await proxyIdentityAt(10100, {}, { fetchFn: (async () => healthz({ ok: true })) as typeof fetch })).toBeNull();
     expect(await proxyIdentityAt(10100, {}, { fetchFn: (async () => healthz(OURS, 503)) as typeof fetch })).toBeNull();

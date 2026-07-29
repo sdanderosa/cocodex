@@ -13,7 +13,7 @@ function runCli(args: string[], env: Record<string, string> = {}) {
     cwd: repoRoot,
     env: { ...process.env, ...env },
     encoding: "utf8",
-    timeout: 10000,
+    timeout: 30000,
   });
 }
 

@@ -653,11 +653,15 @@ export async function handleCodexAuthAPI(
         openUrl(result.url);
       }
 
-      (async () => {
+      void (async () => {
         let completed = false;
         for (let i = 0; i < 150; i++) {
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise<void>(resolve => {
+            const timer = setTimeout(resolve, 2000);
+            timer.unref?.();
+          });
           const st = getLoginStatus("chatgpt");
+          if (!st) continue;
           if (st.done && st.loggedIn) {
             const { getCredential } = await import("../oauth/store");
             const cred = getCredential("chatgpt");
@@ -802,7 +806,13 @@ export async function handleCodexAuthAPI(
         }
         // TTL: keep completed flow state available for clients that miss a short polling window.
         setTimeout(() => codexAuthLoginState.delete(flowId), 300_000);
-      })();
+      })().catch(() => {
+        codexAuthLoginState.set(flowId, {
+          status: "error",
+          error: "Login monitoring failed. Please retry OAuth login.",
+          doneAt: Date.now(),
+        });
+      });
 
       codexAuthLoginState.set(flowId, { status: "pending" });
       return jsonResponse({ ok: true, flowId, url: result.url, instructions: result.instructions });

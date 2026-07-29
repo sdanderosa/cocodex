@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as z from "zod/v4";
@@ -770,6 +770,27 @@ export function readConfigDiagnostics(): ConfigDiagnostics {
   } catch {
     return { config: getDefaultConfig(), source: "fallback", error: "invalid_json" };
   }
+}
+
+/** Create a no-overwrite, byte-for-byte config snapshot before package replacement. */
+export function backupConfigBeforeUpdate(
+  configPath = getConfigPath(),
+  now = Date.now(),
+): string | null {
+  if (!existsSync(configPath)) return null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const backupPath = `${configPath}.pre-update.${now}${suffix}.bak`;
+    try {
+      copyFileSync(configPath, backupPath, fsConstants.COPYFILE_EXCL);
+      hardenExistingSecret(backupPath);
+      return backupPath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+  throw new Error("Could not allocate a unique pre-update config backup path");
 }
 
 export function saveConfig(config: OcxConfig): void {

@@ -53,6 +53,12 @@ type OcxProviderConfigWithReasoningSummaries = OcxProviderConfig & {
   modelSupportsReasoningSummaries?: Record<string, boolean>;
 };
 
+let providerModelsFetchForTests: typeof fetch | null = null;
+
+export function setProviderModelsFetchForTests(fetchImpl: typeof fetch | null): void {
+  providerModelsFetchForTests = fetchImpl;
+}
+
 export type ProviderModelsApiItem = {
   id: string;
   owned_by?: string;
@@ -334,7 +340,10 @@ export async function fetchProviderModels(name: string, prov: OcxProviderConfig,
       return models;
     }
 
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+    const res = await (providerModelsFetchForTests ?? globalThis.fetch)(
+      url,
+      { headers, signal: AbortSignal.timeout(8000) },
+    );
     if (!res.ok) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
       if (shouldLog) {

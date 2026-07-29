@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,11 +9,19 @@ const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.ur
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
 
 function runCli(args: string[], env: Record<string, string> = {}) {
-  return spawnSync(process.execPath, [cliPath, ...args], {
+  const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repoRoot,
     env: { ...process.env, ...env },
     encoding: "utf8",
+    timeout: 15_000,
+    killSignal: "SIGKILL",
   });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    throw new Error(
+      `Timed out waiting for test CLI: ${args.join(" ")}; stderr=${String(result.stderr).slice(-2_000)}`,
+    );
+  }
+  return result;
 }
 
 function freshConfig(extra?: Record<string, unknown>) {
@@ -168,4 +176,42 @@ describe("ocx models richer metadata", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("models add and remove finish persistence before the CLI exits", () => {
+    const { dir } = freshConfig({ port: 61991 });
+    const codexHome = join(dir, ".codex");
+    mkdirSync(codexHome, { recursive: true });
+    try {
+      const added = runCli([
+        "models",
+        "add",
+        "test",
+        "new-model",
+        "--display-name",
+        "New Model",
+      ], { OPENCODEX_HOME: dir, CODEX_HOME: codexHome });
+      expect(added.status).toBe(0);
+
+      const afterAdd = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(afterAdd.customModels).toHaveLength(1);
+      expect(afterAdd.customModels[0]).toMatchObject({
+        provider: "test",
+        modelId: "new-model",
+        displayName: "New Model",
+      });
+
+      const removed = runCli([
+        "models",
+        "remove",
+        afterAdd.customModels[0].id,
+        "--yes",
+      ], { OPENCODEX_HOME: dir, CODEX_HOME: codexHome });
+      expect(removed.status).toBe(0);
+
+      const afterRemove = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(afterRemove.customModels).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
