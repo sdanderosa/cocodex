@@ -21,6 +21,11 @@ import {
 import { generalSharedChat, insertGeneralSharedChat, requireSharedChat } from "./shared-chats";
 import { assertProjectUnlocked, projectLockState } from "./project-locks";
 import { completePendingProjectLeave } from "./project-leave";
+import {
+  assertNoPreparedProjectPlaintextMigration,
+  assertProjectPlaintextMigrationComplete,
+  invalidateProjectPlaintextMigration,
+} from "./project-plaintext-migration";
 
 interface DeviceSigningKeyRow {
   publicKeyPem: string;
@@ -241,6 +246,7 @@ function ensureProjectKeyEpochRow(
 
 /** Return the active epoch and fail closed while membership-key rotation is pending. */
 export function currentProjectKeyEpochForWrite(db: Database, projectId: string): number {
+  assertProjectPlaintextMigrationComplete(db, projectId);
   const state = readProjectKeyEpoch(db, projectId);
   if (!state?.currentEpoch) throw new Error("Project encryption key has not been initialized");
   if (state.rotationRequired) {
@@ -1004,6 +1010,7 @@ export function rotateProjectKeyEpoch(
         created: false,
       };
     }
+    assertNoPreparedProjectPlaintextMigration(db, projectId);
     if (currentEpoch !== expectedEpoch) {
       throw new Error(`Project key rotation conflict (expected ${expectedEpoch}, current ${currentEpoch})`);
     }
@@ -1067,6 +1074,7 @@ export function removeProjectMemberAndInvalidateKeys(
 ): Array<{ taskId: string; targetDeviceId: string }> {
   let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }> = [];
   removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now, () => {
+    invalidateProjectPlaintextMigration(db, projectId, now);
     db.query(`
       UPDATE agents SET enabled = 0
       WHERE project_id = ? AND host_device_id = ?
@@ -1232,6 +1240,7 @@ export function removeProjectMemberAndRotateKeys(
   const serialized = envelopes.map(envelope => envelopeJson(envelope));
   let cancelledTasks: Array<{ taskId: string; targetDeviceId: string }> = [];
   removeMembership(db, projectId, ownerDeviceId, memberDeviceId, now, () => {
+    invalidateProjectPlaintextMigration(db, projectId, now);
     db.query(`
       UPDATE agents SET enabled = 0
       WHERE project_id = ? AND host_device_id = ?

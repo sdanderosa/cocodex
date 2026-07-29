@@ -64,7 +64,17 @@ import {
 import {
   projectMemberLeaveFrameSchema,
   projectMemberLeaveRequestedFrameSchema,
-} from "./project-leave";
+} from "./project-leave";import {
+  projectMigrationCommitFrameSchema,
+  projectMigrationCompletedFrameSchema,
+  projectMigrationInventoryFrameSchema,
+  projectMigrationPageFrameSchema,
+  projectMigrationPageResultFrameSchema,
+  projectMigrationPrepareFrameSchema,
+  projectMigrationRequiredFrameSchema,
+  projectMigrationStageFrameSchema,
+  projectMigrationStagedFrameSchema,
+} from "./project-migration";
 import {
   deviceApprovalChangedFrameSchema,
   deviceApprovalListFrameSchema,
@@ -504,6 +514,10 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     envelopes: z.array(projectKeyEnvelopeSchema).min(1).max(127),
   }).strict(),
   projectMemberLeaveFrameSchema,
+  projectMigrationPrepareFrameSchema,
+  projectMigrationPageFrameSchema,
+  projectMigrationStageFrameSchema,
+  projectMigrationCommitFrameSchema,
   z.object({
     version: z.literal(1),
     type: z.literal("project.context.get"),
@@ -911,6 +925,11 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectDeviceRevokedFrameSchema,
   projectMemberRemovedFrameSchema,
   projectMemberLeaveRequestedFrameSchema,
+  projectMigrationInventoryFrameSchema,
+  projectMigrationPageResultFrameSchema,
+  projectMigrationStagedFrameSchema,
+  projectMigrationCompletedFrameSchema,
+  projectMigrationRequiredFrameSchema,
   projectMemberListFrameSchema,
   projectLockUpdatedFrameSchema,
   projectLockChangedFrameSchema,

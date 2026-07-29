@@ -13,10 +13,16 @@ export const encryptedArtifactSchema = z.object({
   chatId,
   taskId: z.uuid().nullable(),
   authorDeviceId: z.uuid(),
+  migrationId: z.uuid().optional(),
+  attributedDeviceId: z.uuid().optional(),
   envelope: projectContentEnvelopeSchema,
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
-}).strict();
+}).strict().superRefine((value, refinement) => {
+  if (Boolean(value.migrationId) !== Boolean(value.attributedDeviceId)) {
+    refinement.addIssue({ code: "custom", path: ["migrationId"], message: "Migration attribution must be complete" });
+  }
+});
 export type EncryptedArtifact = z.infer<typeof encryptedArtifactSchema>;
 
 export const encryptedArtifactPublishFrameSchema = z.object({

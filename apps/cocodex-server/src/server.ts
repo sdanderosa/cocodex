@@ -112,6 +112,13 @@ import {
 import { updateProjectLifecycle } from "./project-lifecycle";
 import { requestProjectLeave } from "./project-leave";
 import {
+  commitProjectPlaintextMigration,
+  projectHasLegacyPlaintext,
+  prepareProjectPlaintextMigration,
+  projectPlaintextMigrationPage,
+  stageProjectPlaintextMigration,
+} from "./project-plaintext-migration";
+import {
   assertProjectUnlocked,
   pendingProjectLockCancellations,
   projectLockState,
@@ -124,6 +131,7 @@ import {
 } from "./device-approvals";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
+const MAX_WEBSOCKET_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_UNAUTHENTICATED_SOCKETS = 64;
 const MAX_UNAUTHENTICATED_SOCKETS_PER_IP = 8;
 const MAX_CONNECTION_ATTEMPTS_PER_IP_PER_MINUTE = 30;
@@ -146,6 +154,9 @@ const PROJECT_LOCK_BLOCKED_FRAME_TYPES = new Set([
   "project.artifact.publish",
   "project.file-reference.publish",
   "project.context.update",
+  "project.migration.prepare",
+  "project.migration.stage",
+  "project.migration.commit",
   "context.update",
   "prompt.update",
   "artifact.publish",
@@ -512,10 +523,15 @@ export function startCoCodexServer(
     return true;
   }
 
-  function sendToProjectMembers(projectId: string, frame: unknown): void {
+  function sendToProjectMembers(
+    projectId: string,
+    frame: unknown,
+    excludedSocket?: ServerWebSocket<SocketData>,
+  ): void {
     const encoded = JSON.stringify(frame);
     for (const socket of sockets) {
       const deviceId = socket.data.authenticatedDeviceId;
+      if (socket === excludedSocket) continue;
       if (!deviceId) continue;
       const device = deviceForAuthentication(db, deviceId);
       if (!device || device.status !== "approved") {
@@ -923,7 +939,7 @@ export function startCoCodexServer(
       return json({ error: "Not found" }, 404);
     },
     websocket: {
-      maxPayloadLength: MAX_HTTP_BODY_BYTES,
+      maxPayloadLength: MAX_WEBSOCKET_PAYLOAD_BYTES,
       open(socket) {
         sockets.add(socket);
         socket.data.authTimer = setTimeout(() => {
@@ -1060,12 +1076,30 @@ export function startCoCodexServer(
             return;
           }
           if (message.type === "project.list") {
+            const projects = listProjects(db, deviceId);
             socket.send(JSON.stringify({
               version: 1,
               type: "project.list.result",
               requestId,
-              projects: listProjects(db, deviceId),
+              projects,
             }));
+            for (const project of projects) {
+              if (!projectHasLegacyPlaintext(db, project.id)) continue;
+              const migration = db.query(`
+                SELECT pke.current_epoch AS keyEpoch, pm.device_id AS ownerDeviceId
+                FROM project_key_epochs pke
+                JOIN project_members pm ON pm.project_id = pke.project_id AND pm.role = 'owner'
+                WHERE pke.project_id = ?
+              `).get(project.id) as { keyEpoch: number; ownerDeviceId: string } | null;
+              if (!migration?.keyEpoch) continue;
+              socket.send(JSON.stringify({
+                version: 1,
+                type: "project.migration.required",
+                projectId: project.id,
+                keyEpoch: migration.keyEpoch,
+                ownerDeviceId: migration.ownerDeviceId,
+              }));
+            }
             return;
           }
           if (message.type === "device.approval.list") {
@@ -2397,6 +2431,84 @@ export function startCoCodexServer(
               taskId: result.task.id,
               sequence: result.event.sequence,
             }));
+            return;
+          }
+          if (message.type === "project.migration.prepare") {
+            const migration = prepareProjectPlaintextMigration(db, message.projectId, deviceId);
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.migration.inventory",
+              requestId,
+              ...migration,
+            }));
+            return;
+          }
+          if (message.type === "project.migration.page") {
+            const page = projectPlaintextMigrationPage(db, {
+              projectId: message.projectId,
+              migrationId: message.migrationId,
+              ownerDeviceId: deviceId,
+              snapshotDigest: message.snapshotDigest,
+              cursor: message.cursor,
+            });
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.migration.page.result",
+              requestId,
+              projectId: page.projectId,
+              migrationId: page.migrationId,
+              snapshotDigest: page.snapshotDigest,
+              cursor: page.cursor,
+              items: page.items,
+              nextCursor: page.nextCursor,
+            }));
+            return;
+          }
+          if (message.type === "project.migration.stage") {
+            const staged = stageProjectPlaintextMigration(db, {
+              projectId: message.projectId,
+              migrationId: message.migrationId,
+              ownerDeviceId: deviceId,
+              snapshotDigest: message.snapshotDigest,
+              items: message.items,
+            });
+            socket.send(JSON.stringify({
+              version: 1,
+              type: "project.migration.staged",
+              requestId,
+              projectId: staged.projectId,
+              migrationId: staged.migrationId,
+              snapshotDigest: staged.snapshotDigest,
+              accepted: staged.accepted,
+              stagedCount: staged.stagedCount,
+              itemCount: staged.itemCount,
+            }));
+            return;
+          }
+          if (message.type === "project.migration.commit") {
+            const completed = commitProjectPlaintextMigration(db, {
+              projectId: message.projectId,
+              migrationId: message.migrationId,
+              ownerDeviceId: deviceId,
+              keyEpoch: message.keyEpoch,
+              snapshotDigest: message.snapshotDigest,
+              ownerPublicKeyPem: message.ownerPublicKeyPem,
+              ownerSignature: message.ownerSignature,
+              serverFingerprint: certificateFingerprint,
+            });
+            const completion = {
+              version: 1 as const,
+              type: "project.migration.completed" as const,
+              projectId: completed.projectId,
+              migrationId: completed.migrationId,
+              keyEpoch: completed.keyEpoch,
+              snapshotDigest: completed.snapshotDigest,
+              migratedCount: completed.migratedCount,
+              resetChatIds: completed.resetChatIds,
+              completedAt: completed.completedAt,
+            };
+            socket.send(JSON.stringify({ ...completion, requestId }));
+            sendToProjectMembers(completed.projectId, completion, socket);
             return;
           }
           if (message.type === "chat.send") assertLegacyProjectWriteAllowed(db, message.projectId);

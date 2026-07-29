@@ -14,6 +14,7 @@ export const encryptedPromptUpdateSchema = z.object({
   chatId,
   updateId,
   senderDeviceId: deviceId,
+  migrationId: z.uuid().optional(),
   envelope: projectContentEnvelopeSchema,
   acceptedAt: z.iso.datetime(),
 }).strict();

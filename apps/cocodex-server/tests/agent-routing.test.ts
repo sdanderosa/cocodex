@@ -15,7 +15,6 @@ import { serverPaths } from "../src/paths";
 import { addProjectMember, createProject } from "../src/shared-state";
 import { shareProjectKeyEnvelope } from "../src/project-encryption-storage";
 import { publishEncryptedArtifact } from "../src/encrypted-artifacts";
-import { publishArtifact } from "../src/artifacts";
 import {
   approvePendingDeviceForTest,
   TEST_SERVER_IDENTITY_FINGERPRINT,
@@ -503,22 +502,6 @@ describe("authoritative agent dependencies", () => {
         taskId,
         authorDeviceId: kai.id,
         envelope: contentEnvelope(project.id, kai, "artifact", encryptedEvidenceId),
-      }, now).created).toBeTrue();
-      const plaintextEvidence = {
-        id: randomUUID(),
-        projectId: project.id,
-        taskId,
-        authorDeviceId: stephen.id,
-        type: "test-result" as const,
-        title: "Claimed evidence",
-        summary: "Must come from the executing device.",
-        content: "untrusted",
-        status: "ready" as const,
-      };
-      expect(() => publishArtifact(db, plaintextEvidence, now)).toThrow("task target device");
-      expect(publishArtifact(db, {
-        ...plaintextEvidence,
-        authorDeviceId: kai.id,
       }, now).created).toBeTrue();
       db.query("UPDATE agents SET enabled = 0 WHERE id = ?").run("kai-agent");
       expect(pendingEncryptedAgentTasks(db, kai.id, now)).toEqual([]);

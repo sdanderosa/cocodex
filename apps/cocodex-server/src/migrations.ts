@@ -504,7 +504,7 @@ CREATE INDEX project_invitations_owner_status
   ON project_invitations(owner_device_id, status, created_at);
 CREATE TABLE encrypted_project_creations (
   creation_id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   owner_device_id TEXT NOT NULL REFERENCES devices(id),
   envelopes_json TEXT NOT NULL,
@@ -840,5 +840,66 @@ CREATE UNIQUE INDEX project_member_leave_requests_pending
   WHERE state = 'pending';
 CREATE INDEX project_member_leave_requests_project_time
   ON project_member_leave_requests(project_id, requested_at);`,
+  },
+  {
+    version: 34,
+    sql: `
+CREATE TABLE project_plaintext_migrations (
+  migration_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key_epoch INTEGER NOT NULL CHECK (key_epoch > 0),
+  owner_device_id TEXT NOT NULL REFERENCES devices(id),
+  snapshot_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('prepared', 'completed', 'invalidated')),
+  item_count INTEGER NOT NULL CHECK (item_count BETWEEN 0 AND 10000),
+  staged_count INTEGER NOT NULL DEFAULT 0 CHECK (staged_count BETWEEN 0 AND item_count),
+  manifest_digest TEXT,
+  owner_signature TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  CHECK (
+    (state = 'prepared' AND manifest_digest IS NULL AND owner_signature IS NULL AND completed_at IS NULL)
+    OR
+    (state = 'completed' AND manifest_digest IS NOT NULL AND owner_signature IS NOT NULL AND completed_at IS NOT NULL)
+    OR
+    (state = 'invalidated' AND completed_at IS NULL)
+  )
+);
+CREATE INDEX project_plaintext_migrations_state
+  ON project_plaintext_migrations(state, updated_at);
+CREATE UNIQUE INDEX project_plaintext_migrations_prepared_project
+  ON project_plaintext_migrations(project_id) WHERE state = 'prepared';
+
+CREATE TABLE project_plaintext_migration_items (
+  migration_id TEXT NOT NULL REFERENCES project_plaintext_migrations(migration_id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 9999),
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('shared-context', 'chat', 'agent-response', 'shared-prompt', 'artifact', 'task')),
+  source_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL REFERENCES shared_chats(id) ON DELETE CASCADE,
+  source_digest TEXT NOT NULL,
+  inventory_json TEXT NOT NULL,
+  envelope_json TEXT,
+  envelope_digest TEXT,
+  staged_at TEXT,
+  PRIMARY KEY (migration_id, source_kind, source_id),
+  UNIQUE (migration_id, ordinal),
+  CHECK (
+    (envelope_json IS NULL AND envelope_digest IS NULL AND staged_at IS NULL)
+    OR
+    (envelope_json IS NOT NULL AND envelope_digest IS NOT NULL AND staged_at IS NOT NULL)
+  )
+);
+CREATE INDEX project_plaintext_migration_items_page
+  ON project_plaintext_migration_items(migration_id, ordinal);
+
+ALTER TABLE encrypted_project_context ADD COLUMN migration_id TEXT;
+ALTER TABLE project_chat_events ADD COLUMN migration_id TEXT;
+ALTER TABLE project_chat_events ADD COLUMN migrated_attributed_device_id TEXT REFERENCES devices(id);
+ALTER TABLE project_prompt_updates ADD COLUMN migration_id TEXT;
+ALTER TABLE project_artifacts ADD COLUMN migration_id TEXT;
+ALTER TABLE project_artifacts ADD COLUMN migrated_attributed_device_id TEXT REFERENCES devices(id);
+ALTER TABLE agent_tasks ADD COLUMN migration_id TEXT;
+`,
   },
 ];

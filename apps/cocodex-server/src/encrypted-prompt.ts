@@ -17,6 +17,7 @@ export interface EncryptedPromptUpdate {
   chatId: string;
   updateId: string;
   senderDeviceId: string;
+  migrationId?: string;
   envelope: ProjectContentEnvelope;
   acceptedAt: string;
 }
@@ -42,6 +43,7 @@ interface UpdateRow {
   updateId: string;
   senderDeviceId: string;
   envelopeJson: string;
+  migrationId: string | null;
   acceptedAt: string;
 }
 
@@ -88,6 +90,7 @@ function updateFromRow(row: UpdateRow): EncryptedPromptUpdate {
     updateId: row.updateId,
     senderDeviceId: row.senderDeviceId,
     envelope: parseEnvelope(row.envelopeJson),
+    ...(row.migrationId ? { migrationId: row.migrationId } : {}),
     acceptedAt: row.acceptedAt,
   };
 }
@@ -112,7 +115,8 @@ export function appendEncryptedPromptUpdateResult(
   const serialized = envelopeJson(envelope);
   const existing = db.query(`
     SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
-      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
+      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
+      accepted_at AS acceptedAt, migration_id AS migrationId
     FROM project_prompt_updates WHERE update_id = ?
   `).get(input.updateId) as UpdateRow | null;
   if (existing) {
@@ -131,7 +135,8 @@ export function appendEncryptedPromptUpdateResult(
     `).run(input.projectId, input.chatId, input.updateId, input.senderDeviceId, serialized, now.toISOString());
     const row = db.query(`
       SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
-        sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
+        sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
+        accepted_at AS acceptedAt, migration_id AS migrationId
       FROM project_prompt_updates WHERE sequence = ?
     `).get(Number(result.lastInsertRowid)) as UpdateRow;
     return { update: updateFromRow(row), created: true };
@@ -150,7 +155,8 @@ export function encryptedPromptUpdatesAfter(
   const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
   const rows = db.query(`
     SELECT sequence, project_id AS projectId, chat_id AS chatId, update_id AS updateId,
-      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson, accepted_at AS acceptedAt
+      sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
+      accepted_at AS acceptedAt, migration_id AS migrationId
     FROM project_prompt_updates
     WHERE project_id = ? AND chat_id = ? AND sequence > ?
     ORDER BY sequence ASC LIMIT ?

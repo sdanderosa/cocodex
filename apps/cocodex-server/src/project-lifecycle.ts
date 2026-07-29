@@ -9,6 +9,7 @@ import {
   type ProjectLifecycleUpdateFrame,
   type SharedProject,
 } from "../../../packages/cocodex-protocol/src/index.ts";
+import { assertNoPreparedProjectPlaintextMigration } from "./project-plaintext-migration";
 import { listProjects } from "./shared-state";
 
 interface ProjectRow {
@@ -176,6 +177,9 @@ export function updateProjectLifecycle(
     const current = projectRow(db, frame.projectId);
     if (current.lifecycleRevision !== frame.expectedRevision) {
       throw new Error("Project lifecycle revision is stale");
+    }
+    if (frame.action === "delete") {
+      assertNoPreparedProjectPlaintextMigration(db, frame.projectId);
     }
     if (frame.action === "rename") {
       if (current.state !== "active" || current.lockState !== "active") {

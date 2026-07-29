@@ -36,6 +36,8 @@ interface ArtifactRow {
   envelopeJson: string;
   createdAt: string;
   updatedAt: string;
+  migrationId?: string | null;
+  attributedDeviceId?: string | null;
 }
 
 function envelopeJson(value: ProjectContentEnvelope): string {
@@ -71,6 +73,12 @@ function verifyEnvelopeSender(db: Database, senderDeviceId: string, envelope: Pr
 }
 
 function artifactFromRow(row: ArtifactRow): EncryptedArtifact {
+  if (Boolean(row.migrationId) !== Boolean(row.attributedDeviceId)) {
+    throw new Error("Stored encrypted artifact migration attribution is incomplete");
+  }
+  const migrationMetadata = row.migrationId && row.attributedDeviceId
+    ? { migrationId: row.migrationId, attributedDeviceId: row.attributedDeviceId }
+    : {};
   return encryptedArtifactSchema.parse({
     artifactId: row.id,
     projectId: row.projectId,
@@ -80,6 +88,7 @@ function artifactFromRow(row: ArtifactRow): EncryptedArtifact {
     envelope: parseEnvelope(row.envelopeJson),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    ...migrationMetadata,
   });
 }
 
@@ -113,7 +122,8 @@ export function publishEncryptedArtifact(
   const serialized = envelopeJson(envelope);
   const existing = db.query(`
     SELECT id, project_id AS projectId, chat_id AS chatId, task_id AS taskId, author_device_id AS authorDeviceId,
-      envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
+      envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt,
+      migration_id AS migrationId, migrated_attributed_device_id AS attributedDeviceId
     FROM project_artifacts WHERE id = ?
   `).get(input.artifactId) as ArtifactRow | null;
   if (existing) {
@@ -157,7 +167,8 @@ export function listEncryptedArtifacts(
   requireSharedChat(db, projectId, chatId, deviceId);
   const rows = db.query(`
     SELECT id, project_id AS projectId, chat_id AS chatId, task_id AS taskId, author_device_id AS authorDeviceId,
-      envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
+      envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt,
+      migration_id AS migrationId, migrated_attributed_device_id AS attributedDeviceId
     FROM project_artifacts WHERE project_id = ? AND chat_id = ? ORDER BY created_at, id LIMIT 500
   `).all(projectId, chatId) as ArtifactRow[];
   return rows.map(artifactFromRow);
@@ -175,7 +186,8 @@ export function encryptedArtifactsByIds(
   return artifactIds.map(artifactId => {
     const row = db.query(`
       SELECT id, project_id AS projectId, chat_id AS chatId, task_id AS taskId, author_device_id AS authorDeviceId,
-        envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt
+        envelope_json AS envelopeJson, created_at AS createdAt, updated_at AS updatedAt,
+        migration_id AS migrationId, migrated_attributed_device_id AS attributedDeviceId
       FROM project_artifacts WHERE id = ?
     `).get(artifactId) as ArtifactRow | null;
     if (!row || row.projectId !== projectId || row.chatId !== chatId) {

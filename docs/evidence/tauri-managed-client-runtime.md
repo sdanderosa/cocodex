@@ -824,3 +824,22 @@ rule, or port was stopped, adopted, rebound, or reconfigured.
 All native artifacts report `NotSigned`. This remains private-alpha evidence;
 it does not establish Authenticode/signing, live UAC/SCM/reboot, or physical
 two-PC acceptance.
+## Owner-attested migration exact-tree rebuild ? 2026-07-29
+
+The current uncommitted migration worktree rebuilt the sidecar, release desktop,
+NSIS, and MSI only after the final maintained and inherited suites passed.
+Current final hashes are:
+
+```text
+NSIS    BDA67BD209D37830E9FAD4BD3D4A6D5BF22D34A1A519D87C4C94AFF7C998DD6F
+MSI     8061111153172916E3B121E1640E3AB309A6FD31AAAE5E08BA5725C59F7EFAA4
+runtime AD6AC109FE1D1531E35EA5355BF222BA39E5F604FDF0B3E174BCAEC857C19CED
+desktop 59014E0D79BC65EAEB94941E5AC38C2B0DE3680F697DF40F9BADB02196B2BD00
+```
+
+Final isolated NSIS and MSI smokes each launched only WebView2, started no
+bundled runtime, logged rejection of foreign OpenCodex PID 49016, and left
+PID 49016 owning port 10100. Exact smoke PIDs and validated roots alone were
+cleaned. Pre-existing Windows Installer PID 64672 remained untouched. Full
+transaction, test, package, and protected-home evidence is in
+[owner-attested-plaintext-migration.md](owner-attested-plaintext-migration.md).

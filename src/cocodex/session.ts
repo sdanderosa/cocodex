@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomBytes, randomUUID, sign, verify } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import {
   agentDefinitionSigningTranscript,
   deviceApprovalSigningTranscript,
@@ -120,6 +120,10 @@ import {
   sealProjectContent,
   sealProjectKeyEnvelope,
 } from "./project-encryption";
+import {
+  ProjectPlaintextMigrationCoordinator,
+  type ProjectMigrationServerFrame,
+} from "./project-plaintext-migration";
 import {
   clearProjectKeyInitialization,
   clearProjectCreation,
@@ -810,12 +814,6 @@ export async function runJsonLineSession(
     projectInvitations.set(invitation.invitationId, resident);
     return resident;
   };
-  const migrationRecordId = (projectId: string, revision: number): string => {
-    const hex = createHash("sha256").update(`CoCodex legacy context migration\u0000${projectId}\u0000${revision}`).digest("hex").slice(0, 32).split("");
-    hex[12] = "5";
-    hex[16] = ((Number.parseInt(hex[16]!, 16) & 3) | 8).toString(16);
-    return `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
-  };
   const migrateProjectSubscriptions = async (projectId: string): Promise<void> => {
     if (chatSubscriptions.has(projectId) && !encryptedChatCursors.has(projectId)) {
       chatCursors.delete(projectId);
@@ -828,42 +826,82 @@ export async function runJsonLineSession(
       send({ version: 1, type: "project.prompt.subscribe", requestId: randomUUID(), projectId, chatId: projectId, afterSequence: 0 });
     }
     if (contextSubscriptions.delete(projectId)) {
-      encryptedContextSubscriptions.add(projectId);
-      let migration: Promise<number> | undefined;
-      const snapshot = legacyContextSnapshots.get(projectId);
-      const stored = loadProjectKeyForEncryption(paths.projectKeys, projectId);
-      if (snapshot && stored && snapshot.revision > 0) {
-        const serialized = JSON.stringify({ finalGoal: snapshot.finalGoal, context: snapshot.context });
-        const envelope = await sealProjectContent({
-          projectId,
-          chatId: projectId,
-          keyEpoch: stored.keyEpoch,
-          recordType: "shared-context",
-          recordId: migrationRecordId(projectId, snapshot.revision),
-          plaintext: serialized,
-          projectKey: stored.projectKey,
-          senderDeviceId: connection.deviceId,
-          senderPrivateKeyPem: identity.privateKeyPem,
-          senderPublicKeyPem: identity.publicKeyPem,
-        });
-        enqueueDurableEvent(paths, {
-          version: 1,
-          type: "project.context.update",
-          requestId: randomUUID(),
-          projectId,
-          chatId: projectId,
-          expectedRevision: 0,
-          envelope,
-        });
-        migration = flush();
-      }
-      if (migration) {
-        try { await migration; }
-        catch (error) { emitError({ source: "project-encryption", error: error instanceof Error ? error.message : String(error) }); }
-      }
+      const scope = `${projectId}:${projectId}`;
+      encryptedContextSubscriptions.add(scope);
       send({ version: 1, type: "project.context.get", requestId: randomUUID(), projectId, chatId: projectId });
     }
   };
+  const projectMigration = new ProjectPlaintextMigrationCoordinator({
+    owner: {
+      deviceId: connection.deviceId,
+      publicKeyPem: identity.publicKeyPem,
+      privateKeyPem: identity.privateKeyPem,
+      serverFingerprint: connection.serverFingerprint,
+    },
+    loadProjectKey: (projectId, keyEpoch) => loadProjectKey(paths.projectKeys, projectId, keyEpoch),
+    send,
+    status: event => emit({ source: "project-migration", ...event }),
+    completed: frame => {
+      for (const chatId of frame.resetChatIds) {
+        const scope = `${frame.projectId}:${chatId}`;
+        const chatActive = chatSubscriptions.has(frame.projectId) || encryptedChatCursors.has(scope);
+        const promptActive = promptSubscriptions.has(frame.projectId)
+          || encryptedPromptSubscriptions.has(scope)
+          || encryptedPromptSubscriptions.has(frame.projectId);
+        const contextActive = contextSubscriptions.has(frame.projectId)
+          || encryptedContextSubscriptions.has(scope)
+          || encryptedContextSubscriptions.has(frame.projectId);
+        const artifactsActive = encryptedArtifactSubscriptions.has(scope);
+        chatCursors.delete(frame.projectId);
+        encryptedChatCursors.set(scope, 0);
+        encryptedPromptCursors.set(scope, 0);
+        encryptedPromptSubscriptions.delete(frame.projectId);
+        encryptedContextSubscriptions.delete(frame.projectId);
+        if (chatActive) {
+          send({
+            version: 1,
+            type: "project.chat.subscribe",
+            requestId: randomUUID(),
+            projectId: frame.projectId,
+            chatId,
+            afterSequence: 0,
+          });
+        }
+        if (promptActive) {
+          encryptedPromptSubscriptions.add(scope);
+          send({
+            version: 1,
+            type: "project.prompt.subscribe",
+            requestId: randomUUID(),
+            projectId: frame.projectId,
+            chatId,
+            afterSequence: 0,
+          });
+        }
+        if (contextActive) {
+          encryptedContextSubscriptions.add(scope);
+          send({
+            version: 1,
+            type: "project.context.get",
+            requestId: randomUUID(),
+            projectId: frame.projectId,
+            chatId,
+          });
+        }
+        if (artifactsActive) {
+          send({
+            version: 1,
+            type: "project.artifact.list",
+            requestId: randomUUID(),
+            projectId: frame.projectId,
+            chatId,
+          });
+        }
+      }
+      void migrateProjectSubscriptions(frame.projectId);
+    },
+  });
+
   const encryptedChatFrame = async (
     projectId: string,
     chatId: string,
@@ -1657,11 +1695,25 @@ export async function runJsonLineSession(
     return { finalGoal: record.finalGoal, context: record.context as Record<string, unknown> };
   };
 
+  const migratedAttribution = (
+    value: Record<string, any>,
+    signerDeviceId: string,
+    label: string,
+  ): string => {
+    if (value.migrationId === undefined && value.attributedDeviceId === undefined) return signerDeviceId;
+    if (typeof value.migrationId !== "string" || typeof value.attributedDeviceId !== "string") {
+      throw new Error(`Encrypted ${label} migration attribution is incomplete`);
+    }
+    return value.attributedDeviceId;
+  };
+
+
   const openEncryptedChatEvent = async (rawEvent: Record<string, any>): Promise<ChatEvent> => {
     const projectId = String(rawEvent.projectId);
     const chatId = String(rawEvent.chatId ?? projectId);
     const eventId = String(rawEvent.eventId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
+    const displayedSenderDeviceId = migratedAttribution(rawEvent, parsedEnvelope.senderDeviceId, "chat");
     if (String(rawEvent.senderDeviceId) !== parsedEnvelope.senderDeviceId) {
       throw new Error("Encrypted agent result sender does not match its envelope");
     }
@@ -1695,7 +1747,7 @@ export async function runJsonLineSession(
       projectId,
       chatId,
       eventId,
-      senderDeviceId: String(rawEvent.senderDeviceId),
+      senderDeviceId: displayedSenderDeviceId,
       content,
       clientCreatedAt: String(rawEvent.clientCreatedAt),
       acceptedAt: String(rawEvent.acceptedAt),
@@ -1708,6 +1760,10 @@ export async function runJsonLineSession(
     const taskId = String(rawEvent.taskId);
     const eventId = String(rawEvent.eventId);
     const parsedEnvelope = projectContentEnvelopeSchema.parse(rawEvent.envelope);
+    if (String(rawEvent.senderDeviceId) !== parsedEnvelope.senderDeviceId) {
+      throw new Error("Encrypted agent result sender does not match its envelope");
+    }
+    const displayedSenderDeviceId = migratedAttribution(rawEvent, parsedEnvelope.senderDeviceId, "agent result");
     const key = loadProjectKey(paths.projectKeys, projectId, parsedEnvelope.keyEpoch);
     if (!key) throw new Error(`No project key is available for ${projectId} epoch ${parsedEnvelope.keyEpoch}`);
     const senderPublicKeyPem = trustedProjectSenderKey(parsedEnvelope.senderDeviceId, parsedEnvelope.senderPublicKeyPem);
@@ -1750,7 +1806,7 @@ export async function runJsonLineSession(
         projectId,
         chatId,
         eventId,
-        senderDeviceId: String(rawEvent.senderDeviceId),
+        senderDeviceId: displayedSenderDeviceId,
         content,
         clientCreatedAt: String(rawEvent.clientCreatedAt),
         acceptedAt: String(rawEvent.acceptedAt),
@@ -1975,12 +2031,13 @@ export async function runJsonLineSession(
     if (record.taskId !== rawArtifact.taskId || parsedEnvelope.senderDeviceId !== rawArtifact.authorDeviceId) {
       throw new Error("Encrypted artifact metadata does not match its envelope");
     }
+    const displayedAuthorDeviceId = migratedAttribution(rawArtifact, parsedEnvelope.senderDeviceId, "artifact");
     return {
       id: artifactId,
       projectId,
       chatId,
       taskId: record.taskId as string | null,
-      authorDeviceId: String(rawArtifact.authorDeviceId),
+      authorDeviceId: displayedAuthorDeviceId,
       type: record.type as Artifact["type"],
       title: record.title,
       summary: record.summary,
@@ -2445,6 +2502,10 @@ export async function runJsonLineSession(
         || frame.type === "project.member.list.result" || frame.type === "project.member.removed"
         || frame.type === "project.member.leave-requested"
         || frame.type === "presence.snapshot" || frame.type === "presence.update"
+        || frame.type === "project.migration.inventory" || frame.type === "project.migration.page.result"
+        || frame.type === "project.migration.staged" || frame.type === "project.migration.completed"
+        || frame.type === "project.migration.required"
+
         || frame.type === "presence.leave" || frame.type === "presence.accepted") {
         try { frame = projectServerFrameSchema.parse(frame) as Record<string, any>; }
         catch (error) {
@@ -2462,7 +2523,19 @@ export async function runJsonLineSession(
           return;
         }
       }
+      if (typeof frame.type === "string" && frame.type.startsWith("project.migration.")) {
+        void projectMigration.handle(frame as ProjectMigrationServerFrame).catch(error => {
+          const message = error instanceof Error ? error.message : String(error);
+          const projectId = String(frame.projectId ?? "");
+          if (projectId) projectMigration.fail(projectId, message);
+          emitError({ source: "project-migration", projectId, error: message });
+        });
+        return;
+      }
       if (frame.type === "error" && typeof frame.requestId === "string") {
+        if (projectMigration.handleError(frame.requestId, String(frame.error ?? "Migration request failed"))) {
+          return;
+        }
         const pendingDeviceApproval = pendingDeviceApprovalCommands.get(frame.requestId);
         if (pendingDeviceApproval) {
           pendingDeviceApprovalCommands.delete(frame.requestId);

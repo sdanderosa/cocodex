@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,6 +124,78 @@ async function waitUntilConnectedViaProjectList(session: JsonSessionHarness): Pr
   }
   throw new Error("CoCodex session did not reconnect before the recovery deadline");
 }
+
+function seedHistoricalProjectPlaintext(
+  db: Database,
+  projectId: string,
+  ownerDeviceId: string,
+  now = new Date("2030-01-01T00:00:00.000Z"),
+): void {
+  const chatId = projectId;
+  db.query(`
+    INSERT INTO shared_project_context (
+      project_id, chat_id, final_goal, context_json, revision, updated_by_device_id, updated_at
+    ) VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(projectId, chatId, "Migrated final goal", JSON.stringify({ legacyContextCanary: true }), ownerDeviceId, now.toISOString());
+  db.query(`
+    INSERT INTO chat_events (
+      project_id, chat_id, event_id, sender_device_id, content,
+      client_created_at, accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(projectId, chatId, randomUUID(), ownerDeviceId, "legacy chat canary", now.toISOString(), now.toISOString());
+  const agentId = randomUUID();
+  db.query(`
+    INSERT INTO agents (
+      id, project_id, host_device_id, name, enabled, created_at,
+      primary_model, primary_effort, max_concurrent_coagents
+    ) VALUES (?, ?, ?, 'Legacy Agent', 1, ?, 'gpt-5.6-sol', 'medium', 0)
+  `).run(agentId, projectId, ownerDeviceId, now.toISOString());
+  const taskId = randomUUID();
+  db.query(`
+    INSERT INTO agent_tasks (
+      id, project_id, chat_id, requester_device_id, target_device_id, agent_id,
+      prompt, nonce, issued_at, expires_at, requester_signature, server_signature,
+      status, accepted_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)
+  `).run(
+    taskId, projectId, chatId, ownerDeviceId, ownerDeviceId, agentId,
+    "legacy task canary", randomBytes(32).toString("base64url"), now.toISOString(),
+    new Date(now.getTime() + 60_000).toISOString(),
+    randomBytes(64).toString("base64url"), randomBytes(64).toString("base64url"),
+    now.toISOString(), now.toISOString(),
+  );
+  const result = db.query(`
+    INSERT INTO chat_events (
+      project_id, chat_id, event_id, sender_device_id, content,
+      client_created_at, accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(projectId, chatId, randomUUID(), ownerDeviceId, "legacy result canary", now.toISOString(), now.toISOString());
+  db.query("INSERT INTO agent_task_events (task_id, chat_sequence, final, status) VALUES (?, ?, 1, 'completed')")
+    .run(taskId, Number(result.lastInsertRowid));
+  db.query(`
+    INSERT INTO artifacts (
+      id, project_id, chat_id, task_id, author_device_id, type,
+      title, summary, content, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'finding', 'Legacy finding', ?, ?, 'ready', ?, ?)
+  `).run(
+    randomUUID(), projectId, chatId, taskId, ownerDeviceId,
+    "legacy artifact summary", "legacy artifact canary", now.toISOString(), now.toISOString(),
+  );
+  const document = new Y.Doc();
+  document.getText("prompt").insert(0, "legacy prompt canary");
+  const update = Y.encodeStateAsUpdate(document);
+  document.destroy();
+  db.query(`
+    INSERT INTO shared_prompt_documents (project_id, chat_id, yjs_state, updated_at)
+    VALUES (?, ?, ?, ?)
+  `).run(projectId, chatId, update, now.toISOString());
+  db.query(`
+    INSERT INTO shared_prompt_updates (
+      update_id, project_id, chat_id, sender_device_id, update_blob, accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(randomUUID(), projectId, chatId, ownerDeviceId, update, now.toISOString());
+}
+
 
 describe("CoCodex encrypted project context session", () => {
   test("creates owner-only, then requires the verified recipient to accept a project invitation", async () => {
@@ -1089,4 +1161,168 @@ describe("CoCodex encrypted project context session", () => {
     stephen.close();
     await stephenRun;
   }, 45_000);
+  test("migrates all historical classes through the resident owner and rehydrates another member", async () => {
+    const serverRoot = mkdtempSync(join(tmpdir(), "cocodex-migration-session-server-"));
+    const stephenRoot = mkdtempSync(join(tmpdir(), "cocodex-migration-session-stephen-"));
+    const kaiRoot = mkdtempSync(join(tmpdir(), "cocodex-migration-session-kai-"));
+    roots.push(serverRoot, stephenRoot, kaiRoot);
+    const paths = serverPaths(serverRoot);
+    const serverIdentity = createServerIdentity(paths);
+    await createTlsIdentity(paths, "127.0.0.1");
+    const fingerprint = tlsCertificateFingerprint(paths.tlsCertificate);
+    const db = openDatabase(paths.database);
+    databases.push(db);
+    const config = createDefaultConfig(paths, "127.0.0.1", 443);
+    config.hostname = "127.0.0.1";
+    config.port = 0;
+    const server = startCoCodexServer(config, db, serverIdentity);
+    servers.push(server);
+
+    const stephenPaths = clientPaths(stephenRoot);
+    const kaiPaths = clientPaths(kaiRoot);
+    const stephenConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Stephen", stephenPaths);
+    const stephenIdentity = loadOrCreateClientIdentity(stephenPaths);
+    const stephenRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(stephenConnection.deviceId) as { fingerprint: string };
+    approvePendingDeviceForTest(
+      db,
+      { id: stephenConnection.deviceId, fingerprint: stephenRow.fingerprint },
+      stephenIdentity.privateKeyPem,
+      fingerprint,
+    );
+    const kaiConnection = await enrollClient(createInvitation(db, {
+      host: "127.0.0.1",
+      port: server.port,
+      serverFingerprint: fingerprint,
+    }), "Kai", kaiPaths);
+    const kaiIdentity = loadOrCreateClientIdentity(kaiPaths);
+    const kaiRow = db.query("SELECT fingerprint FROM devices WHERE id = ?")
+      .get(kaiConnection.deviceId) as { fingerprint: string };
+    approvePendingDeviceForTest(
+      db,
+      { id: kaiConnection.deviceId, fingerprint: kaiRow.fingerprint },
+      kaiIdentity.privateKeyPem,
+      fingerprint,
+    );
+    trustDevice(stephenPaths.trustedDevices, kaiConnection.deviceId, publicKeyFingerprint(kaiIdentity.publicKeyPem));
+    trustDevice(kaiPaths.trustedDevices, stephenConnection.deviceId, publicKeyFingerprint(stephenIdentity.publicKeyPem));
+
+    const project = createProject(db, "Historical migration", stephenConnection.deviceId);
+    addProjectMember(db, project.id, stephenConnection.deviceId, kaiConnection.deviceId);
+    seedHistoricalProjectPlaintext(db, project.id, stephenConnection.deviceId);
+
+    const stephen = new JsonSessionHarness();
+    const kai = new JsonSessionHarness();
+    const stephenRun = runJsonLineSession(stephenPaths, {
+      input: stephen.input,
+      output: stephen.output,
+      errorOutput: stephen.errors,
+    });
+    const kaiRun = runJsonLineSession(kaiPaths, {
+      input: kai.input,
+      output: kai.output,
+      errorOutput: kai.errors,
+    });
+    await Promise.all([
+      stephen.waitFor(event => event.source === "session" && event.state === "connected"),
+      kai.waitFor(event => event.source === "session" && event.state === "connected"),
+    ]);
+
+    stephen.send({
+      id: randomUUID(),
+      type: "project.key.initialize",
+      projectId: project.id,
+      keyEpoch: 1,
+      recipients: [
+        { deviceId: stephenConnection.deviceId, projectWrapPublicKeyPem: stephenIdentity.projectWrapPublicKeyPem },
+        { deviceId: kaiConnection.deviceId, projectWrapPublicKeyPem: kaiIdentity.projectWrapPublicKeyPem },
+      ],
+    });
+    await stephen.waitFor(event =>
+      event.source === "control" && event.ok === true && event.sharedRecipients === 2, 20_000);
+    kai.send({ id: randomUUID(), type: "project.key.get", projectId: project.id });
+    await kai.waitFor(event =>
+      event.source === "project-encryption" && event.state === "key-available" && event.projectId === project.id, 20_000);
+
+    kai.send({ id: randomUUID(), type: "chat.subscribe", projectId: project.id });
+    kai.send({ id: randomUUID(), type: "prompt.subscribe", projectId: project.id });
+    kai.send({ id: randomUUID(), type: "project.context.get", projectId: project.id });
+    kai.send({ id: randomUUID(), type: "artifact.list", projectId: project.id });
+    await kai.waitFor(event =>
+      event.source === "server"
+      && (event.frame as Record<string, unknown> | undefined)?.type === "chat.snapshot", 20_000);
+
+    stephen.send({ id: randomUUID(), type: "project.list" });
+    kai.send({ id: randomUUID(), type: "project.list" });
+    await Promise.all([
+      stephen.waitFor(event =>
+        event.source === "project-migration" && event.state === "completed" && event.projectId === project.id, 30_000),
+      kai.waitFor(event =>
+        event.source === "project-migration" && event.state === "completed" && event.projectId === project.id, 30_000),
+    ]);
+
+    const chat = await kai.waitFor(event => {
+      const frame = event.frame as Record<string, unknown> | undefined;
+      return event.source === "server" && frame?.type === "chat.snapshot"
+        && JSON.stringify(frame).includes("legacy chat canary");
+    }, 20_000);
+    expect(JSON.stringify(chat)).toContain("legacy chat canary");
+    const agentResult = await kai.waitFor(event => {
+      const frame = event.frame as Record<string, unknown> | undefined;
+      return event.source === "server" && frame?.type === "agent.result"
+        && JSON.stringify(frame).includes("legacy result canary");
+    }, 20_000);
+    expect(agentResult.frame).toMatchObject({ final: true, status: "completed" });
+    const prompt = await kai.waitFor(event => {
+      const frame = event.frame as Record<string, unknown> | undefined;
+      return event.source === "server" && frame?.type === "prompt.snapshot"
+        && Array.isArray(frame.updates) && frame.updates.length > 0;
+    }, 20_000);
+    expect((prompt.frame as Record<string, unknown>).updates).toHaveLength(1);
+    const context = await kai.waitFor(event => {
+      const frame = event.frame as Record<string, unknown> | undefined;
+      return event.source === "server" && frame?.type === "context.result"
+        && (frame.context as Record<string, unknown> | undefined)?.finalGoal === "Migrated final goal";
+    }, 20_000);
+    expect(JSON.stringify(context)).toContain("legacyContextCanary");
+    const artifacts = await kai.waitFor(event => {
+      const frame = event.frame as Record<string, unknown> | undefined;
+      return event.source === "server" && frame?.type === "artifact.list.result"
+        && JSON.stringify(frame).includes("legacy artifact canary");
+    }, 20_000);
+    expect(JSON.stringify(artifacts)).toContain("Legacy finding");
+
+    for (const table of ["chat_events", "shared_prompt_updates", "shared_prompt_documents", "artifacts", "shared_project_context"]) {
+      expect((db.query(`SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`)
+        .get(project.id) as { count: number }).count).toBe(0);
+    }
+    expect((db.query("SELECT prompt FROM agent_tasks WHERE project_id = ?")
+      .get(project.id) as { prompt: string }).prompt).toBe("[encrypted]");
+    const encryptedRows = db.query(`
+      SELECT envelope_json AS envelopeJson FROM project_chat_events WHERE project_id = ?
+      UNION ALL SELECT envelope_json FROM project_prompt_updates WHERE project_id = ?
+      UNION ALL SELECT envelope_json FROM project_artifacts WHERE project_id = ?
+      UNION ALL SELECT envelope_json FROM encrypted_project_context WHERE project_id = ?
+      UNION ALL SELECT prompt_envelope_json FROM agent_tasks WHERE project_id = ?
+    `).all(project.id, project.id, project.id, project.id, project.id) as Array<{ envelopeJson: string }>;
+    const storedCiphertext = JSON.stringify(encryptedRows);
+    for (const canary of [
+      "legacy chat canary",
+      "legacy result canary",
+      "legacy task canary",
+      "legacy artifact canary",
+      "legacy prompt canary",
+      "legacyContextCanary",
+    ]) expect(storedCiphertext).not.toContain(canary);
+
+    stephen.close();
+    kai.close();
+    await Promise.all([stephenRun, kaiRun]);
+  }, 90_000);
+
+
 });

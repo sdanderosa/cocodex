@@ -63,6 +63,49 @@ function signedFrame(
 }
 
 describe("authoritative project lifecycle", () => {
+  test("refuses lifecycle deletion while a historical migration transaction is active", () => {
+    const db = openDatabase(":memory:");
+    const now = new Date("2030-01-01T00:00:00.000Z");
+    try {
+      const owner = approvedDevice(db, "Stephen", now);
+      const project = createProject(db, "Legacy archive", owner.id, now);
+      appendChatEvent(db, {
+        projectId: project.id,
+        eventId: randomUUID(),
+        senderDeviceId: owner.id,
+        content: "historical plaintext canary",
+        clientCreatedAt: now.toISOString(),
+      }, now);
+      db.query(`
+        UPDATE projects SET state = 'archived', archived_at = ? WHERE id = ?
+      `).run(now.toISOString(), project.id);
+      const migrationId = randomUUID();
+      db.query(`
+        INSERT INTO project_plaintext_migrations (
+          migration_id, project_id, key_epoch, owner_device_id, snapshot_digest,
+          state, item_count, staged_count, created_at, updated_at
+        ) VALUES (?, ?, 1, ?, ?, 'prepared', 0, 0, ?, ?)
+      `).run(
+        migrationId, project.id, owner.id, randomBytes(32).toString("base64url"),
+        now.toISOString(), now.toISOString(),
+      );
+      const deletion = signedFrame(project.id, owner.privateKey, "delete", 0, now, {
+        confirmationName: "Legacy archive",
+      });
+      expect(() => updateProjectLifecycle(
+        db, owner.id, deletion, FINGERPRINT, EPOCH, now,
+      )).toThrow("still in progress");
+      expect(db.query("SELECT 1 FROM projects WHERE id = ?").get(project.id)).not.toBeNull();
+      expect(db.query("SELECT 1 FROM project_lifecycle_operations WHERE operation_id = ?")
+        .get(deletion.operationId)).toBeNull();
+      expect(db.query("SELECT state FROM project_plaintext_migrations WHERE migration_id = ?")
+        .get(migrationId)).toEqual({ state: "prepared" });
+    } finally {
+      db.close();
+    }
+  });
+
+
   test("signs, authorizes, revisions, archives, restores, and permanently deletes", () => {
     const db = openDatabase(":memory:");
     const now = new Date("2030-01-01T00:00:00.000Z");

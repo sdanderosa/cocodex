@@ -22,6 +22,8 @@ export interface EncryptedChatEvent {
   chatId: string;
   eventId: string;
   senderDeviceId: string;
+  migrationId?: string;
+  attributedDeviceId?: string;
   envelope: ProjectContentEnvelope;
   clientCreatedAt: string;
   acceptedAt: string;
@@ -60,6 +62,8 @@ interface EventRow {
   taskId: string | null;
   final: number;
   status: "chat" | "running" | "completed" | "failed";
+  migrationId: string | null;
+  attributedDeviceId: string | null;
 }
 
 function envelopeJson(value: ProjectContentEnvelope): string {
@@ -112,9 +116,16 @@ function verifyEnvelopeSender(
 
 function eventFromRow(row: EventRow): EncryptedChatEvent {
   if (row.taskId && row.status === "chat") throw new Error("Stored encrypted agent result metadata is invalid");
+  if (Boolean(row.migrationId) !== Boolean(row.attributedDeviceId)) {
+    throw new Error("Stored encrypted chat migration attribution is incomplete");
+  }
   const taskMetadata: Pick<EncryptedChatEvent, "taskId" | "final" | "status"> = row.taskId
     ? { taskId: row.taskId, final: Boolean(row.final), status: row.status as "running" | "completed" | "failed" }
     : {};
+  const migrationMetadata: Pick<EncryptedChatEvent, "migrationId" | "attributedDeviceId"> =
+    row.migrationId && row.attributedDeviceId
+      ? { migrationId: row.migrationId, attributedDeviceId: row.attributedDeviceId }
+      : {};
   return {
     sequence: row.sequence,
     projectId: row.projectId,
@@ -125,6 +136,7 @@ function eventFromRow(row: EventRow): EncryptedChatEvent {
     clientCreatedAt: row.clientCreatedAt,
     acceptedAt: row.acceptedAt,
     ...taskMetadata,
+    ...migrationMetadata,
   };
 }
 
@@ -157,7 +169,8 @@ export function appendEncryptedChatEventResult(
     SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
       client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
-      task_id AS taskId, final, status
+      task_id AS taskId, final, status, migration_id AS migrationId,
+      migrated_attributed_device_id AS attributedDeviceId
     FROM project_chat_events
     WHERE event_id = ?
   `).get(input.eventId) as EventRow | null;
@@ -191,7 +204,8 @@ export function appendEncryptedChatEventResult(
       SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
         sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
         client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
-        task_id AS taskId, final, status
+        task_id AS taskId, final, status, migration_id AS migrationId,
+        migrated_attributed_device_id AS attributedDeviceId
       FROM project_chat_events WHERE sequence = ?
     `).get(Number(result.lastInsertRowid)) as EventRow;
     return { event: eventFromRow(row), created: true };
@@ -212,7 +226,8 @@ export function encryptedChatEventsAfter(
     SELECT sequence, project_id AS projectId, chat_id AS chatId, event_id AS eventId,
       sender_device_id AS senderDeviceId, envelope_json AS envelopeJson,
       client_created_at AS clientCreatedAt, accepted_at AS acceptedAt,
-      task_id AS taskId, final, status
+      task_id AS taskId, final, status, migration_id AS migrationId,
+      migrated_attributed_device_id AS attributedDeviceId
     FROM project_chat_events
     WHERE project_id = ? AND chat_id = ? AND sequence > ?
     ORDER BY sequence ASC

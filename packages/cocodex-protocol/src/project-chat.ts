@@ -14,13 +14,19 @@ export const encryptedChatEventSchema = z.object({
   chatId,
   eventId,
   senderDeviceId: deviceId,
+  migrationId: z.uuid().optional(),
+  attributedDeviceId: deviceId.optional(),
   envelope: projectContentEnvelopeSchema,
   clientCreatedAt: z.iso.datetime(),
   acceptedAt: z.iso.datetime(),
   taskId: z.uuid().optional(),
   final: z.boolean().optional(),
   status: z.enum(["running", "completed", "failed"]).optional(),
-}).strict();
+}).strict().superRefine((value, refinement) => {
+  if (Boolean(value.migrationId) !== Boolean(value.attributedDeviceId)) {
+    refinement.addIssue({ code: "custom", path: ["migrationId"], message: "Migration attribution must be complete" });
+  }
+});
 export type EncryptedChatEvent = z.infer<typeof encryptedChatEventSchema>;
 
 export const encryptedChatSubscribeFrameSchema = z.object({
