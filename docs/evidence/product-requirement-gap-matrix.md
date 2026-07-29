@@ -74,7 +74,7 @@ attachments/multi-device fan-out, elevated helper, browser-control surface,
 live packaged SCM/UAC/reboot acceptance and signed distribution remain release
 blockers.
 
-Fresh NSIS/MSI/runtime hashes and ownership smokes for commit `d77dec10` are
+Fresh NSIS/MSI/runtime hashes and ownership smokes for commit `ba9438b4` are
 recorded in `docs/evidence/tauri-managed-client-runtime.md`. These remain
 unsigned private-alpha artifacts, not public-release evidence.
 

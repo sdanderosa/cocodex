@@ -746,3 +746,20 @@ remains PID 11100 with TCP listeners 47984, 47989, 47990, and 48010. No
 Sunshine/OpenCodex process, address, port, or service was stopped, rebound, or
 reconfigured. These are unsigned private-alpha artifacts and do not establish
 signing, live UAC/SCM/reboot, or physical two-PC acceptance.
+
+## Fail-safe project-member leave rebuild - 2026-07-28
+
+Clean source commit `ba9438b40ab6bd5b3ba31c72ebd706ca23073f30` rebuilt the
+archive, bundled runtime, desktop, NSIS, and MSI from detached clean worktree
+`release-ba9438b4`. Exact hashes and smoke details are recorded in
+`authoritative-project-member-leave.md`; preserved artifacts are under
+`dist/release-evidence/ba9438b4/`.
+
+Both installer variants launched only their path-verified desktop plus
+WebView2, started no bundled runtime while foreign PID 3704 owned port 10100,
+logged the foreign-owner rejection, and were cleaned only by exact verified
+paths. The installed archive verifier passed on isolated ports 63094 and
+63111. Final OpenCodex mode remained `direct`; Sunshine service/process and
+TCP/UDP listeners were unchanged. These artifacts remain unsigned private
+alpha outputs and do not establish signing, UAC/SCM/reboot, or physical
+two-PC acceptance.
