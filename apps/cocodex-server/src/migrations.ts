@@ -777,4 +777,37 @@ CREATE INDEX device_approval_operations_approver_time
 CREATE INDEX devices_pending_approval_expiry
   ON devices(status, approval_expires_at, enrolled_at);`,
   },
+  {
+    version: 32,
+    sql: `
+ALTER TABLE projects ADD COLUMN state TEXT NOT NULL DEFAULT 'active'
+  CHECK (state IN ('active', 'archived'));
+ALTER TABLE projects ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0
+  CHECK (lifecycle_revision BETWEEN 0 AND 2147483647);
+ALTER TABLE projects ADD COLUMN updated_at TEXT;
+ALTER TABLE projects ADD COLUMN archived_at TEXT;
+UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL;
+
+CREATE TABLE project_lifecycle_operations (
+  operation_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  actor_device_id TEXT NOT NULL REFERENCES devices(id),
+  action TEXT NOT NULL CHECK (action IN ('rename', 'archive', 'restore', 'delete')),
+  expected_revision INTEGER NOT NULL CHECK (expected_revision BETWEEN 0 AND 2147483646),
+  resulting_revision INTEGER NOT NULL CHECK (resulting_revision = expected_revision + 1),
+  requested_name TEXT,
+  confirmation_name TEXT,
+  server_fingerprint TEXT NOT NULL,
+  server_epoch INTEGER NOT NULL CHECK (server_epoch > 0),
+  nonce TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  transition_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(actor_device_id, nonce)
+);
+CREATE INDEX project_lifecycle_operations_project_revision
+  ON project_lifecycle_operations(project_id, resulting_revision);`,
+  },
 ];

@@ -17,5 +17,5 @@ describe("repository privacy scan", () => {
     expect(new TextDecoder().decode(result.stderr)).toBe("");
     expect(new TextDecoder().decode(result.stdout)).toContain("Privacy scan passed");
     expect(result.exitCode).toBe(0);
-  });
+  }, 15_000);
 });

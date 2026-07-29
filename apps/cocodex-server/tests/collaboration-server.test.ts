@@ -17,6 +17,7 @@ import {
   type UsageReport,
   publicKeyFingerprint,
   projectLockSigningTranscript,
+  projectLifecycleSigningTranscript,
   sharedChatCreationSigningTranscript,
 } from "@cocodex/protocol";
 import { registerAgent } from "../src/agent-routing";
@@ -257,7 +258,7 @@ function usageReport(deviceId: string, revision = 1): UsageReport {
 }
 
 describe("authenticated WSS collaboration", () => {
-  test("enforces signed owner project lock across real WSS and server restart", async () => {
+  test("enforces signed owner project lock and lifecycle across real WSS and server restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-project-lock-wss-"));
     roots.push(root);
     const paths = serverPaths(root);
@@ -344,6 +345,7 @@ describe("authenticated WSS collaboration", () => {
     server = startCoCodexServer(config, db, identity);
     servers.push(server);
     const recovered = await connect(server.port, stephen, fingerprint, false);
+    const recoveredKai = await connect(server.port, kai, fingerprint, false);
     const listed = nextFrame(recovered, "project.list.result");
     recovered.send(JSON.stringify({ version: 1, type: "project.list", requestId: randomUUID() }));
     expect(await listed).toMatchObject({
@@ -357,7 +359,75 @@ describe("authenticated WSS collaboration", () => {
     expect(await unlocked).toMatchObject({
       transition: { action: "unlock", state: { state: "active", revision: 2 } },
     });
-  });
+    const lockedAgain = nextFrame(recovered, "project.lock.updated");
+    recovered.send(JSON.stringify(makeUpdate(stephen, "lock", 2, "Archive preparation")));
+    expect(await lockedAgain).toMatchObject({
+      transition: { action: "lock", state: { state: "locked", revision: 3 } },
+    });
+    const makeLifecycle = (
+      action: "archive" | "restore" | "delete",
+      expectedRevision: number,
+      confirmationName?: string,
+    ) => {
+      const issuedAt = new Date().toISOString();
+      const unsigned = {
+        version: 1 as const,
+        operationId: randomUUID(),
+        projectId: project.id,
+        action,
+        expectedRevision,
+        ...(confirmationName !== undefined ? { confirmationName } : {}),
+        serverFingerprint: fingerprint,
+        serverEpoch: 1,
+        issuedAt,
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        nonce: randomBytes(32).toString("base64url"),
+      };
+      return {
+        ...unsigned,
+        type: "project.lifecycle.update",
+        requestId: randomUUID(),
+        signature: sign(null, projectLifecycleSigningTranscript(unsigned), stephen.privateKey).toString("base64url"),
+      };
+    };
+
+    const archivedAck = nextFrame(recovered, "project.lifecycle.updated");
+    const archivedAtKai = nextFrame(recoveredKai, "project.changed", frame =>
+      (frame.project as { state?: string })?.state === "archived");
+    recovered.send(JSON.stringify(makeLifecycle("archive", 0)));
+    expect(await archivedAck).toMatchObject({
+      created: true,
+      transition: { action: "archive", resultingState: "archived", resultingRevision: 1 },
+    });
+    expect(await archivedAtKai).toMatchObject({
+      project: { id: project.id, role: "member", state: "archived", lifecycleRevision: 1 },
+    });
+
+    const restoredAck = nextFrame(recovered, "project.lifecycle.updated");
+    const restoredAtKai = nextFrame(recoveredKai, "project.changed", frame =>
+      (frame.project as { state?: string })?.state === "active"
+      && (frame.project as { lifecycleRevision?: number })?.lifecycleRevision === 2);
+    recovered.send(JSON.stringify(makeLifecycle("restore", 1)));
+    expect(await restoredAck).toMatchObject({
+      transition: { action: "restore", resultingState: "active", resultingRevision: 2 },
+    });
+    expect(await restoredAtKai).toMatchObject({ project: { state: "active", lifecycleRevision: 2 } });
+
+    const rearchivedAck = nextFrame(recovered, "project.lifecycle.updated");
+    recovered.send(JSON.stringify(makeLifecycle("archive", 2)));
+    expect(await rearchivedAck).toMatchObject({ transition: { action: "archive", resultingRevision: 3 } });
+    const deletedAck = nextFrame(recovered, "project.lifecycle.updated");
+    const deletedAtKai = nextFrame(recoveredKai, "project.deleted");
+    recovered.send(JSON.stringify(makeLifecycle("delete", 3, "Incident control")));
+    expect(await deletedAck).toMatchObject({
+      created: true,
+      transition: { action: "delete", resultingState: null, resultingRevision: 4 },
+    });
+    expect(await deletedAtKai).toMatchObject({
+      transition: { projectId: project.id, action: "delete", resultingState: null },
+    });
+    expect(db.query("SELECT id FROM projects WHERE id = ?").get(project.id)).toBeNull();
+  }, 20_000);
 
   test("discovers only verified approved private contacts and removes revoked peers", async () => {
     const root = mkdtempSync(join(tmpdir(), "cocodex-private-contacts-"));

@@ -83,7 +83,8 @@ const RENDERER_FRAME_FIELDS = new Set([
   "cursor", "caret", "relativeCaret", "typing", "x", "y", "anchor", "head",
   "final", "created", "keyEpoch",
   "lock", "lockedAt", "lockedByDeviceId", "reason", "action", "transition",
-  "operationId", "cancelledTaskCount",
+  "operationId", "cancelledTaskCount", "lifecycleRevision",
+  "previousName", "resultingName", "previousState", "resultingState", "resultingRevision",
   "integration", "blocked", "preview", "currentTargetCommit", "expectedTargetCommit",
   "changedFiles", "conflicts", "overlaps", "blockedReasons", "integrationCommit", "targetCommit",
   "commit", "queued",
@@ -93,6 +94,7 @@ const ALLOWED_COMMANDS = new Set([
   "device.approval.update",
   "project.list",
   "project.create",
+  "project.lifecycle.update",
   "project.invite.list",
   "project.invite.create",
   "project.invite.respond",
@@ -573,6 +575,22 @@ export class CoCodexGuiBridge {
         || command.confirmedVerificationPhrase.trim().length < 1
         || command.confirmedVerificationPhrase.length > 256) {
         throw new Error("Invalid device approval command");
+      }
+    }
+    if (command.type === "project.lifecycle.update") {
+      const allowed = new Set([
+        "id", "type", "projectId", "action", "expectedRevision", "name", "confirmationName",
+      ]);
+      const action = command.action;
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.projectId !== "string" || !/^[0-9a-f-]{36}$/i.test(command.projectId)
+        || !["rename", "archive", "restore", "delete"].includes(String(action))
+        || !Number.isInteger(command.expectedRevision) || Number(command.expectedRevision) < 0
+        || ((action === "rename") !== (typeof command.name === "string"
+          && command.name.trim().length > 0 && command.name.trim().length <= 120))
+        || ((action === "delete") !== (typeof command.confirmationName === "string"
+          && command.confirmationName.length > 0 && command.confirmationName.length <= 120))) {
+        throw new Error("Invalid project lifecycle command");
       }
     }
     if (command.type === "project.lock.update") {

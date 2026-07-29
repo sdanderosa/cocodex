@@ -42,11 +42,17 @@
 .cocodex-project-list button { width: 100%; border: 0; background: transparent; color: var(--text); border-radius: var(--radius-xs); padding: 10px; display: flex; gap: 9px; text-align: left; cursor: pointer; }
 .cocodex-project-list button:hover, .cocodex-project-list button.active { background: var(--raised); }
 .cocodex-project-list button.active { box-shadow: inset 3px 0 #8b5cf6; }
+.cocodex-project-list button.archived { opacity: .68; }
+.cocodex-project-list button.archived svg { color: var(--muted); }
 .cocodex-project-list svg { width: 16px; height: 16px; margin-top: 2px; color: #8b5cf6; }
 .cocodex-project-list span, .cocodex-device { display: grid; gap: 2px; }
 .cocodex-project-list small, .cocodex-device small, .cocodex-device span { color: var(--muted); font-size: var(--text-caption); }
 .cocodex-project-create { display: grid; gap: 7px; margin: 8px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 45%, var(--raised)); }
 .cocodex-project-create > small { color: var(--muted); font-size: var(--text-caption); }
+.cocodex-project-lifecycle { display: grid; gap: 7px; margin: 8px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--amber) 6%, var(--raised)); }
+.cocodex-project-lifecycle > small { color: var(--muted); font-size: var(--text-caption); line-height: var(--leading-body); }
+.cocodex-project-lifecycle > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.cocodex-project-lifecycle .btn { padding: 5px 8px; font-size: var(--text-caption); }
 .cocodex-project-create-members { display: grid; gap: 5px; max-height: 116px; overflow-y: auto; }
 .cocodex-project-create-members label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 .cocodex-project-create-members label span { display: grid; min-width: 0; }

@@ -23,6 +23,19 @@ export {
 } from "./invitation";
 export { canonicalEd25519PublicKey, publicKeyFingerprint } from "./keys";
 export {
+  projectLifecycleStateSchema,
+  projectLifecycleActionSchema,
+  projectLifecycleUpdateFrameSchema,
+  projectLifecycleTransitionSchema,
+  projectLifecycleUpdatedFrameSchema,
+  projectDeletedFrameSchema,
+  projectLifecycleSigningTranscript,
+  type ProjectLifecycleState,
+  type ProjectLifecycleAction,
+  type ProjectLifecycleUpdateFrame,
+  type ProjectLifecycleTransition,
+} from "./project-lifecycle";
+export {
   projectLockStateSchema,
   projectLockUpdateFrameSchema,
   projectLockTransitionSchema,

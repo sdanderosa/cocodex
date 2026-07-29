@@ -56,6 +56,12 @@ import {
   projectLockUpdateFrameSchema,
 } from "./project-lock";
 import {
+  projectDeletedFrameSchema,
+  projectLifecycleStateSchema,
+  projectLifecycleUpdatedFrameSchema,
+  projectLifecycleUpdateFrameSchema,
+} from "./project-lifecycle";
+import {
   deviceApprovalChangedFrameSchema,
   deviceApprovalListFrameSchema,
   deviceApprovalSnapshotFrameSchema,
@@ -222,6 +228,7 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
   deviceApprovalListFrameSchema,
   deviceApprovalUpdateFrameSchema,
   projectLockUpdateFrameSchema,
+  projectLifecycleUpdateFrameSchema,
   sharedChatCreateFrameSchema,
   sharedChatListFrameSchema,
   z.object({
@@ -634,6 +641,8 @@ export const projectListResultFrameSchema = z.object({
     id: projectId,
     name: z.string().trim().min(1).max(120),
     role: z.enum(["owner", "member"]),
+    state: projectLifecycleStateSchema.optional(),
+    lifecycleRevision: z.number().int().nonnegative().max(0x7fffffff).optional(),
     lock: projectLockStateSchema,
   }).strict()).max(10_000),
 }).strict();
@@ -642,6 +651,8 @@ const sharedProjectSchema = z.object({
   id: projectId,
   name: z.string().trim().min(1).max(120),
   role: z.enum(["owner", "member"]),
+  state: projectLifecycleStateSchema.optional(),
+  lifecycleRevision: z.number().int().nonnegative().max(0x7fffffff).optional(),
   lock: projectLockStateSchema,
 }).strict();
 
@@ -858,6 +869,8 @@ export const projectServerFrameSchema = z.discriminatedUnion("type", [
   projectListResultFrameSchema,
   projectCreatedFrameSchema,
   projectChangedFrameSchema,
+  projectLifecycleUpdatedFrameSchema,
+  projectDeletedFrameSchema,
   projectInvitationListResultFrameSchema,
   projectInvitationCreatedFrameSchema,
   projectInvitationChangedFrameSchema,
@@ -1046,6 +1059,8 @@ export interface SharedProject {
   id: string;
   name: string;
   role: "owner" | "member";
+  state?: import("./project-lifecycle").ProjectLifecycleState;
+  lifecycleRevision?: number;
   lock: import("./project-lock").ProjectLockState;
 }
 

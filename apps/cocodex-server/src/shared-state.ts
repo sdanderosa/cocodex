@@ -28,6 +28,8 @@ export function createProject(
     id: randomUUID(),
     name: normalized,
     role: "owner",
+    state: "active",
+    lifecycleRevision: 0,
     lock: { state: "active", revision: 0, lockedAt: null, lockedByDeviceId: null, reason: null },
   };
   db.transaction(() => {
@@ -115,7 +117,8 @@ export function removeProjectMember(
 
 export function listProjects(db: Database, deviceId: string): SharedProject[] {
   const rows = db.query(`
-    SELECT p.id, p.name, pm.role,
+    SELECT p.id, p.name, pm.role, p.state,
+      p.lifecycle_revision AS lifecycleRevision,
       json_object(
         'state', pls.state,
         'revision', pls.revision,

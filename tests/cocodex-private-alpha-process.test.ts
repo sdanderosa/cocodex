@@ -1780,17 +1780,29 @@ describe("three-process CoCodex private alpha", () => {
     );
     const inheritedHealthDeadline = Date.now() + 30_000;
     let inheritedHealth: Record<string, any> | undefined;
+    let inheritedBaseUrl: string | undefined;
+    const inheritedLoopbackUrls = [
+      "http://127.0.0.1:" + inheritedPort,
+      "http://localhost:" + inheritedPort,
+    ];
     while (Date.now() < inheritedHealthDeadline) {
       if (inheritedRuntime.process.exitCode !== null) break;
-      try {
-        const response = await fetch("http://127.0.0.1:" + inheritedPort + "/healthz");
-        if (response.ok) {
-          inheritedHealth = await response.json() as Record<string, any>;
-          break;
+      for (const baseUrl of inheritedLoopbackUrls) {
+        try {
+          const response = await fetch(baseUrl + "/healthz", {
+            signal: AbortSignal.timeout(750),
+          });
+          if (response.ok) {
+            inheritedHealth = await response.json() as Record<string, any>;
+            inheritedBaseUrl = baseUrl;
+            break;
+          }
+        } catch {
+          // The isolated inherited runtime is still starting or bound to the
+          // other standard Windows loopback address family.
         }
-      } catch {
-        // The isolated inherited runtime is still starting.
       }
+      if (inheritedHealth) break;
       await Bun.sleep(50);
     }
     if (!inheritedHealth) {
@@ -1803,12 +1815,16 @@ describe("three-process CoCodex private alpha", () => {
       service: "opencodex",
       port: inheritedPort,
     });
-    const inheritedGui = await fetch("http://127.0.0.1:" + inheritedPort + "/");
+    const inheritedGui = await fetch(inheritedBaseUrl! + "/", {
+      signal: AbortSignal.timeout(5_000),
+    });
     expect(inheritedGui.status).toBe(200);
     expect((await inheritedGui.text()).length).toBeGreaterThan(100);
     if (inheritedRuntime.process.exitCode === null) inheritedRuntime.process.kill("SIGTERM");
     await inheritedRuntime.process.exited;
     residents.splice(residents.indexOf(inheritedRuntime), 1);
     traceCheckpoint("inherited OpenCodex proxy and GUI still pass on isolated port");
-  }, 300_000);
+  // The final inherited-runtime proof has its own strict 30-second deadline.
+  // Keep the outer budget large enough that earlier loaded Windows phases cannot cancel it mid-window.
+  }, 360_000);
 });

@@ -8,6 +8,10 @@ CoCodex can bind a Server port, request automatic router mapping, create a Windo
 
 ## Decision
 
+### Sunshine non-interference clause
+
+CoCodex must leave Sunshine's host IP configuration and every Sunshine TCP/UDP listener port untouched. CoCodex may read process, service, interface, and listener state for diagnostics and ownership checks only. It must never bind, reserve, forward, remap, firewall, stop, restart, reconfigure, or otherwise mutate Sunshine's IP address, network interfaces, service, processes, or ports. A CoCodex operation that cannot prove it is outside that boundary fails closed without changing host networking.
+
 CoCodex treats TCP/UDP ports 47984 through 48010 inclusive as a protected Sunshine range. Configuration load and creation, Server binding setup, automatic port mapping, and Windows Firewall setup fail closed when a protected port is requested.
 
 CoCodex does not change a host IP address or network-interface IP configuration as part of Server setup. The only permitted Windows network mutation is a port-specific inbound firewall rule for a non-protected CoCodex Server port; automatic router mapping is likewise limited to that non-protected port.

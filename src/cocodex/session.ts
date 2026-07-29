@@ -8,6 +8,7 @@ import {
   projectInvitationDecisionTranscript,
   projectInvitationSigningTranscript,
   projectLockSigningTranscript,
+  projectLifecycleSigningTranscript,
   sharedChatCreationSigningTranscript,
   agentReadyAcceptedFrameSchema,
   PROJECT_CONTEXT_MAX_BYTES,
@@ -2423,6 +2424,7 @@ export async function runJsonLineSession(
       catch { return; }
       if (frame.type === "project.list.result"
         || frame.type === "project.created" || frame.type === "project.changed"
+        || frame.type === "project.lifecycle.updated" || frame.type === "project.deleted"
         || frame.type === "project.chat.list.result" || frame.type === "project.chat.created"
         || frame.type === "project.chat.changed"
         || frame.type === "project.invite.list.result" || frame.type === "project.invite.created"
@@ -3001,6 +3003,12 @@ export async function runJsonLineSession(
         // The acknowledgement carries sealed key envelopes needed only for
         // resident-process correlation. Never forward it to stdout/renderer.
         return;
+      } else if (frame.type === "project.deleted") {
+        const transition = frame.transition as Record<string, unknown>;
+        revokeLocalProjectAccess(
+          String(transition.projectId),
+          "The authoritative project owner deleted this Co-Project.",
+        );
       } else if (frame.type === "project.changed") {
         const project = frame.project as Record<string, unknown>;
         const projectId = String(project.id);
@@ -3553,6 +3561,49 @@ export async function runJsonLineSession(
             action,
             pending: true,
           });
+        } else if (command.type === "project.lifecycle.update") {
+          const projectId = String(command.projectId ?? "");
+          const action = String(command.action ?? "");
+          if (!/^[0-9a-f-]{36}$/i.test(projectId)
+            || !["rename", "archive", "restore", "delete"].includes(action)) {
+            throw new Error("Invalid project lifecycle action");
+          }
+          const expectedRevision = Number(command.expectedRevision);
+          if (!Number.isInteger(expectedRevision) || expectedRevision < 0 || expectedRevision > 0x7ffffffe) {
+            throw new Error("Current authoritative project lifecycle revision is required");
+          }
+          const name = action === "rename" ? String(command.name ?? "").trim() : undefined;
+          const confirmationName = action === "delete" ? String(command.confirmationName ?? "") : undefined;
+          if (action === "rename" && (!name || name.length > 120)) {
+            throw new Error("Project name must be 1-120 characters");
+          }
+          if (action === "delete" && (!confirmationName || confirmationName.length > 120)) {
+            throw new Error("Exact project-name confirmation is required");
+          }
+          const issuedAt = new Date().toISOString();
+          const expiresAt = new Date(Date.now() + 2 * 60_000).toISOString();
+          const unsigned = {
+            version: 1 as const,
+            operationId: String(command.operationId ?? randomUUID()),
+            projectId,
+            action: action as "rename" | "archive" | "restore" | "delete",
+            expectedRevision,
+            ...(name !== undefined ? { name } : {}),
+            ...(confirmationName !== undefined ? { confirmationName } : {}),
+            serverFingerprint: connection.serverFingerprint,
+            serverEpoch: connection.serverEpoch,
+            issuedAt,
+            expiresAt,
+            nonce: randomBytes(32).toString("base64url"),
+          };
+          send({
+            ...unsigned,
+            type: "project.lifecycle.update",
+            requestId: controlRequestId(command.id),
+            signature: sign(null, projectLifecycleSigningTranscript(unsigned), identity.privateKeyPem)
+              .toString("base64url"),
+          });
+          emit({ source: "control", id: command.id, ok: true, projectId, action, pending: true });
         } else if (command.type === "project.create") {
           if (!identity.projectWrapPublicKeyPem) throw new Error("This client has no project-wrap public key");
           const projectId = String(command.projectId ?? randomUUID());

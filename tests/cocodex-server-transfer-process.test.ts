@@ -330,6 +330,8 @@ test("hands a live server to a prepared process and reconnects both resident cli
         id: project.id,
         name: "Transfer Alpha",
         role,
+        state: "active",
+        lifecycleRevision: 0,
         lock: {
           state: "active",
           revision: 0,

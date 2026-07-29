@@ -12,6 +12,7 @@ import { expirePendingProjectInvitationsForProject } from "./project-invitation-
 
 interface LockRow {
   state: "active" | "locked";
+  projectState: "active" | "archived";
   revision: number;
   lockedAt: string | null;
   lockedByDeviceId: string | null;
@@ -43,9 +44,12 @@ export interface ProjectLockUpdateResult {
 
 function readLockRow(db: Database, projectId: string): LockRow {
   const row = db.query(`
-    SELECT state, revision, locked_at AS lockedAt,
-      locked_by_device_id AS lockedByDeviceId, reason
-    FROM project_lock_state WHERE project_id = ?
+    SELECT pls.state, pls.revision, pls.locked_at AS lockedAt,
+      pls.locked_by_device_id AS lockedByDeviceId, pls.reason,
+      p.state AS projectState
+    FROM project_lock_state pls
+    JOIN projects p ON p.id = pls.project_id
+    WHERE pls.project_id = ?
   `).get(projectId) as LockRow | null;
   if (!row) throw new Error("Project lock state was not found");
   return row;
@@ -67,6 +71,9 @@ export function projectLockState(db: Database, projectId: string): ProjectLockSt
 
 export function assertProjectUnlocked(db: Database, projectId: string): void {
   const state = readLockRow(db, projectId);
+  if (state.projectState === "archived") {
+    throw new Error(`PROJECT_ARCHIVED:${projectId}`);
+  }
   if (state.state === "locked") {
     throw new Error(`PROJECT_LOCKED:${projectId}:${state.revision}`);
   }

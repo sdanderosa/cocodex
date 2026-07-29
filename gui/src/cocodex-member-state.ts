@@ -4,6 +4,8 @@ export interface Project {
   id: string;
   name: string;
   role: "owner" | "member";
+  state?: "active" | "archived";
+  lifecycleRevision?: number;
   lock?: {
     state: "active" | "locked";
     revision: number;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertDirectServerOwnership } from "../src/process-ownership";
@@ -14,6 +14,17 @@ import {
 } from "../src/protected-host-services";
 
 const roots: string[] = [];
+
+function sourceTreeText(root: string): string {
+  return readdirSync(root, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) return [sourceTreeText(path)];
+      if (!entry.isFile() || !/\.(?:ts|tsx|js|mjs|cjs)$/u.test(entry.name)) return [];
+      return [readFileSync(path, "utf8")];
+    })
+    .join("\n");
+}
 
 afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -73,15 +84,29 @@ describe("Sunshine host-service protection", () => {
     }))).rejects.toThrow("no foreign process (including Sunshine) was stopped");
   });
 
-  test("ownership proof precedes every stop/restart signal and no IP configuration command exists", () => {
+  test("ownership proof precedes every stop/restart signal and Sunshine IP, ports, service, and process remain read-only", () => {
     const source = readFileSync(join(import.meta.dir, "../src/cli.ts"), "utf8");
     for (const marker of ['case "stop"', 'case "restart"']) {
       const command = source.slice(source.indexOf(marker), source.indexOf("case ", source.indexOf(marker) + marker.length));
       expect(command.indexOf("await assertDirectServerOwnership(paths, pid)")).toBeGreaterThanOrEqual(0);
       expect(command.indexOf("await assertDirectServerOwnership(paths, pid)")).toBeLessThan(command.indexOf('process.kill(pid, "SIGTERM")'));
     }
-    expect(source).not.toContain("netsh interface ip");
-    expect(source).not.toContain("Set-NetIPAddress");
-    expect(source).not.toContain("New-NetIPAddress");
+
+    const serverSource = sourceTreeText(join(import.meta.dir, "../src"));
+    for (const forbidden of [
+      "netsh interface ip",
+      "netsh interface ipv4",
+      "netsh interface ipv6",
+      "Set-NetIPAddress",
+      "New-NetIPAddress",
+      "Remove-NetIPAddress",
+      "Set-NetIPInterface",
+      "Stop-Service Sunshine",
+      "Restart-Service Sunshine",
+      "sc stop Sunshine",
+      "taskkill /IM sunshine",
+    ]) {
+      expect(serverSource.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
   });
 });

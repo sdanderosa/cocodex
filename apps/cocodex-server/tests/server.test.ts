@@ -21,16 +21,21 @@ const openDatabases: Database[] = [];
 afterEach(async () => {
   await Promise.all(runningServers.splice(0).map(server => server.stop(true)));
   for (const database of new Set(openDatabases.splice(0))) database.close();
+  // Under the complete Windows Server suite, SQLite WAL/SHM handles can be
+  // released just after close while other Bun workers are still collecting.
+  // Keep cleanup exact to this test root, but give handle finalization the
+  // same bounded five-second window used by the process-heavy suites.
+  Bun.gc(true);
   for (const root of temporaryRoots.splice(0)) {
     let lastError: unknown;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         rmSync(root, { recursive: true, force: true });
         lastError = undefined;
         break;
       } catch (error) {
         lastError = error;
-        await Bun.sleep(100);
+        await Bun.sleep(50);
       }
     }
     if (lastError) throw lastError;

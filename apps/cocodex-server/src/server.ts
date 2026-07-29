@@ -26,6 +26,8 @@ import {
   deviceApprovalUpdatedFrameSchema,
   projectLockChangedFrameSchema,
   projectLockUpdatedFrameSchema,
+  projectLifecycleUpdatedFrameSchema,
+  projectDeletedFrameSchema,
   sharedChatChangedFrameSchema,
   sharedChatCreatedFrameSchema,
   sharedChatListResultFrameSchema,
@@ -106,6 +108,7 @@ import {
   shareProjectKeyEnvelope,
   updateEncryptedProjectContext,
 } from "./project-encryption-storage";
+import { updateProjectLifecycle } from "./project-lifecycle";
 import {
   assertProjectUnlocked,
   pendingProjectLockCancellations,
@@ -523,6 +526,20 @@ export function startCoCodexServer(
       } catch {
         socket.data.subscribedProjects.delete(projectId);
       }
+    }
+  }
+
+  function sendProjectChangedToMembers(projectId: string): void {
+    for (const socket of sockets) {
+      const deviceId = socket.data.authenticatedDeviceId;
+      if (!deviceId) continue;
+      const project = listProjects(db, deviceId).find(candidate => candidate.id === projectId);
+      if (!project) continue;
+      socket.send(JSON.stringify(projectChangedFrameSchema.parse({
+        version: 1,
+        type: "project.changed",
+        project,
+      })));
     }
   }
 
@@ -1128,6 +1145,41 @@ export function startCoCodexServer(
                 cancelledTaskCount: result.cancelledTasks.length,
                 cancelledTasks,
               }));
+            }
+            return;
+          }
+          if (message.type === "project.lifecycle.update") {
+            const result = updateProjectLifecycle(
+              db,
+              deviceId,
+              message,
+              certificateFingerprint,
+              serverEpoch(db),
+            );
+            socket.send(JSON.stringify(projectLifecycleUpdatedFrameSchema.parse({
+              version: 1,
+              type: "project.lifecycle.updated",
+              requestId,
+              transition: result.transition,
+              created: result.created,
+            })));
+            if (result.created) {
+              if (result.transition.action === "delete") {
+                clearAllProjectPresence(result.transition.projectId);
+                const deleted = projectDeletedFrameSchema.parse({
+                  version: 1,
+                  type: "project.deleted",
+                  transition: result.transition,
+                });
+                for (const memberDeviceId of result.memberDeviceIds) {
+                  sendToDevice(memberDeviceId, deleted);
+                }
+              } else {
+                if (result.transition.action === "archive") {
+                  clearAllProjectPresence(result.transition.projectId);
+                }
+                sendProjectChangedToMembers(result.transition.projectId);
+              }
             }
             return;
           }

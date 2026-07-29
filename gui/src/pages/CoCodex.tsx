@@ -8,6 +8,12 @@ import {
 } from "../cocodex-private-contact-state";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
+import {
+  orderedProjects,
+  projectLifecycleCommand,
+  reconcileDeletedProject,
+  type ProjectLifecycleAction,
+} from "../cocodex-project-lifecycle-state";
 import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
 import { executableLocalAgentIds, stopEveryLocalAgent } from "../cocodex-agent-safety-state";
 import { buildTaskDependencyGraph, type TaskGraphState } from "../cocodex-task-graph";
@@ -405,6 +411,7 @@ interface SessionValue {
     members?: PresenceMember[] | ProjectMember[];
     projects?: Project[];
     project?: Project;
+    transition?: { projectId?: string; action?: string; resultingRevision?: number };
     events?: ChatEvent[];
     event?: ChatEvent;
     context?: SharedProjectContext;
@@ -1314,6 +1321,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
           setProjectName("");
           setNotice(t("cocodex.projects.created", { name: nextProject.name }));
         }
+      } else if (frame?.type === "project.deleted" && frame.transition?.projectId) {
+        const deletedProjectId = String(frame.transition.projectId);
+        setProjects(previous => previous.filter(project => project.id !== deletedProjectId));
+        setProjectId(selected =>
+          reconcileDeletedProject(projects, selected, deletedProjectId).selectedProjectId);
+        setNotice(t("cocodex.projects.deleted"));
       }
       if (frame?.projectId === projectId && (frame.chatId ?? projectId) === chatId
         && frame.type === "presence.snapshot" && Array.isArray(frame.members)) {
@@ -1751,6 +1764,38 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const updateProjectLifecycle = async (action: ProjectLifecycleAction) => {
+    if (!selectedProject || selectedProject.role !== "owner" || status?.state !== "connected") return;
+    let value: string | undefined;
+    if (action === "rename") {
+      const entered = window.prompt(t("cocodex.projects.renamePrompt"), selectedProject.name);
+      if (entered === null || entered.trim() === selectedProject.name) return;
+      value = entered;
+    } else if (action === "archive") {
+      if (!window.confirm(t("cocodex.projects.archiveConfirm", { name: selectedProject.name }))) return;
+    } else if (action === "restore") {
+      if (!window.confirm(t("cocodex.projects.restoreConfirm", { name: selectedProject.name }))) return;
+    } else {
+      const entered = window.prompt(t("cocodex.projects.deleteConfirm", { name: selectedProject.name }));
+      if (entered === null) return;
+      value = entered;
+      if (value !== selectedProject.name) {
+        setNotice(t("cocodex.projects.deleteMismatch"));
+        return;
+      }
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await command(projectLifecycleCommand(selectedProject, action, value));
+      setNotice(t("cocodex.projects.lifecyclePending"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createChat = async (event: FormEvent) => {
     event.preventDefault();
     const title = chatTitle.trim();
@@ -2158,7 +2203,9 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
   const selectedProjectSecurity = projectSecurity[projectId];
   const selectedProject = projects.find(project => project.id === projectId);
-  const selectedProjectLocked = selectedProject?.lock?.state === "locked";
+  const selectedProjectArchived = selectedProject?.state === "archived";
+  const selectedProjectLocked = selectedProject?.lock?.state === "locked" || selectedProjectArchived;
+  const visibleProjects = orderedProjects(projects);
   const selectedChat = chats.find(item => item.id === chatId);
   const remotePromptPresence = visiblePresence.filter(member => member.deviceId !== status?.deviceId
     && (member.typing || member.caret || member.relativeCaret)).map(member => ({
@@ -2355,12 +2402,13 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
               </section>
             )}
             <div className="cocodex-project-list">
-              {projects.map(project => (
-                <button key={project.id} type="button" className={project.id === projectId ? "active" : ""}
+              {visibleProjects.map(project => (
+                <button key={project.id} type="button" className={`${project.id === projectId ? "active" : ""}${project.state === "archived" ? " archived" : ""}`.trim()}
                   onClick={() => setProjectId(project.id)}>
                   <IconServer />
                   <span>{project.name}<small>{project.role}
-                    {project.lock?.state === "locked" ? ` · ${t("cocodex.lock.short")}` : ""}</small></span>
+                    {project.state === "archived" ? `${t("cocodex.projects.metaSeparator")}${t("cocodex.projects.archived")}` : ""}
+                    {project.lock?.state === "locked" ? `${t("cocodex.projects.metaSeparator")}${t("cocodex.lock.short")}` : ""}</small></span>
                 </button>
               ))}
               {!projects.length && <p className="muted">{t("cocodex.projects.empty")}</p>}
@@ -2405,9 +2453,39 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 {t("cocodex.projects.create")}
               </button>
             </form>
+            {selectedProject?.role === "owner" && (
+              <section className="cocodex-project-lifecycle">
+                <strong>{t("cocodex.projects.manage")}</strong>
+                <small>{selectedProjectArchived
+                  ? t("cocodex.projects.archivedHelp")
+                  : t("cocodex.projects.manageHelp")}</small>
+                <div>
+                  {!selectedProjectArchived && <button type="button" className="btn btn-ghost"
+                    disabled={busy || status.state !== "connected" || selectedProjectLocked}
+                    onClick={() => void updateProjectLifecycle("rename")}>
+                    {t("cocodex.projects.rename")}
+                  </button>}
+                  {!selectedProjectArchived && <button type="button" className="btn btn-ghost"
+                    disabled={busy || status.state !== "connected" || selectedProject?.lock?.state !== "locked"}
+                    onClick={() => void updateProjectLifecycle("archive")}>
+                    {t("cocodex.projects.archive")}
+                  </button>}
+                  {selectedProjectArchived && <button type="button" className="btn btn-ghost"
+                    disabled={busy || status.state !== "connected"}
+                    onClick={() => void updateProjectLifecycle("restore")}>
+                    {t("cocodex.projects.restore")}
+                  </button>}
+                  {selectedProjectArchived && <button type="button" className="btn btn-danger btn-ghost"
+                    disabled={busy || status.state !== "connected"}
+                    onClick={() => void updateProjectLifecycle("delete")}>
+                    {t("cocodex.projects.delete")}
+                  </button>}
+                </div>
+              </section>
+            )}
             {projectId && <ProjectMemberRoster
               members={projectMembers}
-              owner={projects.find(project => project.id === projectId)?.role === "owner"}
+              owner={projects.find(project => project.id === projectId)?.role === "owner" && !selectedProjectArchived}
               connected={status.state === "connected"}
               busy={busy}
               onRefresh={() => void command({ type: "project.member.list", projectId })}
@@ -2427,7 +2505,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <IconLock /> {t("cocodex.lock.action")}
               </button>
             )}
-            {projectId && projects.find(project => project.id === projectId)?.role === "owner" && (
+            {projectId && projects.find(project => project.id === projectId)?.role === "owner" && !selectedProjectArchived && (
               <section className="cocodex-invite-people">
                 <strong>{t("cocodex.invites.people")}</strong>
                 <small>{t("cocodex.invites.peopleHelp")}</small>

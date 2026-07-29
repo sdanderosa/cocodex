@@ -307,7 +307,21 @@ describe("CoCodex GUI bridge", () => {
       projectId: crypto.randomUUID(),
       action: "unlock",
       signature: "RENDERER_SIGNATURE_CANARY",
-    })).toThrow("Invalid project lock command");
+    })).toThrow("Invalid project lock command");    expect(bridge.command({
+      type: "project.lifecycle.update",
+      projectId: crypto.randomUUID(),
+      action: "rename",
+      expectedRevision: 0,
+      name: "Nocturne Next",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "project.lifecycle.update",
+      projectId: crypto.randomUUID(),
+      action: "delete",
+      expectedRevision: 1,
+      confirmationName: "Nocturne",
+      signature: "RENDERER_LIFECYCLE_SIGNATURE_CANARY",
+    })).toThrow("Invalid project lifecycle command");
     expect(bridge.command({
       type: "project.create",
       projectId: crypto.randomUUID(),
@@ -460,7 +474,9 @@ describe("CoCodex GUI bridge", () => {
       && value.targetDeviceId === "6e83f26d-3159-48dc-b9b0-e2b7646ac961"
       && value.confirmedVerificationPhrase === "amber birch cobalt dawn")).toBe(true);
     expect(received.some((value: any) => value.type === "project.create"
-      && value.name === "Nocturne Launcher")).toBe(true);
+      && value.name === "Nocturne Launcher")).toBe(true);    expect(received.some((value: any) => value.type === "project.lifecycle.update"
+      && value.action === "rename" && value.name === "Nocturne Next"
+      && value.expectedRevision === 0)).toBe(true);
     expect(received.some((value: any) => value.type === "project.invite.list")).toBe(true);
     expect(received.some((value: any) => value.type === "project.invite.create"
       && value.recipientDeviceId === "contact-device")).toBe(true);
