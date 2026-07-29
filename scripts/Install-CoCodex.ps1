@@ -563,7 +563,7 @@ if ($Action -eq "Update" -or (
 
 Write-Host "$Action CoCodex private alpha with Node v$nodeVersion and npm v$npmVersion..." -ForegroundColor Cyan
 Write-InstallRootManifest $prefix $archive $releasePackage
-& $npm install --prefix $prefix --no-audit --no-fund
+& $npm install --prefix $prefix --install-strategy=nested --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) {
     throw "npm install failed with exit code $LASTEXITCODE. Existing CoCodex state was not removed."
 }

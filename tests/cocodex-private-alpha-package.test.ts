@@ -74,6 +74,7 @@ describe("CoCodex private-alpha distribution", () => {
     const installAt = source.indexOf("& $npm install --prefix");
     expect(checksumAt).toBeGreaterThan(-1);
     expect(installAt).toBeGreaterThan(checksumAt);
+    expect(source).toContain("& $npm install --prefix $prefix --install-strategy=nested --no-audit --no-fund");
     expect(source).toContain("[IO.FileAttributes]::ReparsePoint");
     expect(source).toContain("Assert-ReleaseArchive");
     expect(source).toContain("Assert-InstalledPackage");
