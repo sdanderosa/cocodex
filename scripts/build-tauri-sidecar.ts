@@ -55,11 +55,21 @@ export function detectTargetTriple(): string {
   return parseRustHostTriple(result.stdout.toString());
 }
 
-export function sidecarOutputPath(targetTriple = detectTargetTriple()): string {
+function externalBinaryOutputPath(name: string, targetTriple = detectTargetTriple()): string {
   const extension = targetTriple.includes("windows") ? ".exe" : "";
+  return resolve(repoRoot, "gui", "src-tauri", "binaries", `${name}-${targetTriple}${extension}`);
+}
+
+export function sidecarOutputPath(targetTriple = detectTargetTriple()): string {
   return process.env.COCODEX_TAURI_SIDECAR_OUTPUT?.trim()
     ? resolve(process.env.COCODEX_TAURI_SIDECAR_OUTPUT)
-    : resolve(repoRoot, "gui", "src-tauri", "binaries", `cocodex-runtime-${targetTriple}${extension}`);
+    : externalBinaryOutputPath("cocodex-runtime", targetTriple);
+}
+
+export function serverSidecarOutputPath(targetTriple = detectTargetTriple()): string {
+  return process.env.COCODEX_TAURI_SERVER_SIDECAR_OUTPUT?.trim()
+    ? resolve(process.env.COCODEX_TAURI_SERVER_SIDECAR_OUTPUT)
+    : externalBinaryOutputPath("cocodex-server", targetTriple);
 }
 
 export async function buildTauriSidecar(): Promise<string> {
@@ -97,7 +107,42 @@ export async function buildTauriSidecar(): Promise<string> {
   return output;
 }
 
+export async function buildTauriServerSidecar(): Promise<string> {
+  const output = serverSidecarOutputPath();
+  mkdirSync(dirname(output), { recursive: true });
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "build",
+      resolve(repoRoot, "apps", "cocodex-server", "src", "cli.ts"),
+      "--compile",
+      "--outfile",
+      output,
+    ],
+    {
+      cwd: repoRoot,
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
+  const exitCode = await child.exited;
+  if (exitCode !== 0) {
+    throw new Error(`failed to compile the CoCodex Server desktop binary (exit ${exitCode})`);
+  }
+  return output;
+}
+
+export async function buildTauriExternalBinaries(): Promise<{
+  runtime: string;
+  server: string;
+}> {
+  const runtime = await buildTauriSidecar();
+  const server = await buildTauriServerSidecar();
+  return { runtime, server };
+}
+
 if (import.meta.main) {
-  const output = await buildTauriSidecar();
-  console.log(`CoCodex desktop runtime: ${output}`);
+  const output = await buildTauriExternalBinaries();
+  console.log(`CoCodex desktop runtime: ${output.runtime}`);
+  console.log(`CoCodex Server binary: ${output.server}`);
 }

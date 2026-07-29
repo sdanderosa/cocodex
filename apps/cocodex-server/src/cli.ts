@@ -157,7 +157,7 @@ Usage:
   cocodex-server transfer-export --target-request FILE --output FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server transfer-import --input FILE [--passphrase-file FILE] [--state-root PATH]
   cocodex-server migrate [--state-root PATH]
-  cocodex-server invite [--ttl SECONDS] [--state-root PATH]
+  cocodex-server invite [--host HOST] [--ttl SECONDS] [--state-root PATH]
   cocodex-server devices [--state-root PATH]
   cocodex-server device-keys --device ID [--state-root PATH]
   cocodex-server bootstrap-approve --fingerprint FINGERPRINT [--state-root PATH]
@@ -281,9 +281,16 @@ async function run(): Promise<void> {
     }
     case "invite": {
       const config = loadConfig(paths);
+      const invitationHost = option("--host")?.trim() || config.publicHost;
+      const validHost = [...invitationHost].every(character =>
+        /[A-Za-z0-9.:\[\]-]/.test(character)
+      );
+      if (!invitationHost || invitationHost.length > 253 || !validHost) {
+        throw new Error("Invitation host must be a hostname or IP address");
+      }
       const db = openDatabase(paths.database);
       const code = createInvitation(db, {
-        host: config.publicHost,
+        host: invitationHost,
         port: config.port,
         serverFingerprint: tlsCertificateFingerprint(config.tlsCertificate),
         ttlSeconds: Number(option("--ttl") ?? "900"),

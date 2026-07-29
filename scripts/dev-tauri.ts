@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { buildTauriSidecar } from "./build-tauri-sidecar";
+import { buildTauriExternalBinaries } from "./build-tauri-sidecar";
 
 const root = resolve(import.meta.dir, "..");
 const frontendRoot = resolve(root, "gui");
@@ -18,7 +18,7 @@ process.on("SIGTERM", stopFrontend);
 // Rust owns the bundled sidecar in development exactly as it does in production.
 // This hook only builds the external binary and starts Vite; it never probes,
 // starts, adopts, or stops the user's home OpenCodex listener on port 10100.
-await buildTauriSidecar();
+await buildTauriExternalBinaries();
 
 frontend = Bun.spawn(
   [process.execPath, "run", "dev", "--", "--host", "127.0.0.1", "--port", "4179"],

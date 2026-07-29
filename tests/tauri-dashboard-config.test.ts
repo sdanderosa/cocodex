@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   parseRustHostTriple,
+  serverSidecarOutputPath,
   sidecarOutputPath,
   validateTargetTriple,
 } from "../scripts/build-tauri-sidecar";
@@ -29,7 +30,7 @@ describe("CoCodex Tauri dashboard configuration", () => {
     expect(config.app.windows).toHaveLength(1);
     expect(config.app.windows[0].label).toBe("main");
     expect(config.app.windows[0].visible).toBe(false);
-    expect(config.bundle.externalBin).toEqual(["binaries/cocodex-runtime"]);
+    expect(config.bundle.externalBin).toEqual(["binaries/cocodex-runtime", "binaries/cocodex-server"]);
     for (const icon of config.bundle.icon as string[]) {
       expect(existsSync(resolve(repoRoot, "gui/src-tauri", icon))).toBe(true);
     }
@@ -41,6 +42,10 @@ describe("CoCodex Tauri dashboard configuration", () => {
     expect(nativeMain).toContain("tauri_plugin_notification::init()");
     expect(cargoManifest).toContain('tauri-plugin-shell = "2"');
     expect(nativeMain).toContain('.sidecar("cocodex-runtime")');
+    expect(nativeMain).toContain('.sidecar("cocodex-server")');
+    expect(nativeMain).toContain("desktop_server_prepare");
+    expect(nativeMain).toContain("desktop_server_bootstrap_approve");
+    expect(nativeMain).toContain("server_port_is_protected");
     expect(nativeMain).toContain("stop_owned_runtime");
     expect(nativeMain).toContain("window.location.hash = '#cocodex'");
     expect(nativeMain).toContain("const MANAGED_PORT_START: u16 = 10101");
@@ -60,6 +65,9 @@ describe("CoCodex Tauri dashboard configuration", () => {
     );
     expect(validateTargetTriple("aarch64-apple-darwin")).toBe("aarch64-apple-darwin");
     expect(() => validateTargetTriple("../escape")).toThrow("invalid Rust target triple");
+    expect(serverSidecarOutputPath("x86_64-pc-windows-msvc")).toEndWith(
+      "cocodex-server-x86_64-pc-windows-msvc.exe",
+    );
     expect(sidecarOutputPath("x86_64-pc-windows-msvc")).toEndWith(
       "cocodex-runtime-x86_64-pc-windows-msvc.exe",
     );

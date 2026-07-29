@@ -17,7 +17,8 @@ From the repository root:
 bun run dev:tauri
 ```
 
-The development hook compiles the production sidecar and starts Vite on
+The development hook compiles the production Client runtime and separate
+Server external binaries, then starts Vite on
 `127.0.0.1:4179`. Rust starts and supervises the sidecar exactly as it does
 in a packaged app. The hook does not probe, adopt, start, or stop the user's
 port-10100 OpenCodex service.
@@ -35,8 +36,9 @@ bun run dev:gui
 bun run build:tauri
 ```
 
-The build compiles `src/cli/index.ts` into the validated target-triple-named
-`cocodex-runtime`, builds `gui/dist`, and packages both NSIS and MSI
+The build compiles `src/cli/index.ts` as `cocodex-runtime` and the separate
+`apps/cocodex-server/src/cli.ts` as `cocodex-server`, using validated
+target-triple names, then builds `gui/dist` and packages both NSIS and MSI
 installers. A destination computer does not need Git, Bun, Node.js, or Rust.
 
 ## Runtime bootstrap
@@ -80,11 +82,24 @@ Tauri's exact embedded origins may request the per-launch CoCodex capability;
 arbitrary localhost origins cannot. Protected routes still require the random
 capability.
 
-The internet-facing CoCodex Server is never bundled into or started by the
-desktop Client. Enrollment, shared state, encrypted messaging, and remote
-agent execution continue through the separate Client/Server architecture.
+The installer bundles the separately compiled CoCodex Server executable for
+first-host setup, but it is never merged into the Client process. It retains
+its own `~/.cocodex-server` state, database, TLS identity, PID, authority,
+service/update flow, and detached lifecycle. Closing the Client does not stop
+the Server.
+
+The WebView cannot execute the Server binary directly. Rust exposes only
+structured status, prepare/start/invite, and first-device bootstrap-approval
+commands. The native layer constructs every argument, strips the admin token,
+rejects OpenCodex/managed-runtime/Sunshine ports, and probes port availability
+before initialization. A signed loopback invitation enrolls the host without
+router hairpin support. Normal Server invitations retain the configured public
+host, and manual firewall/forwarding/CGNAT guidance is preserved in the UI.
+
+See ADR 0059 for the native Server bootstrap decision.
 
 Native diagnostics are bounded, single-line, profile-redacted, and local at
 `~/.cocodex/logs/desktop-runtime.log`.
 
-See ADR 0049 and `docs/evidence/tauri-managed-client-runtime.md`.
+See ADR 0049, ADR 0059, `docs/evidence/tauri-managed-client-runtime.md`, and
+`docs/evidence/tauri-native-server-onboarding.md`.

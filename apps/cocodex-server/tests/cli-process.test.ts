@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { decodeInvitation } from "@cocodex/protocol";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +88,19 @@ test("the separate server process initializes, serves TLS, and verifies a health
       },
     },
   });
+
+  const defaultInvite = await runCli(cli, ["invite", "--state-root", root]);
+  expect(defaultInvite.exitCode).toBe(0);
+  expect(decodeInvitation(defaultInvite.stdout).host).toBe("127.0.0.1");
+  const loopbackInvite = await runCli(cli, [
+    "invite", "--host", "localhost", "--state-root", root,
+  ]);
+  expect(loopbackInvite.exitCode).toBe(0);
+  expect(decodeInvitation(loopbackInvite.stdout).host).toBe("localhost");
+  const invalidInvite = await runCli(cli, [
+    "invite", "--host", "https://example.test", "--state-root", root,
+  ]);
+  expect(invalidInvite.exitCode).not.toBe(0);
 
   const start = () => Bun.spawn([
     process.execPath,

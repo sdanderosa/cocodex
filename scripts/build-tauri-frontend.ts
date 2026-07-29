@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
-import { buildTauriSidecar } from "./build-tauri-sidecar";
+import { buildTauriExternalBinaries } from "./build-tauri-sidecar";
 
 const repoRoot = resolve(import.meta.dir, "..");
 
-await buildTauriSidecar();
+await buildTauriExternalBinaries();
 
 const frontend = Bun.spawn([process.execPath, "run", "build"], {
   cwd: resolve(repoRoot, "gui"),

@@ -21,6 +21,8 @@ use tauri_plugin_shell::{
 
 const MANAGED_PORT_START: u16 = 10101;
 const MANAGED_PORT_END: u16 = 10120;
+const PROTECTED_HOME_PORT_END: u16 = 10120;
+const SUNSHINE_PORT_START: u16 = 47984;
 const INITIAL_READY_TIMEOUT: Duration = Duration::from_secs(12);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_BACKOFF: Duration = Duration::from_secs(2);
@@ -51,6 +53,13 @@ impl Default for ManagedRuntimeStatus {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerPrepareRequest {
+    public_host: String,
+    port: u16,
+}
+
 enum ProxyProbe {
     Empty,
     Occupied,
@@ -65,6 +74,10 @@ fn cocodex_state_root() -> PathBuf {
         return PathBuf::from(profile).join(".cocodex");
     }
     std::env::temp_dir().join("CoCodex")
+}
+
+fn server_state_root() -> PathBuf {
+    cocodex_state_root().with_file_name(".cocodex-server")
 }
 
 fn managed_runtime_state_root() -> PathBuf {
@@ -233,6 +246,187 @@ fn managed_runtime_status(state: tauri::State<'_, RuntimeState>) -> serde_json::
         "port": status.port,
         "baseUrl": status.port.map(|port| format!("http://127.0.0.1:{port}")),
     })
+}
+
+fn server_port_is_protected(port: u16) -> bool {
+    (10100..=PROTECTED_HOME_PORT_END).contains(&port)
+        || (SUNSHINE_PORT_START..=48010).contains(&port)
+}
+
+fn server_port_is_available(port: u16) -> bool {
+    let Ok(wildcard) = TcpListener::bind(("0.0.0.0", port)) else {
+        return false;
+    };
+    drop(wildcard);
+    let Ok(loopback) = TcpListener::bind(("127.0.0.1", port)) else {
+        return false;
+    };
+    drop(loopback);
+    true
+}
+
+fn validate_server_prepare(request: &ServerPrepareRequest) -> Result<(String, u16), String> {
+    let host = request.public_host.trim();
+    if host.is_empty() || host.len() > 253 {
+        return Err("Enter a public hostname or IP address.".into());
+    }
+    if !host
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || ".-:[]".contains(character))
+    {
+        return Err("The public host must be a hostname or IP address, not a URL.".into());
+    }
+    if request.port < 1024 {
+        return Err("Choose a server port between 1024 and 65535.".into());
+    }
+    if server_port_is_protected(request.port) {
+        return Err("That port is reserved for OpenCodex, CoCodex runtime, or Sunshine.".into());
+    }
+    Ok((host.to_string(), request.port))
+}
+
+fn append_server_state_root(args: &mut Vec<String>) {
+    args.push("--state-root".into());
+    args.push(server_state_root().to_string_lossy().into_owned());
+}
+
+async fn run_server_command(app: &AppHandle<Wry>, mut args: Vec<String>) -> Result<String, String> {
+    append_server_state_root(&mut args);
+    let output = app
+        .shell()
+        .sidecar("cocodex-server")
+        .map_err(|error| format!("could not resolve bundled CoCodex Server: {error}"))?
+        .args(args)
+        .env("COCODEX_DESKTOP_SERVER_MANAGED", "1")
+        .output()
+        .await
+        .map_err(|error| format!("could not run bundled CoCodex Server: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        let detail = sanitize_runtime_detail(&String::from_utf8_lossy(&output.stderr));
+        return Err(if detail.is_empty() {
+            "CoCodex Server command failed.".into()
+        } else {
+            detail
+        });
+    }
+    Ok(stdout)
+}
+
+async fn run_server_json(
+    app: &AppHandle<Wry>,
+    args: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let output = run_server_command(app, args).await?;
+    serde_json::from_str(&output)
+        .map_err(|_| "CoCodex Server returned an invalid response.".to_string())
+}
+
+fn safe_server_status(status: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "initialized": status.get("initialized").and_then(|value| value.as_bool()).unwrap_or(false),
+        "running": status.get("running").and_then(|value| value.as_bool()).unwrap_or(false),
+        "pid": status.get("pid").and_then(|value| value.as_u64()),
+        "publicHost": status.get("publicHost").and_then(|value| value.as_str()),
+        "port": status.get("port").and_then(|value| value.as_u64()),
+        "authority": status.get("authority").and_then(|value| value.as_str()),
+        "serverFingerprint": status.get("serverFingerprint").and_then(|value| value.as_str()),
+        "database": status.get("database").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+#[tauri::command]
+async fn desktop_server_status(app: AppHandle<Wry>) -> Result<serde_json::Value, String> {
+    let status = run_server_json(&app, vec!["status".into()]).await?;
+    Ok(safe_server_status(&status))
+}
+
+#[tauri::command]
+async fn desktop_server_prepare(
+    app: AppHandle<Wry>,
+    request: ServerPrepareRequest,
+) -> Result<serde_json::Value, String> {
+    let (public_host, port) = validate_server_prepare(&request)?;
+    let initial_status = run_server_json(&app, vec!["status".into()]).await?;
+    let initialized = initial_status
+        .get("initialized")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let mut setup = serde_json::Value::Null;
+
+    if !initialized {
+        if !server_port_is_available(port) {
+            return Err(
+                "The selected server port is already in use; no server state was changed.".into(),
+            );
+        }
+        setup = run_server_json(
+            &app,
+            vec![
+                "init".into(),
+                "--public-host".into(),
+                public_host,
+                "--port".into(),
+                port.to_string(),
+            ],
+        )
+        .await?;
+    }
+
+    let status = run_server_json(&app, vec!["status".into()]).await?;
+    if !status
+        .get("running")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        run_server_json(&app, vec!["restart".into()]).await?;
+    }
+    let invitation = run_server_command(
+        &app,
+        vec!["invite".into(), "--host".into(), "127.0.0.1".into()],
+    )
+    .await?;
+    if invitation.is_empty() || invitation.len() > 16 * 1024 {
+        return Err("CoCodex Server returned an invalid invitation.".into());
+    }
+    let final_status = run_server_json(&app, vec!["status".into()]).await?;
+    Ok(serde_json::json!({
+        "initializedNow": !initialized,
+        "status": safe_server_status(&final_status),
+        "invitation": invitation,
+        "network": {
+            "firewall": setup.get("firewall").cloned().unwrap_or(serde_json::Value::Null),
+            "portMapping": setup.get("portMapping").cloned().unwrap_or(serde_json::Value::Null),
+            "diagnostic": setup.get("networkDiagnostic").cloned().unwrap_or(serde_json::Value::Null),
+            "manualPortForwarding": setup.get("manualPortForwarding").cloned().unwrap_or(serde_json::Value::Null),
+        },
+    }))
+}
+
+#[tauri::command]
+async fn desktop_server_bootstrap_approve(
+    app: AppHandle<Wry>,
+    fingerprint: String,
+) -> Result<serde_json::Value, String> {
+    let normalized = fingerprint.trim().to_ascii_uppercase();
+    let valid = normalized.len() == 79
+        && normalized.split('-').count() == 16
+        && normalized.split('-').all(|group| {
+            group.len() == 4 && group.chars().all(|character| character.is_ascii_hexdigit())
+        });
+    if !valid {
+        return Err("The enrolled device fingerprint is invalid.".into());
+    }
+    run_server_json(
+        &app,
+        vec![
+            "bootstrap-approve".into(),
+            "--fingerprint".into(),
+            normalized,
+        ],
+    )
+    .await?;
+    Ok(serde_json::json!({ "approved": true }))
 }
 
 fn spawn_owned_runtime(app: &AppHandle<Wry>, port: u16) -> Result<(), String> {
@@ -440,7 +634,12 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .manage(RuntimeState::default())
-        .invoke_handler(tauri::generate_handler![managed_runtime_status])
+        .invoke_handler(tauri::generate_handler![
+            managed_runtime_status,
+            desktop_server_status,
+            desktop_server_prepare,
+            desktop_server_bootstrap_approve
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             thread::spawn(move || supervise_runtime(handle));
@@ -460,8 +659,9 @@ fn main() {
 mod tests {
     use super::{
         compatible_health_pid, first_available_managed_port, managed_address,
-        managed_port_is_allowed, sanitize_runtime_detail, TcpListener, MANAGED_PORT_END,
-        MANAGED_PORT_START,
+        managed_port_is_allowed, sanitize_runtime_detail, server_port_is_available,
+        server_port_is_protected, validate_server_prepare, ServerPrepareRequest, TcpListener,
+        MANAGED_PORT_END, MANAGED_PORT_START,
     };
 
     #[test]
@@ -524,5 +724,47 @@ mod tests {
         assert!(!sanitized.contains('\r'));
         assert!(!sanitized.contains('\n'));
         assert_eq!(sanitized.chars().count(), 768);
+    }
+
+    #[test]
+    fn server_setup_rejects_runtime_and_sunshine_ports() {
+        for port in [
+            10100, 10101, 10120, 47984, 47989, 47990, 47998, 47999, 48000, 48010,
+        ] {
+            assert!(server_port_is_protected(port));
+        }
+        assert!(!server_port_is_protected(19463));
+    }
+
+    #[test]
+    fn server_setup_accepts_only_structured_hosts_and_unprotected_ports() {
+        let valid = ServerPrepareRequest {
+            public_host: "cocodex.example.net".into(),
+            port: 19463,
+        };
+        assert_eq!(
+            validate_server_prepare(&valid),
+            Ok(("cocodex.example.net".into(), 19463))
+        );
+        for host in ["", "https://example.net", "example.net/path", "host name"] {
+            assert!(validate_server_prepare(&ServerPrepareRequest {
+                public_host: host.into(),
+                port: 19463,
+            })
+            .is_err());
+        }
+        assert!(validate_server_prepare(&ServerPrepareRequest {
+            public_host: "127.0.0.1".into(),
+            port: 10100,
+        })
+        .is_err());
+    }
+    #[test]
+    fn server_setup_refuses_an_occupied_port_before_initialization() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve server test port");
+        let port = listener.local_addr().expect("read reserved port").port();
+        assert!(!server_port_is_available(port));
+        drop(listener);
+        assert!(server_port_is_available(port));
     }
 }

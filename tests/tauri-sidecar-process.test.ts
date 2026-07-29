@@ -4,7 +4,9 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   buildTauriSidecar,
+  buildTauriServerSidecar,
   detectTargetTriple,
+  serverSidecarOutputPath,
   sidecarOutputPath,
 } from "../scripts/build-tauri-sidecar";
 
@@ -115,4 +117,27 @@ describe("compiled CoCodex Tauri sidecar", () => {
     expect(status.status).toBe(200);
     expect(status.headers.get("access-control-allow-origin")).toBe(origin);
   }, 45_000);
+
+  test("runs the bundled CoCodex Server as a separate executable and state root", async () => {
+    await buildTauriServerSidecar();
+    const serverRoot = join(temporaryRoot, "server");
+    const result = Bun.spawnSync([
+      serverSidecarOutputPath(detectTargetTriple()),
+      "status",
+      "--state-root",
+      serverRoot,
+    ], {
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toMatchObject({
+      initialized: false,
+      running: false,
+      stateRoot: serverRoot,
+      pid: null,
+    });
+    expect(existsSync(join(serverRoot, "config.json"))).toBe(false);
+  });
 });

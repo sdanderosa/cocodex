@@ -7,6 +7,14 @@ import {
   privateTimelineForContact,
   reconcilePrivateContactSelection,
 } from "../cocodex-private-contact-state";
+import {
+  DEFAULT_COCODEX_SERVER_PORT,
+  bootstrapApproveDesktopDevice,
+  isDesktopServerAvailable,
+  desktopServerNetworkGuidance,
+  prepareDesktopServer,
+  type DesktopServerStatus,
+} from "../cocodex-desktop-server";
 import { referenceArtifactSelectionReducer } from "../cocodex-file-reference-state";
 import { projectCreatedFromControl } from "../cocodex-project-creation-state";
 import {
@@ -918,6 +926,12 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [trustedRequesterDeviceId, setTrustedRequesterDeviceId] = useState("");
   const [trustedRequesterFingerprint, setTrustedRequesterFingerprint] = useState("");
   const [invite, setInvite] = useState("");
+  const [onboardingMode, setOnboardingMode] = useState<"host" | "join">(
+    () => isDesktopServerAvailable() ? "host" : "join",
+  );
+  const [serverHost, setServerHost] = useState("");
+  const [serverPort, setServerPort] = useState(String(DEFAULT_COCODEX_SERVER_PORT));
+  const [desktopServer, setDesktopServer] = useState<DesktopServerStatus>();
   const [displayName, setDisplayName] = useState("");
   const [recipientDeviceId, setRecipientDeviceId] = useState("");
   const [privateDraft, setPrivateDraft] = useState("");
@@ -1627,19 +1641,55 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const enrollWithInvitation = async (invitation: string): Promise<Status> =>
+    cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/enroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invite: invitation, displayName }),
+    });
+
   const enroll = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setNotice("");
     try {
-      const next = await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/enroll`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invite, displayName }),
-      });
+      const next = await enrollWithInvitation(invite);
       setStatus(next);
       setInvite("");
       setNotice(t("cocodex.enroll.success"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hostAndEnroll = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setNotice("");
+    try {
+      const port = Number(serverPort);
+      if (!Number.isInteger(port)) throw new Error(t("cocodex.host.invalidPort"));
+      const prepared = await prepareDesktopServer({ publicHost: serverHost, port });
+      const networkGuidance = desktopServerNetworkGuidance(prepared.network);
+      setDesktopServer(prepared.status);
+      const enrolled = await enrollWithInvitation(prepared.invitation);
+      if (!enrolled.deviceFingerprint) {
+        throw new Error(t("cocodex.host.missingFingerprint"));
+      }
+      await bootstrapApproveDesktopDevice(enrolled.deviceFingerprint);
+      const connected = await cocodexApiJson<Status>(apiBase, `${apiBase}/api/cocodex/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      setStatus(connected);
+      setNotice(networkGuidance.manualRequired
+        ? `${t("cocodex.host.successManual")}${networkGuidance.message
+          ? ` ${networkGuidance.message}`
+          : ""}`
+        : t("cocodex.host.success"));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2360,18 +2410,66 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
       ))}
 
       {!status?.configured ? (
-        <form className="card cocodex-enroll" onSubmit={enroll}>
-          <IconKey />
-          <div>
-            <h3>{t("cocodex.enroll.title")}</h3>
-            <p>{t("cocodex.enroll.subtitle")}</p>
+        <section className="card cocodex-onboarding">
+          <div className="cocodex-onboarding-choice" role="tablist"
+            aria-label={t("cocodex.onboarding.choice")}>
+            {isDesktopServerAvailable() && <button type="button" role="tab"
+              aria-selected={onboardingMode === "host"}
+              className={onboardingMode === "host" ? "active" : ""}
+              onClick={() => setOnboardingMode("host")}>
+              <IconServer /> {t("cocodex.host.tab")}
+            </button>}
+            <button type="button" role="tab" aria-selected={onboardingMode === "join"}
+              className={onboardingMode === "join" ? "active" : ""}
+              onClick={() => setOnboardingMode("join")}>
+              <IconKey /> {t("cocodex.enroll.tab")}
+            </button>
           </div>
-          <input className="input" value={displayName} onChange={event => setDisplayName(event.target.value)}
-            placeholder={t("cocodex.enroll.name")} required maxLength={80} />
-          <textarea className="input" value={invite} onChange={event => setInvite(event.target.value)}
-            placeholder={t("cocodex.enroll.invite")} required rows={4} />
-          <button className="btn btn-primary" disabled={busy}>{t("cocodex.enroll.action")}</button>
-        </form>
+          {onboardingMode === "host" && isDesktopServerAvailable() ? (
+            <form className="cocodex-enroll cocodex-host-setup" onSubmit={hostAndEnroll}>
+              <IconServer />
+              <div>
+                <h3>{t("cocodex.host.title")}</h3>
+                <p>{t("cocodex.host.subtitle")}</p>
+              </div>
+              <input className="input" value={displayName}
+                onChange={event => setDisplayName(event.target.value)}
+                placeholder={t("cocodex.enroll.name")} required maxLength={80} />
+              <div className="cocodex-host-address">
+                <input className="input" value={serverHost}
+                  onChange={event => setServerHost(event.target.value)}
+                  placeholder={t("cocodex.host.address")} required maxLength={253} />
+                <input className="input" value={serverPort} inputMode="numeric"
+                  onChange={event => setServerPort(event.target.value)}
+                  aria-label={t("cocodex.host.port")} required />
+              </div>
+              <small>{t("cocodex.host.networkHelp")}</small>
+              {desktopServer && <div className="cocodex-host-status" role="status">
+                <strong>{desktopServer.running
+                  ? t("cocodex.host.running")
+                  : t("cocodex.host.stopped")}</strong>
+                <span>{desktopServer.publicHost}:{desktopServer.port}</span>
+              </div>}
+              <button className="btn btn-primary" disabled={busy}>
+                {t("cocodex.host.action")}
+              </button>
+            </form>
+          ) : (
+            <form className="cocodex-enroll" onSubmit={enroll}>
+              <IconKey />
+              <div>
+                <h3>{t("cocodex.enroll.title")}</h3>
+                <p>{t("cocodex.enroll.subtitle")}</p>
+              </div>
+              <input className="input" value={displayName}
+                onChange={event => setDisplayName(event.target.value)}
+                placeholder={t("cocodex.enroll.name")} required maxLength={80} />
+              <textarea className="input" value={invite} onChange={event => setInvite(event.target.value)}
+                placeholder={t("cocodex.enroll.invite")} required rows={4} />
+              <button className="btn btn-primary" disabled={busy}>{t("cocodex.enroll.action")}</button>
+            </form>
+          )}
+        </section>
       ) : (
         <div className="cocodex-shell" onMouseMove={event => {
           if (Date.now() - presenceSentAt.current < 80) return;

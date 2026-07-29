@@ -15,6 +15,27 @@
 .cocodex-enroll { max-width: 680px; margin: 60px auto; padding: 24px; display: grid; gap: 14px; }
 .cocodex-enroll > svg { width: 32px; height: 32px; color: #8b5cf6; }
 .cocodex-enroll h3 { margin: 0 0 5px; }
+.cocodex-onboarding { max-width: 720px; margin: 44px auto; overflow: hidden; }
+.cocodex-onboarding .cocodex-enroll { max-width: none; margin: 0; }
+.cocodex-onboarding-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--border); }
+.cocodex-onboarding-choice button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 13px 16px;
+  border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted);
+  cursor: pointer; font: inherit; font-weight: var(--weight-semibold);
+}
+.cocodex-onboarding-choice button:hover { color: var(--text); background: var(--raised); }
+.cocodex-onboarding-choice button.active {
+  border-bottom-color: #8b5cf6; background: color-mix(in srgb, #8b5cf6 9%, var(--raised)); color: var(--text);
+}
+.cocodex-onboarding-choice svg { width: 17px; height: 17px; }
+.cocodex-host-address { display: grid; grid-template-columns: minmax(0, 1fr) 130px; gap: 10px; }
+.cocodex-host-setup > small { color: var(--muted); line-height: var(--leading-body); }
+.cocodex-host-status {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--green) 35%, var(--border)); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--green) 8%, var(--raised));
+}
+.cocodex-host-status span { color: var(--muted); font-family: var(--font-code); }
 .cocodex-shell { position: relative; display: grid; grid-template-columns: 220px minmax(380px, 1fr) 290px; gap: 12px; min-height: 670px; }
 .cocodex-presence-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; }
 .cocodex-presence-cursor { position: absolute; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; background: #7c3aed; color: #fff; font-size: var(--text-caption); box-shadow: 0 2px 8px #0006; transform: translate(5px, 5px); }

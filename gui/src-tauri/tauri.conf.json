@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "externalBin": ["binaries/cocodex-runtime"],
+    "externalBin": ["binaries/cocodex-runtime", "binaries/cocodex-server"],
     "category": "Utility",
     "shortDescription": "A secure collaborative Codex workspace",
     "longDescription": "CoCodex is a private collaborative workspace for shared projects, agents, and Codex sessions.",
