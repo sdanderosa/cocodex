@@ -53,6 +53,7 @@ import {
   type LocalAgentSafetyState,
 } from "./agent-safety";
 import { CodexAgentAdapter, type CodexUsage } from "./codex-agent-adapter";
+import { detectCodexBrowserCapability, openOfficialCodexApp } from "./codex-browser-capability";
 import { runLocalCodexTurn } from "./local-codex";
 import {
   GitIntegrationBlockedError,
@@ -4694,6 +4695,14 @@ export async function runJsonLineSession(
             reason: String(command.reason ?? "Cancelled by the host user."),
           });
           emit({ source: "control", id: command.id, ok: true, taskId: String(command.taskId) });
+        } else if (command.type === "codex.browser.capability") {
+          emit({ source: "control", id: command.id, ok: true,
+            browserCapability: detectCodexBrowserCapability() });
+        } else if (command.type === "codex.official-app.open") {
+          const policy = ensureLocalAgentPolicy(command.agentId);
+          const browserCapability = openOfficialCodexApp(policy.workspaceRoot);
+          emit({ source: "control", id: command.id, ok: true, agentId: policy.agentId,
+            officialCodexOpened: true, browserCapability });
         } else if (command.type === "agent.safety.status") {
           if (localAgentPolicies.size === 0) reloadLocalAgentPolicies();
           if (command.agentId) ensureLocalAgentPolicy(command.agentId);

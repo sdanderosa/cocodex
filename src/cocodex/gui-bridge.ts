@@ -134,6 +134,8 @@ const ALLOWED_COMMANDS = new Set([
   "agent.task.list",
   "agent.cancel",
   "agent.approval",
+  "codex.browser.capability",
+  "codex.official-app.open",
   "agent.safety.status",
   "agent.emergency.stop",
   "agent.emergency.resume",
@@ -585,6 +587,20 @@ export class CoCodexGuiBridge {
       if (Object.keys(command).some(key => !allowed.has(key))
         || typeof command.projectId !== "string" || !/^[0-9a-f-]{36}$/i.test(command.projectId)) {
         throw new Error("Invalid project-leave command");
+      }
+    }
+    if (command.type === "codex.browser.capability") {
+      const allowed = new Set(["id", "type"]);
+      if (Object.keys(command).some(key => !allowed.has(key))) {
+        throw new Error("Invalid Codex browser-capability command");
+      }
+    }
+    if (command.type === "codex.official-app.open") {
+      const allowed = new Set(["id", "type", "agentId"]);
+      if (Object.keys(command).some(key => !allowed.has(key))
+        || typeof command.agentId !== "string"
+        || command.agentId.length < 1 || command.agentId.length > 120) {
+        throw new Error("Invalid official Codex app command");
       }
     }
     if (command.type === "project.lifecycle.update") {

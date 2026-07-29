@@ -77,6 +77,8 @@
 .cocodex-agent-safety { display: grid; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .cocodex-agent-safety-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cocodex-agent-safety-actions .btn { font-size: var(--text-caption); padding: 5px 8px; }
+.cocodex-browser-capability { display: grid; gap: 4px; padding: 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--surface) 82%, transparent); }
+.cocodex-browser-capability .btn { justify-self: start; }
 .cocodex-agent-setup { display: grid; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .cocodex-agent-setup .input { width: 100%; min-width: 0; font-size: var(--text-caption); }
 .cocodex-agent-setup .btn { font-size: var(--text-caption); padding: 6px 8px; }

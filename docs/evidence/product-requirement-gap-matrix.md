@@ -2,7 +2,7 @@
 
 - Audit date: 2026-07-28
 - Source: supplied 2,316-line product brief, supplied visual reference,
-  repository ADRs through ADR 0056, current filesystem/tests/runtime evidence
+  repository ADRs through ADR 0057, current filesystem/tests/runtime evidence
 - Branch: `feat/cocodex-foundation`
 - Completion status: not complete; do not publish
 
@@ -35,7 +35,7 @@ Status meanings:
 | Git worktrees | Partial | Per-task locked branches/worktrees, dirty/detached refusal, ownership report, overlap/conflict/revision/integration tests, resident review controls | Include the full workflow in the single 70-step run and complete broader product acceptance |
 | Full Computer | Proven for host-user mode | Explicit opt-in, durable emergency controls, `danger-full-access` mapping and real fixture evidence | Resource locks outside Git |
 | Elevated helper | Missing | ADR 0021 explicitly excludes it | Separate privileged app, install/enable lifecycle, signed local-only requests, confirmation policy |
-| Official browser capability | Missing/partial preservation | Tasks run through official Codex CLI and user config is preserved | Detect support, status/events, disabled/watch/shared-control UX, privacy-safe summaries |
+| Official browser capability | Partial with truthful local boundary | Exact selected-runtime detection proves CLI unsupported vs installed official-app Browser; renderer-minimized Open in official Codex handoff and chat-first status UI | Hosted-agent execution, disabled/watch/shared-control policy, sanitized browser events/results, and optional encrypted live viewing |
 | Usage sidebar | Proven | Signed host reports, account windows, active agents and per-agent cache share | Multi-account detail/stale/offline presentation audit |
 | Private text messaging | Partial | Independent device keys, ciphertext-only Server, offline delivery, local history/search, receipts, explicit share, replies, reactions, edit/delete, ephemeral typing indicators, opt-in plaintext-free native desktop notifications (manual OS-toast acceptance pending) | Richer conversation management |
 | Mature private-message crypto | Missing | Sealed-box signed envelopes are honestly documented | Maintained X3DH/PQXDH + Double Ratchet implementation, prekeys, forward secrecy and recovery |

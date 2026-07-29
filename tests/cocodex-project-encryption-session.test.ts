@@ -195,6 +195,15 @@ describe("CoCodex encrypted project context session", () => {
 
     const projectId = randomUUID();
     const requestId = randomUUID();
+    const browserCapabilityId = crypto.randomUUID();
+    stephen.send({ id: browserCapabilityId, type: "codex.browser.capability" });
+    const browserCapability = await stephen.waitFor(event => event.source === "control"
+      && event.id === browserCapabilityId && event.ok === true && event.browserCapability?.version === 1);
+    expect(browserCapability.browserCapability).toMatchObject({
+      executionSurface: "codex-exec",
+      agentBrowserAvailable: false,
+    });
+    expect(JSON.stringify(browserCapability.browserCapability)).not.toContain(stephenRoot);
     stephen.send({
       id: requestId,
       type: "project.create",

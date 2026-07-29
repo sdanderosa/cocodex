@@ -400,6 +400,20 @@ describe("CoCodex GUI bridge", () => {
       trustedRequesterDeviceId: crypto.randomUUID(),
       trustedRequesterFingerprint: "trusted-fingerprint-1234",
     }).accepted).toBe(true);
+    expect(bridge.command({ type: "codex.browser.capability" }).accepted).toBe(true);
+    expect(bridge.command({
+      type: "codex.official-app.open",
+      agentId: "local-browser-agent",
+    }).accepted).toBe(true);
+    expect(() => bridge.command({
+      type: "codex.official-app.open",
+      agentId: "local-browser-agent",
+      workspaceRoot: "C:\\renderer-must-not-choose",
+    })).toThrow("Invalid official Codex app command");
+    expect(() => bridge.command({
+      type: "codex.browser.capability",
+      command: "arbitrary",
+    })).toThrow("Invalid Codex browser-capability command");
     expect(bridge.command({
       type: "agent.task.list",
       projectId: crypto.randomUUID(),
@@ -494,6 +508,9 @@ describe("CoCodex GUI bridge", () => {
     expect(received.some((value: any) => value.type === "project.invite.cancel")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.list")).toBe(true);
     expect(received.some((value: any) => value.type === "agent.configure" && value.name === "Lucas")).toBe(true);
+    expect(received.some((value: any) => value.type === "codex.browser.capability")).toBe(true);
+    expect(received.some((value: any) => value.type === "codex.official-app.open"
+      && value.agentId === "local-browser-agent" && value.workspaceRoot === undefined)).toBe(true);
     expect(received.some((value: any) => value.type === "agent.task.list")).toBe(true);
     expect(received.some((value: any) => value.type === "git.integration.preview"
       && value.taskId === integrationTaskId)).toBe(true);

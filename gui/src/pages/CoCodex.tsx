@@ -17,6 +17,7 @@ import {
 } from "../cocodex-project-lifecycle-state";
 import { buildCoCodexComposerSubmission } from "../cocodex-composer-state";
 import { executableLocalAgentIds, stopEveryLocalAgent } from "../cocodex-agent-safety-state";
+import { browserCapabilityPresentation, type CodexBrowserCapabilityView } from "../cocodex-browser-state";
 import { buildTaskDependencyGraph, type TaskGraphState } from "../cocodex-task-graph";
 import {
   PRIVATE_TYPING_EXPIRY_MS,
@@ -371,6 +372,8 @@ interface SessionValue {
   workspaceMode?: "shared" | "git-worktree";
   configured?: boolean;
   ok?: boolean;
+  browserCapability?: CodexBrowserCapabilityView;
+  officialCodexOpened?: boolean;
   taskId?: string;
   task?: AgentApproval;
   error?: unknown;
@@ -885,6 +888,7 @@ export function ProjectMemberRoster({
 export default function CoCodex({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [status, setStatus] = useState<Status>();
+  const [browserCapability, setBrowserCapability] = useState<CodexBrowserCapabilityView>();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [chats, setChats] = useState<SharedChat[]>([]);
@@ -951,6 +955,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const [busy, setBusy] = useState(false);
   const cursor = useRef(0);
   const projectListRequested = useRef(false);
+  const browserCapabilityRequested = useRef(false);
   const subscribedProject = useRef("");
   const presenceSentAt = useRef(0);
   const presenceProject = useRef("");
@@ -1063,6 +1068,13 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
             ? { agentAccessProfile: value.accessProfile }
             : {}),
         } : previous);
+      }
+      if (value?.source === "control" && value.browserCapability?.version === 1
+        && value.browserCapability.executionSurface === "codex-exec") {
+        setBrowserCapability(value.browserCapability as CodexBrowserCapabilityView);
+      }
+      if (value?.source === "control" && value.officialCodexOpened === true) {
+        setNotice(t("cocodex.browser.opened"));
       }
       if (value?.source === "agent-configuration" && value.configured) {
         setNotice(t("cocodex.agent.setup.saved"));
@@ -1467,6 +1479,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     const interval = window.setInterval(() => void loadStatus(), 2_000);
     return () => { window.clearTimeout(initial); window.clearInterval(interval); };
   }, [loadStatus]);
+
+  useEffect(() => {
+    if (!status?.running || browserCapabilityRequested.current) return;
+    browserCapabilityRequested.current = true;
+    void command({ type: "codex.browser.capability" }).catch(error => {
+      browserCapabilityRequested.current = false;
+      setNotice(error instanceof Error ? error.message : String(error));
+    });
+  }, [command, status?.running]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2103,6 +2124,15 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const openOfficialCodex = async (agentId: string) => {
+    try {
+      await command({ type: "codex.official-app.open", agentId });
+      setNotice(t("cocodex.browser.opening"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const emergencyStopAllLocalAgents = async () => {
     const agentIds = executableLocalAgentIds(status?.localAgents ?? []);
     if (!agentIds.length || !window.confirm(t("cocodex.agent.safety.stopAllConfirm"))) return;
@@ -2232,6 +2262,7 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
   const visibleArtifacts = status?.state === "connected" ? artifacts : [];
   const visibleFileReferences = status?.state === "connected" ? fileReferences : [];
   const projectLocalAgents = (status?.localAgents ?? []).filter(agent => agent.projectId === projectId);
+  const browserPresentation = browserCapabilityPresentation(browserCapability);
   const selectedProjectSecurity = projectSecurity[projectId];
   const selectedProject = projects.find(project => project.id === projectId);
   const selectedProjectArchived = selectedProject?.state === "archived";
@@ -2606,6 +2637,18 @@ export default function CoCodex({ apiBase }: { apiBase: string }) {
                 <small>{t(localAgent.executionEnabled ? "cocodex.agent.execution.enabled" : "cocodex.agent.execution.stopped")}
                   {localAgent.accessProfile === "full-computer" && !localAgent.fullComputerEnabled
                     ? ` · ${t("cocodex.agent.fullComputer.disabled")}` : ""}</small>
+                <div className="cocodex-browser-capability" role="status">
+                  <small><strong>{t("cocodex.browser.label")}</strong>{" / "}{t(browserPresentation.state === "checking"
+                    ? "cocodex.browser.checking"
+                    : browserPresentation.state === "official-app-only"
+                      ? "cocodex.browser.officialAppOnly"
+                      : "cocodex.browser.unavailable")}</small>
+                  <small>{t("cocodex.browser.cliUnavailable")}</small>
+                  {browserPresentation.canOpenOfficialApp && <button type="button" className="btn btn-ghost"
+                    disabled={!status.running} onClick={() => void openOfficialCodex(localAgent.agentId)}>
+                    {t("cocodex.browser.openOfficial")}
+                  </button>}
+                </div>
                 <div className="cocodex-agent-safety-actions">
                   <button type="button" className="btn btn-danger btn-ghost" disabled={!status.running}
                     onClick={() => void localSafetyCommand("agent.emergency.stop", localAgent.agentId)}>
